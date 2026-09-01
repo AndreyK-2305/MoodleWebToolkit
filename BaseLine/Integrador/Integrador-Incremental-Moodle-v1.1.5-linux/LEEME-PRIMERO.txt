@@ -1,0 +1,18 @@
+INTEGRADOR INCREMENTAL MOODLE 1.1.5
+
+1. Lea README.md.
+2. Use únicamente ZIP sellados por Recolector 7.4.1-linux.
+3. El destino debe ser el Moodle de Consolidador 7.3.0-linux o 7.3.0-linux-rc4.
+4. Ejecute con sudo; los permisos se devuelven al usuario invocante.
+5. Los cursos y la categoría quedan ocultos hasta revisión manual.
+6. Repita el mismo comando para reanudar después de una interrupción.
+
+Comando:
+
+sudo ./INTEGRAR.sh --background --workers=auto \
+  --consolidador-dir=/ruta/Consolidador/ \
+  paquetes/origen-nuevo.zip
+
+La salida y evidencias quedan en:
+
+<Consolidador>/exports/integrator/run-origen-nuevo/

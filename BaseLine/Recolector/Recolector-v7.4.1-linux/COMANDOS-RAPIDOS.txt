@@ -1,0 +1,118 @@
+RECOLECTOR v7.4.1 - COMANDOS RAPIDOS
+
+AYUDA
+
+  ./EXPORTAR-ORIGEN.sh --help
+  ./VALIDAR-PAQUETE.sh --help
+
+EXPORTAR (config.php predeterminado, workers automaticos)
+
+  ./EXPORTAR-ORIGEN.sh pregrado.zip
+
+EXPORTAR INDICANDO config.php
+
+  ./EXPORTAR-ORIGEN.sh pregrado.zip /ruta/moodle/config.php
+
+EXPORTAR INDICANDO DIRECTORIO FINAL
+
+  ./EXPORTAR-ORIGEN.sh --output-dir=/mnt/exportaciones pregrado.zip
+
+EXPORTAR INDICANDO WORKERS
+
+  ./EXPORTAR-ORIGEN.sh --workers=1 pregrado.zip
+  ./EXPORTAR-ORIGEN.sh --workers=2 pregrado.zip
+  ./EXPORTAR-ORIGEN.sh --workers=3 pregrado.zip
+  ./EXPORTAR-ORIGEN.sh --workers=4 pregrado.zip
+
+Sin --workers se usa auto = min(procesadores logicos disponibles, 4).
+
+TEMPORAL RAPIDO OPCIONAL
+
+  ./EXPORTAR-ORIGEN.sh --temp-dir=/mnt/nvme/moodle-tmp pregrado.zip
+
+Si se omite --temp-dir, Moodle conserva su almacenamiento temporal habitual.
+
+REUSAR RESPALDOS MBZ EXISTENTES (OPCIONAL)
+
+  ./EXPORTAR-ORIGEN.sh --reuse-backups=/mnt/respaldos-moodle pregrado.zip
+
+Los MBZ se validan por curso, fecha, estructura y perfil de respaldo. Los que
+no coinciden se omiten y se vuelven a generar; la ruta no se modifica.
+Se admiten contenedores MBZ ZIP y TGZ generados por Moodle.
+
+EXIGIR QUE TODOS LOS CURSOS USEN MBZ EXISTENTES
+
+  ./EXPORTAR-ORIGEN.sh --reuse-backups=/mnt/respaldos-moodle \
+    --reuse-only pregrado.zip
+
+Con --reuse-only no se generan cursos faltantes o incompatibles. El comando
+termina con error y registra la causa para corregir o volver a crear ese MBZ.
+Una diferencia solo en logs o histories se informa como
+EXISTING_BACKUP_PROFILE_WARNING y no impide adoptar el MBZ.
+La busqueda es recursiva y no depende del nombre; ejecute el recolector cuando
+Moodle ya haya terminado de escribir todos los respaldos.
+
+SEGUNDO PLANO USANDO EXCLUSIVAMENTE LOS MBZ
+
+  sudo ./EXPORTAR-ORIGEN.sh --background --workers=auto \
+    --reuse-backups=/mnt/respaldos-moodle --reuse-only \
+    pregrado.zip /ruta/moodle/config.php
+
+CAMBIAR INTERVALO DE CORREOS
+
+  ./EXPORTAR-ORIGEN.sh --notify-every=15 pregrado.zip
+
+DESACTIVAR SOLO LOS CORREOS PERIODICOS
+
+  ./EXPORTAR-ORIGEN.sh --notify-every=0 pregrado.zip
+
+SEGUNDO PLANO CON TODAS LAS OPCIONES
+
+  sudo ./EXPORTAR-ORIGEN.sh --background --workers=auto \
+    --notify-every=10 --output-dir=/mnt/exportaciones \
+    pregrado.zip /ruta/moodle/config.php
+
+Las opciones pueden escribirse antes o despues de pregrado.zip.
+
+CONSULTAR ESTADO Y LOG
+
+  sudo systemctl status moodle-recolector-pregrado.service
+  sudo journalctl -u moodle-recolector-pregrado.service -f
+  sudo cat /mnt/exportaciones/pregrado.status.json
+  sudo tail -f /mnt/exportaciones/logs/pregrado-*.log
+
+REANUDAR DESPUES DE UNA INTERRUPCION
+
+Ejecute el mismo nombre y el mismo --output-dir. Los checkpoints correctos se
+saltan antes de iniciar workers y se continua directamente con los pendientes:
+
+  sudo ./EXPORTAR-ORIGEN.sh --background --workers=auto \
+    --output-dir=/mnt/exportaciones pregrado.zip \
+    /ruta/moodle/config.php
+
+INICIAR DELIBERADAMENTE DESDE CERO
+
+  sudo ./EXPORTAR-ORIGEN.sh --background --restart \
+    --output-dir=/mnt/exportaciones pregrado.zip \
+    /ruta/moodle/config.php
+
+VALIDAR PAQUETE EN PRIMER PLANO
+
+  ./VALIDAR-PAQUETE.sh /mnt/exportaciones/pregrado.zip
+
+VALIDAR INDICANDO config.php PARA SMTP
+
+  ./VALIDAR-PAQUETE.sh /mnt/exportaciones/pregrado.zip \
+    /ruta/moodle/config.php
+
+VALIDAR EN SEGUNDO PLANO
+
+  sudo ./VALIDAR-PAQUETE.sh --background \
+    /mnt/exportaciones/pregrado.zip /ruta/moodle/config.php
+
+CONSULTAR VALIDACION
+
+  sudo systemctl status moodle-recolector-validacion-pregrado.service
+  sudo tail -f /mnt/exportaciones/logs/pregrado-validacion-*.log
+  sudo cat /mnt/exportaciones/pregrado.validacion.status.json
+  sudo cat /mnt/exportaciones/pregrado.validacion.json

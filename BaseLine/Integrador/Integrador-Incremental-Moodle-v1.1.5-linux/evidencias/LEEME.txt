@@ -1,0 +1,6 @@
+Las evidencias se generan dentro de:
+
+  <Consolidador-7.3.0>/Consolidador/exports/integrator/run-<paquete>/
+
+Se mantienen junto al Moodle destino para que el contenedor pueda leerlas y
+para conservar una reanudación rápida.

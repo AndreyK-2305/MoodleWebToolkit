@@ -1,0 +1,27 @@
+7.3.0-linux
+Producto: consolidador Moodle exclusivo para Linux/Ubuntu
+Destino: Moodle 5.2.1 nuevo + MariaDB + copia integral sellada
+Flujo: 16 etapas, entre 2 y 32 paquetes de origen sellados
+Restauración: extracción única en sitio, sin raw ni MBZ normalizado duplicado
+Paralelismo: workers auto=min(CPU lógicas,4), override explícito 1..4
+Plan por curso: trabajo liviano; no recarga inventarios de todo el lote
+Verificación: inventario exhaustivo al aplicar + cierre incremental sin repetirlo
+SHA de MBZ: se confía en el sello importado; no se relee en fase 6
+Orden: peso estimado descendente con cola dinámica
+Scripts: montaje read-only único en /opt/consolidator
+Fase 8: dump y tar por streaming con pigz multihilo
+OAuth2: linked logins por sub verificado o correo OAuth confirmado
+Automatización: ejecución interactiva o systemd-run/nohup con checkpoints atómicos
+Correo: SMTP opcional con remitente explícito para avance, fallo e intervención
+Entrada: contrato mínimo; sin rehash exhaustivo de artefactos sellados
+Tamaño: sin límite artificial de bytes por curso, entrada o paquete
+Seguridad: ZIP seguro, bloqueo previo e aislamiento fijo del proyecto Compose
+Configuración: gestor externo declarativo, versiones atómicas y rollback
+Preparación: encadenable desde CONFIGURAR.sh y detección directa de imagen
+Persistencia: fuente en host; montaje Docker de solo lectura; logs sin valores
+Permisos: config.php y copia runtime no escribibles por www-data
+Publicación: exige cierre, OAuth2 verificado y copia integral fase 8 sellada
+Estado: estable; ejecución integral de laboratorio aprobada
+Aceptación: 2 fuentes, 15 cursos, 0 diferencias, cierre evidence_consolidated
+Permisos: scripts legibles por www-data y recuperación automática al reanudar
+Compatibilidad: paquetes sellados del Recolector 7.4.1-linux

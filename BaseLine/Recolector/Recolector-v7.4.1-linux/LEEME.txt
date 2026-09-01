@@ -1,0 +1,210 @@
+RECOLECTOR DE ORIGEN MOODLE
+Version 7.4.1-linux
+
+Manual completo para operacion y publicacion: README.md
+
+Genera un ZIP estructurado compatible con el Consolidador 7.0.1. No modifica
+usuarios, cursos, matriculas ni configuracion del Moodle de origen.
+
+REQUISITOS
+
+- Linux, Bash, PHP CLI 8.1 o posterior y ZipArchive.
+- Lectura de config.php y de los datos de Moodle.
+- sudo y systemd-run solo para ejecutar en segundo plano.
+
+EXPORTACION
+
+Uso:
+
+  ./EXPORTAR-ORIGEN.sh [opciones] nombre.zip [/ruta/moodle/config.php]
+
+Opciones:
+
+  --background
+      Ejecuta con systemd-run y continua aunque se cierre SSH.
+
+  --workers=auto|1|2|3|4
+      Cursos respaldados simultaneamente. El valor predeterminado es auto:
+      usa el menor valor entre los procesadores logicos disponibles y 4.
+
+  --notify-every=MINUTOS
+      Intervalo de los correos de progreso. Predeterminado: 10. El valor 0
+      desactiva los correos periodicos, pero conserva inicio y final.
+
+  --output-dir=RUTA
+      Directorio donde quedan ZIP, .zip.sha256, estado y logs. Tiene prioridad
+      sobre MOODLE_COLLECTOR_OUTPUT_DIR. La ruta se convierte a absoluta.
+
+  --temp-dir=RUTA
+      Usa esa ruta para temporales internos de backup. Es opcional; si se
+      omite, Moodle conserva su temporal configurado.
+
+  --reuse-backups=RUTA
+      Busca respaldos .mbz compatibles y recientes. No modifica esa ruta.
+
+  --reuse-only
+      Exige un .mbz compatible para cada curso pendiente. Si falta alguno,
+      termina con error sin generar respaldos nuevos. Requiere --reuse-backups.
+
+  --restart
+      Descarta el trabajo parcial de este origen e inicia una ejecucion nueva.
+
+  -h, --help
+      Muestra la ayuda integrada.
+
+Ejemplos:
+
+  chmod +x EXPORTAR-ORIGEN.sh
+  ./EXPORTAR-ORIGEN.sh campus-norte.zip
+  ./EXPORTAR-ORIGEN.sh campus-norte.zip /srv/moodle/config.php
+  ./EXPORTAR-ORIGEN.sh --workers=2 campus-norte.zip
+  ./EXPORTAR-ORIGEN.sh --workers=4 --notify-every=15 campus-norte.zip
+  ./EXPORTAR-ORIGEN.sh --output-dir=/mnt/exportaciones campus-norte.zip
+  ./EXPORTAR-ORIGEN.sh --temp-dir=/mnt/nvme/tmp campus-norte.zip
+  ./EXPORTAR-ORIGEN.sh --reuse-backups=/mnt/respaldos campus-norte.zip
+  ./EXPORTAR-ORIGEN.sh --reuse-backups=/mnt/respaldos \
+    --reuse-only campus-norte.zip
+  sudo ./EXPORTAR-ORIGEN.sh --background --workers=auto \
+    --output-dir=/mnt/exportaciones campus-norte.zip
+  sudo ./EXPORTAR-ORIGEN.sh --background --workers=2 \
+    --output-dir=/mnt/exportaciones campus-norte.zip \
+    /srv/moodle/config.php
+
+Las opciones pueden ubicarse antes o despues del nombre. El nombre sin .zip
+se usa como source_id. Debe iniciar con minuscula y contener solo a-z, 0-9,
+guion o guion bajo.
+
+RUTAS Y ESTADO
+
+Sin --output-dir, el resultado queda en:
+
+  salidas/campus-norte.zip
+  salidas/campus-norte.zip.sha256
+  salidas/campus-norte.status.json
+  salidas/logs/campus-norte-FECHA-PID.log
+
+La primera linea RECOLECTOR_PATH muestra las rutas absolutas efectivas. Para
+conservar la forma anterior mediante variable de entorno:
+
+  MOODLE_COLLECTOR_OUTPUT_DIR=/mnt/exportaciones \
+    ./EXPORTAR-ORIGEN.sh campus-norte.zip
+
+Consultas para segundo plano:
+
+  sudo systemctl status moodle-recolector-campus-norte.service
+  sudo journalctl -u moodle-recolector-campus-norte.service -f
+  tail -f /mnt/exportaciones/logs/campus-norte-*.log
+  cat /mnt/exportaciones/campus-norte.status.json
+
+Si se pierde la sesion y se entra como ubuntu, no es necesario cambiar a una
+sesion root. Use sudo para leer un archivo protegido:
+
+  sudo cat /mnt/exportaciones/campus-norte.status.json
+  sudo tail -f /mnt/exportaciones/logs/campus-norte-*.log
+
+INVENTARIO, WORKERS, FASES Y REANUDACION
+
+El inventario global se consulta una vez. Los workers reciben la ficha ya
+obtenida de cada curso, sus secciones, actividades, matriculas y roles, y solo
+consultan los datos academicos detallados que faltan.
+
+Los cursos se asignan desde una cola dinamica. Cuando un worker termina toma
+el siguiente curso disponible. Los logs indican fases como course-inventory,
+checkpoint-validation, backup-prepare, moodle-backup, copy-sha,
+moodle-storage-cleanup y checkpoint-write. Cada minuto se escribe un heartbeat
+con completados, pendientes, porcentaje, ETA y estado de cada worker.
+
+Cada curso completado conserva un checkpoint. Si el proceso se detiene, vuelva
+a ejecutar exactamente el mismo nombre y directorio: primero salta los cursos
+completos y continua con los pendientes sin repetir identidades, plugins ni el
+inventario global. Un artefacto parcial sin checkpoint se retira antes de
+reintentar. Si falla un worker no se sella el ZIP, pero los checkpoints
+correctos permanecen. Use --restart solo para comenzar deliberadamente de cero.
+
+TEMPORAL Y RESPALDOS EXISTENTES (OPCIONALES)
+
+Sin --temp-dir no cambia el almacenamiento temporal de Moodle. Cuando se
+indica, los workers usan esa ruta para los temporales internos; la salida final
+sigue en --output-dir.
+
+--reuse-backups recorre archivos .mbz sin modificarlos. Solo adopta uno si es
+legible e integro, corresponde al curso, no es anterior al ultimo cambio
+conocido y contiene el perfil academico y de archivos requerido. Las diferencias
+en logs o histories se aceptan con EXISTING_BACKUP_PROFILE_WARNING porque son
+datos de auditoria, no entregas, calificaciones, intentos ni finalizaciones. Los
+demas ajustes continuan siendo estrictos. Si hay varias copias del mismo curso,
+prueba desde la mas reciente hasta encontrar una compatible.
+
+El inspector reconoce respaldos Moodle empaquetados como ZIP o TGZ. Para TGZ
+usa el empaquetador nativo de Moodle y solo materializa moodle_backup.xml; no
+descomprime el curso completo en el area de trabajo.
+
+La busqueda es recursiva y no depende del nombre del archivo. Inicie el
+recolector solo cuando Moodle haya terminado de escribir todos los .mbz; una
+copia todavia en construccion se rechaza como incompleta.
+
+Sin --reuse-only, si ninguna copia sirve el curso se respalda normalmente. Con
+--reuse-only nunca se ejecuta moodle-backup: la ejecucion falla indicando el
+curso y las causas de rechazo. La adopcion aun copia el archivo una vez al area
+de trabajo mientras calcula SHA-256.
+
+Una ejecucion detenida con 7.4.1-linux-rc3, rc2 o rc1 se puede reanudar con
+esta version usando exactamente el mismo nombre, salida y comando.
+
+Ejemplo recomendado en segundo plano:
+
+  sudo ./EXPORTAR-ORIGEN.sh --background --workers=auto \
+    --reuse-backups=/mnt/respaldos-moodle --reuse-only \
+    pregrado.zip /srv/moodle/config.php
+
+SMTP OPCIONAL
+
+Copie smtp-config.example.json como smtp-config.json, configure enabled=true y
+proteja el archivo:
+
+  chmod 600 smtp-config.json
+
+Se envia un correo al iniciar, periodicamente y al finalizar. Un problema SMTP
+no detiene la recoleccion. El log muestra SMTP_OK, SMTP_WARNING o SMTP_SKIPPED
+y su causa, sin imprimir la clave.
+
+CONTENIDO DEL ZIP
+
+  cursos/*.mbz
+  inventarios/*.json
+  identidades.json
+  inventario-origen.json
+  plugins.json
+  checkpoints/*.json
+  manifest.json
+  checksums.sha256
+
+Cada .mbz se copia y calcula su SHA-256 en una sola lectura. El ZIP exterior
+se hashea una sola vez y produce nombre.zip.sha256. Los .mbz se almacenan sin
+recompresion dentro del ZIP exterior.
+
+VALIDACION EXHAUSTIVA OPCIONAL
+
+Uso:
+
+  ./VALIDAR-PAQUETE.sh [--background] /ruta/paquete.zip \
+    [/ruta/moodle/config.php]
+
+Ejemplos:
+
+  chmod +x VALIDAR-PAQUETE.sh
+  ./VALIDAR-PAQUETE.sh /ruta/campus-norte.zip
+  ./VALIDAR-PAQUETE.sh /ruta/campus-norte.zip /srv/moodle/config.php
+  sudo ./VALIDAR-PAQUETE.sh --background /ruta/campus-norte.zip
+  sudo ./VALIDAR-PAQUETE.sh --background /ruta/campus-norte.zip \
+    /srv/moodle/config.php
+
+El segundo parametro solo permite localizar PHPMailer para SMTP. El validador
+no requiere acceso a Moodle. Recalcula deliberadamente el SHA del ZIP, todos
+los hashes internos y cruza manifiesto, inventarios, checkpoints y backups. Se
+usa bajo demanda y no forma parte de la exportacion normal.
+
+Ayuda:
+
+  ./EXPORTAR-ORIGEN.sh --help
+  ./VALIDAR-PAQUETE.sh --help

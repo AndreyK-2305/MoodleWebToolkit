@@ -1,0 +1,207 @@
+name: moodle-toolkit
+
+x-laravel-service: &laravel-service
+    image: moodle-toolkit-app:local
+    build:
+        context: .
+        dockerfile: docker/php/Dockerfile
+    working_dir: /var/www/html
+    volumes:
+        - ./:/var/www/html
+        - ./BaseLine:/var/www/html/BaseLine:ro
+        - vendor:/var/www/html/vendor
+    depends_on:
+        postgres:
+            condition: service_healthy
+        postgres-testing:
+            condition: service_healthy
+        redis:
+            condition: service_healthy
+    restart: unless-stopped
+
+services:
+    nginx:
+        image: nginx:1.27-alpine
+        ports:
+            - '8080:80'
+        volumes:
+            - ./:/var/www/html:ro
+            - ./BaseLine:/var/www/html/BaseLine:ro
+            - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+        depends_on:
+            app:
+                condition: service_healthy
+            vite:
+                condition: service_healthy
+        healthcheck:
+            test:
+                [
+                    'CMD-SHELL',
+                    'wget --quiet --spider http://127.0.0.1/nginx-health || exit 1',
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 20s
+        restart: unless-stopped
+
+    app:
+        <<: *laravel-service
+        command: sh -lc "sh docker/php/bootstrap-app.sh && chown -R www-data:www-data storage bootstrap/cache && exec php-fpm"
+        healthcheck:
+            test:
+                [
+                    'CMD-SHELL',
+                    'php artisan about --only=environment --no-ansi >/dev/null 2>&1',
+                ]
+            interval: 10s
+            timeout: 10s
+            retries: 12
+            start_period: 20s
+
+    queue-worker:
+        <<: *laravel-service
+        command:
+            [
+                'php',
+                'artisan',
+                'queue:work',
+                'redis',
+                '--sleep=1',
+                '--tries=3',
+                '--timeout=3600',
+            ]
+        stop_grace_period: 30s
+        depends_on:
+            app:
+                condition: service_healthy
+        healthcheck:
+            test:
+                [
+                    'CMD-SHELL',
+                    "grep -aq 'artisan' /proc/1/cmdline && grep -aq 'queue:work' /proc/1/cmdline",
+                ]
+            interval: 15s
+            timeout: 5s
+            retries: 5
+            start_period: 15s
+
+    reverb:
+        <<: *laravel-service
+        command:
+            ['php', 'artisan', 'reverb:start', '--host=0.0.0.0', '--port=8080']
+        depends_on:
+            app:
+                condition: service_healthy
+        ports:
+            - '8081:8080'
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'php',
+                    '-r',
+                    "exit(@fsockopen('127.0.0.1', 8080) ? 0 : 1);",
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 15s
+
+    vite:
+        image: moodle-toolkit-app:local
+        build:
+            context: .
+            dockerfile: docker/php/Dockerfile
+        working_dir: /var/www/html
+        command: ['npm', 'run', 'dev', '--', '--host', '0.0.0.0']
+        ports:
+            - '5173:5173'
+        depends_on:
+            app:
+                condition: service_healthy
+        volumes:
+            - ./:/var/www/html
+            - ./BaseLine:/var/www/html/BaseLine:ro
+            - node_modules:/var/www/html/node_modules
+            - vendor:/var/www/html/vendor
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'node',
+                    '-e',
+                    "fetch('http://127.0.0.1:5173/@vite/client').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 18
+            start_period: 30s
+        restart: unless-stopped
+
+    postgres:
+        image: postgres:17-alpine
+        environment:
+            POSTGRES_DB: ${DB_DATABASE:-moodle_toolkit}
+            POSTGRES_USER: ${DB_USERNAME:-moodle_toolkit}
+            POSTGRES_PASSWORD: ${DB_PASSWORD:-local_development_only}
+        ports:
+            - '5432:5432'
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+        healthcheck:
+            test:
+                [
+                    'CMD-SHELL',
+                    'pg_isready -U ${DB_USERNAME:-moodle_toolkit} -d ${DB_DATABASE:-moodle_toolkit}',
+                ]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        restart: unless-stopped
+
+    postgres-testing:
+        image: postgres:17-alpine
+        environment:
+            POSTGRES_DB: ${TEST_DB_DATABASE:-moodle_toolkit_testing}
+            POSTGRES_USER: ${TEST_DB_USERNAME:-moodle_toolkit_testing}
+            POSTGRES_PASSWORD: ${TEST_DB_PASSWORD:-local_testing_only}
+        tmpfs:
+            - /var/lib/postgresql/data
+        healthcheck:
+            test:
+                [
+                    'CMD-SHELL',
+                    'pg_isready -U ${TEST_DB_USERNAME:-moodle_toolkit_testing} -d ${TEST_DB_DATABASE:-moodle_toolkit_testing}',
+                ]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        restart: unless-stopped
+
+    redis:
+        image: redis:7.4-alpine
+        command: redis-server --appendonly yes
+        ports:
+            - '6379:6379'
+        volumes:
+            - redis_data:/data
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+        restart: unless-stopped
+
+    mailpit:
+        image: axllent/mailpit:v1.27
+        ports:
+            - '1025:1025'
+            - '8025:8025'
+        restart: unless-stopped
+
+volumes:
+    node_modules:
+    postgres_data:
+    redis_data:
+    vendor:

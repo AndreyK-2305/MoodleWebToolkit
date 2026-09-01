@@ -1,0 +1,10 @@
+.env
+config.yaml
+copias/*.zip
+exports/*
+!exports/LEEME.txt
+reports/*
+!reports/LEEME.txt
+managed-config/
+docker/custom-plugins/*
+!docker/custom-plugins/README-PLUGINS.txt

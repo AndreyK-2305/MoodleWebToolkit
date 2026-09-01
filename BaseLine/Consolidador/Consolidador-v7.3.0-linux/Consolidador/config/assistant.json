@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0",
+  "target": {
+    "id": "target",
+    "name": "Moodle consolidado UFPS",
+    "service": "moodle-target",
+    "url_from_environment": "MOODLE_PUBLIC_URL",
+    "parent_category_id": 1
+  },
+  "pilot": {
+    "source_id": "auto",
+    "course_key": "auto",
+    "target_category_id": 1
+  },
+  "selection": {
+    "include_hidden": true
+  },
+  "package_policy": {
+    "minimum_sources": 2,
+    "maximum_sources": 32,
+    "required_source_ids": [],
+    "require_identity_scope_all_for_production": true,
+    "maximum_entries_per_package": 100000
+  },
+  "site_backup": {
+    "enabled": true
+  }
+}

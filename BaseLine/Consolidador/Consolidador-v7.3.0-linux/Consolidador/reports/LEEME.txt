@@ -1,0 +1,3 @@
+Los registros del asistente y de cada fase se generan aquí. Pueden contener
+identificadores institucionales y deben conservarse con acceso restringido.
+

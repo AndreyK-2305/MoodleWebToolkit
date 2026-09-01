@@ -1,0 +1,4 @@
+Coloque aquí un paquete sellado por Recolector 7.4.1-linux.
+
+No extraiga el ZIP. El Integrador lo valida y lo extrae una sola vez.
+

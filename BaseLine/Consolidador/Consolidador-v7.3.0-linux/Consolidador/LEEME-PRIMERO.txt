@@ -1,0 +1,128 @@
+CONSOLIDADOR MOODLE UFPS — LINUX
+Versión 7.3.0-linux
+
+PAQUETE EXCLUSIVO DE CONSOLIDACIÓN
+
+VERSIÓN ESTABLE 7.3.0
+
+  - Empaqueta scripts/ como 0755 y sus archivos de lectura como 0644.
+  - Normaliza permisos al preparar/reanudar y recupera exports/phase5 y
+    exports/phase6 después de interrupciones.
+  - Acepta exclusivamente la reasignación técnica de archivos con
+    source_user_id=0; mantiene estrictos los archivos asociados a usuarios.
+  - Conserva el runtime completo de matrículas, roles, normalización y
+    verificación académica de la fase 6.
+  - Devuelve al anfitrión los JSON antes de leerlos y concede escritura al
+    contenedor solo durante las etapas que la requieren.
+
+MEJORAS DE RENDIMIENTO 7.3.0
+
+  - Usa de 1 a 4 workers; auto elige min(CPU lógicas, 4).
+  - Restaura pesados primero mediante cola dinámica.
+  - Extrae cada MBZ una sola vez directamente para Moodle.
+  - No crea copias raw ni MBZ normalizados intermedios.
+  - No repite los recorridos SHA de cada MBZ ya sellado por el Recolector.
+  - Cada worker carga solo el trabajo liviano de su curso.
+  - Reutiliza el inventario verificado al aplicar y no lo reconstruye al final.
+  - Monta los scripts read-only una sola vez y elimina docker compose cp.
+  - Usa pigz multihilo y streaming para la copia integral.
+  - Reanuda desde checkpoints; limpia automáticamente el curso interrumpido.
+
+COMPATIBILIDAD Y SEGURIDAD HEREDADAS DE 7.2.1
+
+  - Corrige el plan masivo de fase 6: siteadmin_required se interpreta con una
+    función propia y validada, sin depender de la función inexistente p5_bool.
+  - Compara Moodle 4.5 con 5.x excluyendo solo los derivados regenerables
+    assignfeedback_editpdf/combined, pages y partial; mantiene estrictos
+    stamps, submission_files y las demás áreas.
+  - Reanuda el piloto ya restaurado tras ese falso positivo, sin duplicarlo.
+  - Fusiona automáticamente por emisor + correo OAuth confirmado, incluso con
+    dominios personales, sin falsificar google_sub.
+  - Conserva siteadmin y normaliza estudiante, docente, administrador y roles
+    no estándar según la política aprobada.
+  - Renombra colisiones como [Instancia] Nombre del curso.
+  - Corrige el intercambio de permisos con www-data en las fases posteriores.
+  - Incluye las correcciones acumuladas de compatibilidad, identidades, OAuth2
+    y permisos de las versiones anteriores.
+
+  Contiene el Moodle 5.2.1 destino, el motor de 16 etapas, la configuración
+  manual de OAuth2, la ejecución en segundo plano, notificaciones opcionales y
+  un gestor autónomo para los ajustes persistentes de config.php.
+
+  No contiene utilidades ni documentación para producir paquetes de origen.
+  No contiene .env, config.yaml, credenciales, ZIP institucionales, resultados,
+  logs, imágenes Docker preconstruidas ni volúmenes anteriores.
+
+ORDEN BÁSICO
+
+  1. Extraiga el paquete en un servidor Linux/Ubuntu de ensayo.
+
+     La herramienta fija su propio proyecto Compose. Variables exportadas por
+     otros despliegues no pueden mezclar el destino con una instancia origen.
+
+  2. Ejecute:
+
+       chmod +x ./*.sh
+       ./moodle-consolidation.sh verificar
+       ./CONFIGURAR.sh
+
+     CONFIGURAR solicita el remitente SMTP de forma independiente y, al
+     finalizar, pregunta si desea ejecutar de inmediato Preparar destino.
+     Si responde N, continúe después con:
+
+       ./PREPARAR-DESTINO.sh
+
+     PREPARAR-DESTINO inicializa una configuración declarativa fuera de los
+     volúmenes Docker. No edite config.php dentro del contenedor.
+
+  3. Coloque entre 2 y 32 ZIP sellados en copias/.
+
+     Esta revisión exige identidades.json 1.2. Un vínculo OAuth confirmado usa
+     emisor + correo normalizado como llave secundaria. Los dominios
+     institucionales se conservan en identity-policy.json para trazabilidad.
+
+  4. Inicie de una de estas formas:
+
+       ./INICIAR-CONSOLIDACION.sh --workers=auto
+
+     o, para ejecución automática reanudable:
+
+       ./INICIAR-SEGUNDO-PLANO.sh --workers=auto
+
+  5. Cuando la etapa 3 lo indique, configure Google OAuth2 manualmente en el
+     panel administrativo de Moodle y reanude el asistente.
+
+  6. Supervise con:
+
+       ./ESTADO.sh
+       ./moodle-consolidation.sh logs
+
+  7. Después de CONSOLIDATION_ASSISTANT_OK:
+
+       ./PUBLICAR-SITIO.sh
+
+GESTIÓN POSTERIOR DE CONFIG.PHP
+
+  ./GESTIONAR-CONFIG.sh ver
+  ./GESTIONAR-CONFIG.sh editar
+  ./GESTIONAR-CONFIG.sh aplicar --motivo "Ajuste aprobado"
+  ./GESTIONAR-CONFIG.sh historial
+  ./GESTIONAR-CONFIG.sh restaurar VERSION
+  ./GESTIONAR-CONFIG.sh verificar
+
+Los cambios viven en MOODLE_MANAGED_CONFIG_DIR, tienen historial y se vuelven
+a aplicar cuando se recrea target_code. Una versión que impida iniciar Moodle
+se revierte automáticamente. Mantenga ese directorio en el respaldo seguro del
+servidor; la copia integral solo incluye su manifiesto sin valores.
+
+NO REEMPLACE LOS ZIP DESPUÉS DE LA PRIMERA INTENCIÓN DE ESCRITURA.
+
+No existe un tope artificial de bytes por curso o paquete. Verifique espacio
+para originales, temporales de una extracción por worker, base y respaldo
+integral. La fase 6 ya no duplica cada MBZ.
+
+Esta es la versión estable 7.3.0. La línea superó una consolidación integral de
+laboratorio con 2 fuentes, 15 cursos, 0 diferencias y cierre
+evidence_consolidated en 9 minutos 27 segundos. Antes de producción valide en
+el entorno institucional OAuth2, SMTP, DNS/TLS, espacio y recuperación. Lea
+README.md para el flujo, controles y criterios de publicación.

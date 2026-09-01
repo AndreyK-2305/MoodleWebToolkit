@@ -1,0 +1,132 @@
+name: moodle-consolidation-production
+
+services:
+  db:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?Ejecute ./CONFIGURAR.sh}
+      MARIADB_DATABASE: ${MOODLE_DB_NAME:-moodle_target}
+      MARIADB_USER: ${MOODLE_DB_USER:-moodle_target}
+      MARIADB_PASSWORD: ${MOODLE_DB_PASSWORD:?Ejecute ./CONFIGURAR.sh}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb-file-per-table=1
+      - --max-allowed-packet=1G
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    networks:
+      - private
+
+  moodle-target:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        MOODLE_VERSION: "5.2.1"
+        MOODLE_BRANCH: "502"
+        MOODLE_SHA256: "db1167f3deef899aef6d4b273d3bc901b102c5d9de2e97289492505c2ec29629"
+    image: ${MOODLE_TARGET_IMAGE:-moodle-consolidation-target:5.2.1-v7.3.0}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MOODLE_DB_HOST: db
+      MOODLE_DB_PORT: "3306"
+      MOODLE_DB_NAME: ${MOODLE_DB_NAME:-moodle_target}
+      MOODLE_DB_USER: ${MOODLE_DB_USER:-moodle_target}
+      MOODLE_DB_PASSWORD: ${MOODLE_DB_PASSWORD:?Ejecute ./CONFIGURAR.sh}
+      MOODLE_WWWROOT: ${MOODLE_PUBLIC_URL:?Ejecute ./CONFIGURAR.sh}
+      MOODLE_SITE_NAME: ${MOODLE_SITE_NAME:-Moodle consolidado}
+      MOODLE_SITE_SHORTNAME: ${MOODLE_SITE_SHORTNAME:-CONSOLIDADO}
+      MOODLE_ADMIN_USER: ${MOODLE_ADMIN_USER:-admin}
+      MOODLE_ADMIN_PASSWORD: ${MOODLE_ADMIN_PASSWORD:?Ejecute ./CONFIGURAR.sh}
+      MOODLE_ADMIN_EMAIL: ${MOODLE_ADMIN_EMAIL:?Ejecute ./CONFIGURAR.sh}
+      MOODLE_REVERSE_PROXY: ${MOODLE_REVERSE_PROXY:-0}
+      MOODLE_SSL_PROXY: ${MOODLE_SSL_PROXY:-0}
+    ports:
+      - "${MOODLE_BIND_ADDRESS:-127.0.0.1}:${MOODLE_HTTP_PORT:-8090}:80"
+    volumes:
+      - target_code:/var/www/html
+      - target_data:/var/www/moodledata
+      - ./exports:/exports
+      - ./scripts:/opt/consolidator:ro
+      - "${MOODLE_MANAGED_CONFIG_DIR:-./managed-config}:/run/moodle-config:ro"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -f /var/www/html/config.php &&
+          php -r 'define("CLI_SCRIPT", true);
+          require "/var/www/html/config.php";'
+      interval: 10s
+      timeout: 8s
+      retries: 90
+      start_period: 60s
+    networks:
+      - private
+
+  moodle-cron:
+    profiles: ["live"]
+    image: ${MOODLE_TARGET_IMAGE:-moodle-consolidation-target:5.2.1-v7.3.0}
+    restart: unless-stopped
+    depends_on:
+      moodle-target:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        while true; do
+          runuser -u www-data -- php /var/www/html/admin/cli/cron.php || true;
+          sleep 60;
+        done
+    volumes:
+      - target_code:/var/www/html
+      - target_data:/var/www/moodledata
+      - ./exports:/exports
+      - ./scripts:/opt/consolidator:ro
+    networks:
+      - private
+
+  assistant-runtime:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/assistant.Dockerfile
+    image: moodle-consolidation-assistant:7.3.0-linux
+    user: "${ASSISTANT_UID:-0}:${ASSISTANT_GID:-0}"
+    group_add:
+      - "${DOCKER_GID:-0}"
+    working_dir: ${ASSISTANT_PROJECT_ROOT:?Use los comandos .sh incluidos}
+    environment:
+      HOME: /tmp
+      DOCKER_HOST: unix:///var/run/docker.sock
+      POWERSHELL_TELEMETRY_OPTOUT: "1"
+      ASSISTANT_PROJECT_ROOT: ${ASSISTANT_PROJECT_ROOT}
+      ASSISTANT_UID: ${ASSISTANT_UID:-0}
+      ASSISTANT_GID: ${ASSISTANT_GID:-0}
+      DOCKER_GID: ${DOCKER_GID:-0}
+      DOCKER_SOCKET_PATH: ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+      COMPOSE_PROJECT_NAME: moodle-consolidation-production
+      CONSOLIDATION_WORKERS: ${CONSOLIDATION_WORKERS:-auto}
+    env_file:
+      - .env
+    volumes:
+      - "${ASSISTANT_PROJECT_ROOT}:${ASSISTANT_PROJECT_ROOT}"
+      - "${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock"
+      - "${MOODLE_MANAGED_CONFIG_DIR:-./managed-config}:/managed-config-host:ro"
+
+networks:
+  private:
+
+volumes:
+  db_data:
+  target_code:
+  target_data:

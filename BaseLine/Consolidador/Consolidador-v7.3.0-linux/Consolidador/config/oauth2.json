@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "required": true,
+  "service_type": "google",
+  "issuer_id": "auto",
+  "expected_subject_issuer": "https://accounts.google.com"
+}

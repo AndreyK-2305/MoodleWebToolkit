@@ -1,0 +1,3 @@
+Las salidas por fase se generan aquí. Pueden contener información institucional
+sensible y no deben publicarse ni copiarse a un repositorio.
+

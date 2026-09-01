@@ -1,0 +1,7 @@
+.git
+.env
+BaseLine
+node_modules
+vendor
+public/build
+storage/logs/*
