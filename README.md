@@ -1,11 +1,13 @@
 # Moodle Consolidation Toolkit — Plataforma web
 
 Plataforma de administración para el kit de consolidación de instancias Moodle.
-El repositorio contiene actualmente **solo la iteración 1A (Bootstrap)** del Plan
-Maestro: infraestructura, autenticación, layout, tema y roles base.
+El repositorio contiene las iteraciones **1A (Bootstrap)** y **1B (Dominio)** del
+Plan Maestro: infraestructura, autenticación, roles y el modelo persistente de
+proyectos y ejecuciones. El wizard y el motor asíncrono aún no están incluidos.
 
 La implementación y los resultados de validación están documentados en
-[`docs/ITERACION-1A.md`](docs/ITERACION-1A.md).
+[`docs/ITERACION-1A.md`](docs/ITERACION-1A.md) y
+[`docs/ITERACION-1B.md`](docs/ITERACION-1B.md).
 
 ## Stack disponible
 
