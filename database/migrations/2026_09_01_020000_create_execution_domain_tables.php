@@ -64,6 +64,7 @@ return new class extends Migration
 
             $table->unique(['execution_id', 'step_key', 'attempt']);
             $table->unique(['execution_id', 'position', 'attempt']);
+            $table->unique(['id', 'execution_id']);
         });
 
         Schema::create('execution_events', function (Blueprint $table) {
@@ -85,7 +86,7 @@ return new class extends Migration
         Schema::create('execution_logs', function (Blueprint $table) {
             $table->id();
             $table->foreignId('execution_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('execution_step_id')->nullable()->constrained('execution_steps')->nullOnDelete();
+            $table->unsignedBigInteger('execution_step_id')->nullable();
             $table->string('stream', 16)->default('SYSTEM');
             $table->string('level', 16)->default('INFO');
             $table->text('message');
@@ -93,6 +94,10 @@ return new class extends Migration
             $table->timestampTz('logged_at')->useCurrent();
             $table->timestampTz('created_at')->useCurrent();
 
+            $table->foreign(['execution_step_id', 'execution_id'])
+                ->references(['id', 'execution_id'])
+                ->on('execution_steps')
+                ->restrictOnDelete();
             $table->index(['execution_id', 'logged_at']);
         });
 

@@ -236,4 +236,57 @@ class DomainRelationsAndPrivacyTest extends DomainTestCase
             ->where('id', $auditLog->getKey())
             ->update(['action' => 'project.changed']);
     }
+
+    public function test_direct_audit_reference_change_is_rejected(): void
+    {
+        $project = $this->project();
+        $auditLog = AuditLog::query()->create([
+            'actor_id' => $project->created_by,
+            'project_id' => $project->getKey(),
+            'action' => 'project.created',
+        ]);
+
+        $this->expectException(QueryException::class);
+
+        DB::table('audit_logs')
+            ->where('id', $auditLog->getKey())
+            ->update(['project_id' => null]);
+    }
+
+    public function test_deleting_a_draft_project_detaches_its_immutable_audit_history(): void
+    {
+        $project = $this->project();
+        $auditLog = AuditLog::query()->create([
+            'actor_id' => $project->created_by,
+            'project_id' => $project->getKey(),
+            'action' => 'project.created',
+            'payload' => ['project_uuid' => $project->uuid],
+        ]);
+
+        DB::table('projects')->where('id', $project->getKey())->delete();
+
+        $persistedAudit = $auditLog->fresh();
+        $this->assertDatabaseMissing('projects', ['id' => $project->getKey()]);
+        $this->assertNotNull($persistedAudit);
+        $this->assertNull($persistedAudit->project_id);
+        $this->assertSame('project.created', $persistedAudit->action);
+        $this->assertSame(['project_uuid' => $project->uuid], $persistedAudit->payload);
+    }
+
+    public function test_deleting_a_user_detaches_its_immutable_audit_history(): void
+    {
+        $actor = $this->user(UserRole::AUDITOR);
+        $auditLog = AuditLog::query()->create([
+            'actor_id' => $actor->getKey(),
+            'action' => 'project.viewed',
+        ]);
+
+        DB::table('users')->where('id', $actor->getKey())->delete();
+
+        $persistedAudit = $auditLog->fresh();
+        $this->assertDatabaseMissing('users', ['id' => $actor->getKey()]);
+        $this->assertNotNull($persistedAudit);
+        $this->assertNull($persistedAudit->actor_id);
+        $this->assertSame('project.viewed', $persistedAudit->action);
+    }
 }

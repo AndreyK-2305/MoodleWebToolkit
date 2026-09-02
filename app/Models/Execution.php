@@ -9,6 +9,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use LogicException;
 
 /**
  * @property int $id
@@ -43,6 +44,16 @@ class Execution extends Model
     protected static function booted(): void
     {
         static::updating(function (self $execution): void {
+            if ($execution->isDirty(['project_id', 'uuid', 'attempt'])) {
+                throw new LogicException('La identidad de una ejecución es inmutable.');
+            }
+
+            $hadResumeLineage = $execution->getRawOriginal('resumed_from_execution_id') !== null;
+
+            if ($hadResumeLineage && $execution->isDirty(['resumed_from_execution_id', 'resume_checkpoint_id'])) {
+                throw new LogicException('El linaje de reanudación es inmutable una vez asignado.');
+            }
+
             if (! $execution->isDirty('status')) {
                 return;
             }

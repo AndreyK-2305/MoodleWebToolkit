@@ -7,6 +7,7 @@ use App\Enums\ExecutionStepStatus;
 use App\Models\Checkpoint;
 use App\Models\ExecutionStep;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 
 class CheckpointIndependenceTest extends DomainTestCase
 {
@@ -140,5 +141,113 @@ class CheckpointIndependenceTest extends DomainTestCase
             'resumed_from_execution_id' => $previous->getKey(),
             'resume_checkpoint_id' => $checkpoint->getKey(),
         ]);
+    }
+
+    public function test_referenced_checkpoint_cannot_be_moved_after_a_valid_lineage_is_created(): void
+    {
+        $project = $this->project();
+        $previous = $this->execution($project, ExecutionStatus::FAILED, 1);
+        $checkpoint = Checkpoint::query()->create([
+            'execution_id' => $previous->getKey(),
+            'step_key' => 'collect',
+            'type' => 'TOOL_STATE',
+            'resume_token' => 'opaque',
+            'validated' => true,
+        ]);
+        $resumed = $this->execution($project, ExecutionStatus::QUEUED, 2);
+        $resumed->update([
+            'resumed_from_execution_id' => $previous->getKey(),
+            'resume_checkpoint_id' => $checkpoint->getKey(),
+        ]);
+        $otherExecution = $this->execution($project, ExecutionStatus::FAILED, 3);
+
+        $this->expectException(QueryException::class);
+
+        DB::table('checkpoints')
+            ->where('id', $checkpoint->getKey())
+            ->update(['execution_id' => $otherExecution->getKey()]);
+    }
+
+    public function test_origin_execution_identity_cannot_change_after_a_valid_lineage_is_created(): void
+    {
+        $project = $this->project();
+        $previous = $this->execution($project, ExecutionStatus::FAILED, 1);
+        $checkpoint = Checkpoint::query()->create([
+            'execution_id' => $previous->getKey(),
+            'step_key' => 'collect',
+            'type' => 'TOOL_STATE',
+            'resume_token' => 'opaque',
+            'validated' => true,
+        ]);
+        $resumed = $this->execution($project, ExecutionStatus::QUEUED, 2);
+        $resumed->update([
+            'resumed_from_execution_id' => $previous->getKey(),
+            'resume_checkpoint_id' => $checkpoint->getKey(),
+        ]);
+
+        $this->expectException(QueryException::class);
+
+        DB::table('executions')
+            ->where('id', $previous->getKey())
+            ->update(['attempt' => 3]);
+    }
+
+    public function test_referenced_checkpoint_cannot_be_invalidated_after_use(): void
+    {
+        $project = $this->project();
+        $previous = $this->execution($project, ExecutionStatus::FAILED, 1);
+        $checkpoint = Checkpoint::query()->create([
+            'execution_id' => $previous->getKey(),
+            'step_key' => 'collect',
+            'type' => 'TOOL_STATE',
+            'resume_token' => 'opaque',
+            'validated' => true,
+        ]);
+        $resumed = $this->execution($project, ExecutionStatus::QUEUED, 2);
+        $resumed->update([
+            'resumed_from_execution_id' => $previous->getKey(),
+            'resume_checkpoint_id' => $checkpoint->getKey(),
+        ]);
+
+        $this->expectException(QueryException::class);
+
+        DB::table('checkpoints')
+            ->where('id', $checkpoint->getKey())
+            ->update(['validated' => false]);
+    }
+
+    public function test_resume_lineage_cannot_be_reassigned_after_it_is_valid(): void
+    {
+        $project = $this->project();
+        $firstPrevious = $this->execution($project, ExecutionStatus::FAILED, 1);
+        $firstCheckpoint = Checkpoint::query()->create([
+            'execution_id' => $firstPrevious->getKey(),
+            'step_key' => 'collect',
+            'type' => 'TOOL_STATE',
+            'resume_token' => 'first',
+            'validated' => true,
+        ]);
+        $secondPrevious = $this->execution($project, ExecutionStatus::FAILED, 2);
+        $secondCheckpoint = Checkpoint::query()->create([
+            'execution_id' => $secondPrevious->getKey(),
+            'step_key' => 'collect',
+            'type' => 'TOOL_STATE',
+            'resume_token' => 'second',
+            'validated' => true,
+        ]);
+        $resumed = $this->execution($project, ExecutionStatus::QUEUED, 3);
+        $resumed->update([
+            'resumed_from_execution_id' => $firstPrevious->getKey(),
+            'resume_checkpoint_id' => $firstCheckpoint->getKey(),
+        ]);
+
+        $this->expectException(QueryException::class);
+
+        DB::table('executions')
+            ->where('id', $resumed->getKey())
+            ->update([
+                'resumed_from_execution_id' => $secondPrevious->getKey(),
+                'resume_checkpoint_id' => $secondCheckpoint->getKey(),
+            ]);
     }
 }

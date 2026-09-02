@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Domain;
 
+use App\Enums\ConflictStatus;
 use App\Enums\EventSeverity;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -9,8 +10,12 @@ use App\Enums\MoodleInstanceRole;
 use App\Enums\ProjectStatus;
 use App\Enums\ServerRole;
 use App\Models\Artifact;
+use App\Models\Conflict;
+use App\Models\Execution;
 use App\Models\ExecutionCommand;
 use App\Models\ExecutionEvent;
+use App\Models\ExecutionLog;
+use App\Models\ExecutionStep;
 use App\Models\MoodleInstance;
 use App\Models\Server;
 use App\Models\Tool;
@@ -254,6 +259,70 @@ class DatabaseConstraintTest extends DomainTestCase
         DB::table('tools')->where('id', $tool->getKey())->delete();
     }
 
+    public function test_execution_log_rejects_a_step_from_another_execution_on_insert(): void
+    {
+        [$execution, , $foreignStep] = $this->executionStepPair();
+
+        $this->expectException(QueryException::class);
+
+        ExecutionLog::query()->create([
+            'execution_id' => $execution->getKey(),
+            'execution_step_id' => $foreignStep->getKey(),
+            'message' => 'crossed log',
+        ]);
+    }
+
+    public function test_execution_log_rejects_a_step_from_another_execution_on_update(): void
+    {
+        [$execution, $ownStep, $foreignStep] = $this->executionStepPair();
+        $log = ExecutionLog::query()->create([
+            'execution_id' => $execution->getKey(),
+            'execution_step_id' => $ownStep->getKey(),
+            'message' => 'valid log',
+        ]);
+
+        $this->expectException(QueryException::class);
+
+        DB::table('execution_logs')
+            ->where('id', $log->getKey())
+            ->update(['execution_step_id' => $foreignStep->getKey()]);
+    }
+
+    public function test_conflict_rejects_a_step_from_another_execution_on_insert(): void
+    {
+        [$execution, , $foreignStep] = $this->executionStepPair();
+
+        $this->expectException(QueryException::class);
+
+        Conflict::query()->create([
+            'execution_id' => $execution->getKey(),
+            'execution_step_id' => $foreignStep->getKey(),
+            'key' => 'crossed-conflict',
+            'type' => 'COURSE_NAME',
+            'status' => ConflictStatus::OPEN,
+            'details' => ['name' => 'Curso'],
+        ]);
+    }
+
+    public function test_conflict_rejects_a_step_from_another_execution_on_update(): void
+    {
+        [$execution, $ownStep, $foreignStep] = $this->executionStepPair();
+        $conflict = Conflict::query()->create([
+            'execution_id' => $execution->getKey(),
+            'execution_step_id' => $ownStep->getKey(),
+            'key' => 'valid-conflict',
+            'type' => 'COURSE_NAME',
+            'status' => ConflictStatus::OPEN,
+            'details' => ['name' => 'Curso'],
+        ]);
+
+        $this->expectException(QueryException::class);
+
+        DB::table('conflicts')
+            ->where('id', $conflict->getKey())
+            ->update(['execution_step_id' => $foreignStep->getKey()]);
+    }
+
     public function test_moodle_instance_cannot_reference_a_server_from_another_project(): void
     {
         $firstProject = $this->project();
@@ -272,5 +341,27 @@ class DatabaseConstraintTest extends DomainTestCase
             'name' => 'Instancia inválida',
             'role' => MoodleInstanceRole::SOURCE,
         ]);
+    }
+
+    /** @return array{0: Execution, 1: ExecutionStep, 2: ExecutionStep} */
+    private function executionStepPair(): array
+    {
+        $project = $this->project(status: ProjectStatus::FAILED);
+        $execution = $this->execution($project, ExecutionStatus::FAILED, 1);
+        $ownStep = ExecutionStep::query()->create([
+            'execution_id' => $execution->getKey(),
+            'step_key' => 'own-step',
+            'name' => 'Etapa propia',
+            'position' => 1,
+        ]);
+        $foreignExecution = $this->execution($project, ExecutionStatus::FAILED, 2);
+        $foreignStep = ExecutionStep::query()->create([
+            'execution_id' => $foreignExecution->getKey(),
+            'step_key' => 'foreign-step',
+            'name' => 'Etapa ajena',
+            'position' => 1,
+        ]);
+
+        return [$execution, $ownStep, $foreignStep];
     }
 }

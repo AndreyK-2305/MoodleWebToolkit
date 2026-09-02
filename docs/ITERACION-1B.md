@@ -4,12 +4,13 @@ Fecha de auditoría: 1 de septiembre de 2026.
 
 Rama auditada: `codex/1b-dominio`.
 
-## Veredicto
+## Estado de aceptación
 
-La implementación de 1B queda aceptada localmente después de corregir los
-defectos descritos en este informe. El segundo gate es GitHub Actions sobre el
-SHA exacto que contiene este documento; por eso su resultado y sus enlaces se
-consignan en la entrega final, una vez que ese SHA existe.
+La revisión posterior al primer CI detectó tres defectos adicionales y reabrió
+la aceptación de 1B. Este documento incorpora sus correcciones y regresiones,
+pero el veredicto final exige repetir toda la aceptación local y GitHub Actions
+sobre el nuevo SHA. El resultado remoto y sus enlaces se consignan en la entrega
+final, una vez que ese SHA existe.
 
 La revisión se limitó al dominio persistente de 1B. No se implementaron el
 Wizard, `FakeToolAdapter`, jobs de ejecución, ejecución de herramientas,
@@ -67,6 +68,12 @@ Se verificaron las siguientes reglas de base de datos:
 - consistencia proyecto-servidor de `MoodleInstance` mediante FK compuesta;
 - referencias de reanudación completas: checkpoint validado, perteneciente a
   la ejecución anterior, mismo proyecto e intento anterior menor;
+- identidad de Execution inmutable, linaje asignable una sola vez,
+  `validated` monotónico y Checkpoint inmutable después de ser referenciado;
+- locks `FOR SHARE` durante la creación del linaje para evitar que una
+  modificación concurrente invalide lo que el trigger acaba de comprobar;
+- FKs compuestas impiden que ExecutionLog o Conflict referencien una etapa de
+  otra ejecución, tanto al insertar como al actualizar;
 - checksums SHA-256 hexadecimales y tamaños de artefactos no negativos;
 - `AuditLog` append-only y `Execution` no eliminable en la base de datos;
 - proyecto `COMPLETED` y sus datos dependientes de solo lectura, incluyendo
@@ -86,7 +93,9 @@ Se revisaron todas las FKs y se corrigieron las cascadas con riesgo histórico:
   agregado;
 - `tools -> tool_versions` usa `RESTRICT` para preservar la identidad exacta de
   la versión;
-- referencias históricas de `AuditLog` usan `SET NULL`, no cascada;
+- referencias históricas de `AuditLog` usan `SET NULL`, no cascada. El trigger
+  append-only permite únicamente esa nulificación interna y anidada de la FK;
+  una actualización directa de los mismos campos continúa rechazada;
 - referencias opcionales a usuarios usan `SET NULL`, mientras el creador del
   proyecto usa `RESTRICT`;
 - retirar una asignación o eliminar un usuario sí elimina la asociación de
@@ -136,6 +145,13 @@ una etapa `SUCCESS` sin checkpoint validado no es reanudable. La base rechaza
 referencias parciales, checkpoints no validados, checkpoints de otra ejecución
 y ejecuciones anteriores de otro proyecto. No se implementó la reanudación
 completa.
+
+Después de crear una referencia válida, la ejecución propietaria del checkpoint
+no puede cambiar, la validación no puede revocarse y el checkpoint completo
+queda inmutable. También quedan inmutables `project_id`, UUID e intento de la
+ejecución origen, y el par `resumed_from_execution_id` / `resume_checkpoint_id`
+no puede reasignarse. Los campos ordinarios de lifecycle siguen sometidos a los
+servicios y al grafo de estados existente.
 
 `resume_token` usa un cast cifrado de Laravel, se oculta con `$hidden` y no
 aparece en arrays, JSON ni serializaciones anidadas de Execution. La prueba
@@ -190,11 +206,14 @@ los volúmenes habituales.
 | Revocación al retirar asignación                   | `AssignmentPermissionsTest`                                               | Aprobado        |
 | Token cifrado y serialización segura               | `DomainRelationsAndPrivacyTest`                                           | Aprobado        |
 | Checkpoint independiente y compatible              | `CheckpointIndependenceTest`                                              | Aprobado        |
+| Linaje inmutable después de referenciar            | cambios posteriores a Checkpoint y Execution origen                       | Aprobado        |
+| Log/Conflict sólo usan etapas de su ejecución      | inserciones y updates incompatibles en `DatabaseConstraintTest`           | Aprobado        |
 | Unicidad de comandos con nulos                     | `DatabaseConstraintTest`                                                  | Aprobado        |
 | Eventos únicos y monotónicos concurrentes          | 6 procesos en `PostgreSqlConcurrencyTest`                                 | Aprobado        |
 | Fallo de evento sin datos parciales                | `DomainRelationsAndPrivacyTest`                                           | Aprobado        |
 | `progress` nullable y rango 0..100                 | recorder + inserciones PostgreSQL inválidas                               | Aprobado        |
 | Historial protegido de cascadas                    | restricciones de borrado + `DatabaseConstraintTest`                       | Aprobado        |
+| AuditLog inmutable compatible con `SET NULL`       | borrado de Project DRAFT/usuario + update directo rechazado               | Aprobado        |
 | Regresión de autenticación/usuarios 1A             | suite PHPUnit completa                                                    | Aprobado        |
 
 ## Defectos encontrados y correcciones
@@ -210,6 +229,9 @@ los volúmenes habituales.
 | Los tipos `unsigned` de Laravel no imponen signo en PostgreSQL.                      | Se añadieron `CHECK` explícitos para versiones, intentos, posiciones, secuencias, contadores y tamaños.                                     |
 | El guard de `COMPLETED` sólo inspeccionaba el padre nuevo al reparentar.             | Ahora inspecciona padre anterior y nuevo; regresiones cubren mover Execution y Artifact.                                                    |
 | El workflow no invocaba ESLint explícitamente.                                       | Se añadió `npm run lint` sin retirar ni debilitar otros controles.                                                                          |
+| Un Checkpoint podía moverse o invalidarse después de ser referenciado.               | Checkpoint referenciado e identidad de Execution/linaje inmutables, validación monotónica y locks de lectura durante la referencia.         |
+| ExecutionLog y Conflict aceptaban una etapa perteneciente a otra Execution.          | FK compuesta `(execution_step_id, execution_id)` y regresiones de inserción/actualización para ambos registros.                             |
+| `AuditLog` append-only bloqueaba el `ON DELETE SET NULL` de sus propias FKs.         | Excepción estrecha para la acción referencial anidada; borrados permitidos pasan y los updates directos siguen bloqueados.                  |
 
 ## Comprobaciones locales ejecutadas
 
@@ -219,8 +241,8 @@ los volúmenes habituales.
 | `docker compose up -d --build --wait --wait-timeout 300`                   | 9 servicios `healthy`.                                                                                        |
 | `GET http://127.0.0.1:8080/login`                                          | HTTP 200 a través de Nginx.                                                                                   |
 | `php artisan migrate:fresh` con variables explícitas de `postgres-testing` | 9 migraciones aplicadas desde cero.                                                                           |
-| `php artisan test tests/Feature/Domain`                                    | 59 pruebas, 186 aserciones, aprobado.                                                                         |
-| `php artisan test`                                                         | 104 pruebas, 358 aserciones, aprobado.                                                                        |
+| `php artisan test tests/Feature/Domain`                                    | 70 pruebas, 204 aserciones, aprobado después de las correcciones.                                             |
+| `php artisan test`                                                         | 115 pruebas, 376 aserciones, aprobado después de las correcciones.                                            |
 | `composer lint:check`                                                      | 127 archivos, aprobado.                                                                                       |
 | `composer types:check`                                                     | 97 archivos, 0 errores.                                                                                       |
 | `npm run check`                                                            | 76 archivos con formato correcto; 66 archivos sin warnings ni errores.                                        |
@@ -242,6 +264,11 @@ Larastan, Vite Plus, TypeScript, build y las dos verificaciones de `BaseLine/`.
 La auditoría añadió la invocación explícita de ESLint. El resultado remoto no se
 anticipa dentro del mismo commit que debe evaluar: la respuesta de entrega
 identifica el SHA inmutable, el PR y la ejecución de CI correspondiente.
+
+El run `33586608426` aprobó el SHA anterior
+`ee60f850553641c6a6346627dd6d601f86a95e45`, pero quedó superado por los tres
+hallazgos posteriores y no se usa como aceptación de estas correcciones. Se
+requiere un nuevo run sobre el nuevo SHA.
 
 ## Desviaciones y limitaciones
 
