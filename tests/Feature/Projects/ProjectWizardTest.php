@@ -3,6 +3,8 @@
 namespace Tests\Feature\Projects;
 
 use App\Domain\Projects\ProjectAssignmentManager;
+use App\Domain\Projects\ProjectWizard;
+use App\Domain\Projects\SimulatedUrlSafety;
 use App\Enums\MoodleInstanceRole;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
@@ -14,6 +16,7 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
 
@@ -222,7 +225,7 @@ class ProjectWizardTest extends TestCase
     {
         $operator = $this->user(UserRole::OPERATOR);
         $project = $this->createProject($operator, ProjectType::COLLECT);
-        $unsafeUrl = 'https://demo:dummy_password@moodle.test';
+        $unsafeUrl = 'https://demo:dummy_password@moodle.test:443';
         $payload = [
             ...$this->instancePayload('SOURCE', 31),
             'base_url' => $unsafeUrl,
@@ -273,6 +276,159 @@ class ProjectWizardTest extends TestCase
                 ->where('project.instances.0.base_url', '')
                 ->where('project.preflight.checks.6.id', 'simulation.no_secrets')
                 ->where('project.preflight.checks.6.result', 'ERROR'));
+    }
+
+    public function test_url_safety_policy_never_treats_parser_failures_as_safe(): void
+    {
+        $urlSafety = app(SimulatedUrlSafety::class);
+        $safeUrl = 'https://moodle.test:8443/campus';
+
+        $this->assertSame($safeUrl, $urlSafety->safeDisplayValue($safeUrl));
+        $this->assertSame('', $urlSafety->safeDisplayValue('https://demo:dummy_password@moodle.test:443'));
+        $this->assertSame('', $urlSafety->safeDisplayValue('https://demo:dummy_password@moodle.test:99999'));
+        $this->assertSame('', $urlSafety->safeDisplayValue('https://moodle.test:99999'));
+    }
+
+    public function test_controller_rejects_an_unparseable_credential_url_without_leaking_it(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $unsafeUrl = 'https://demo:dummy_password@moodle.test:99999';
+        $payload = [
+            ...$this->instancePayload('SOURCE', 32),
+            'base_url' => $unsafeUrl,
+        ];
+
+        $response = $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$payload]]);
+
+        $response->assertSessionHasErrors('instances.0.base_url');
+        $messages = implode(' ', session('errors')->get('instances.0.base_url'));
+        $this->assertStringNotContainsString('dummy_password', $messages);
+        $this->assertStringNotContainsString($unsafeUrl, $messages);
+        $this->assertSame(0, $project->moodleInstances()->count());
+    }
+
+    public function test_controller_rejects_an_invalid_port_without_credentials(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $unsafeUrl = 'https://moodle.test:99999';
+        $payload = [
+            ...$this->instancePayload('SOURCE', 34),
+            'base_url' => $unsafeUrl,
+        ];
+
+        $response = $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$payload]]);
+
+        $response->assertSessionHasErrors('instances.0.base_url');
+        $messages = implode(' ', session('errors')->get('instances.0.base_url'));
+        $this->assertStringNotContainsString($unsafeUrl, $messages);
+        $this->assertSame(0, $project->moodleInstances()->count());
+    }
+
+    public function test_domain_service_rejects_an_invalid_port_without_credentials(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $unsafeUrl = 'https://moodle.test:99999';
+        $payload = [
+            ...$this->instancePayload('SOURCE', 33),
+            'base_url' => $unsafeUrl,
+        ];
+        $exception = null;
+
+        try {
+            app(ProjectWizard::class)->saveInstances($project, $operator, [$payload]);
+        } catch (ValidationException $caught) {
+            $exception = $caught;
+        }
+
+        $this->assertNotNull($exception, 'El servicio de dominio aceptó una URL con puerto inválido.');
+        $messages = json_encode($exception->errors(), JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString($unsafeUrl, $messages);
+        $this->assertDatabaseMissing('moodle_instances', ['project_id' => $project->getKey()]);
+    }
+
+    public function test_domain_service_rejects_credentials_with_a_valid_port(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $unsafeUrl = 'https://demo:dummy_password@moodle.test:443';
+        $payload = [
+            ...$this->instancePayload('SOURCE', 35),
+            'base_url' => $unsafeUrl,
+        ];
+        $exception = null;
+
+        try {
+            app(ProjectWizard::class)->saveInstances($project, $operator, [$payload]);
+        } catch (ValidationException $caught) {
+            $exception = $caught;
+        }
+
+        $this->assertNotNull($exception, 'El servicio de dominio aceptó credenciales incrustadas.');
+        $messages = json_encode($exception->errors(), JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('dummy_password', $messages);
+        $this->assertStringNotContainsString($unsafeUrl, $messages);
+        $this->assertDatabaseMissing('moodle_instances', ['project_id' => $project->getKey()]);
+    }
+
+    public function test_unparseable_legacy_urls_fail_preflight_and_are_redacted_for_every_role(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $admin = $this->user(UserRole::ADMIN);
+        $auditor = $this->user(UserRole::AUDITOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $unsafeUrl = 'https://demo:dummy_password@moodle.test:99999';
+        $server = $project->servers()->create([
+            'name' => 'Servidor legado no interpretable',
+            'role' => ServerRole::SOURCE,
+            'host' => 'moodle.test',
+            'metadata' => ['simulated' => true],
+        ]);
+        $project->moodleInstances()->create([
+            'server_id' => $server->getKey(),
+            'name' => 'Moodle legado no interpretable',
+            'role' => MoodleInstanceRole::SOURCE,
+            'base_url' => $unsafeUrl,
+            'moodle_version' => '4.5',
+            'validated' => true,
+            'metadata' => ['simulated' => true],
+        ]);
+        app(ProjectAssignmentManager::class)->assign($project, $auditor, $admin);
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.options', $project->uuid), $this->optionsPayload(ProjectType::COLLECT, 'SUCCESS'))
+            ->assertSessionHasNoErrors();
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.preflight', $project->uuid))
+            ->assertSessionHasNoErrors();
+
+        foreach ([$admin, $operator, $auditor] as $viewer) {
+            $this->actingAs($viewer)
+                ->get(route('projects.show', $project->uuid))
+                ->assertOk()
+                ->assertDontSee('dummy_password')
+                ->assertDontSee($unsafeUrl)
+                ->assertInertia(fn (Assert $page) => $page
+                    ->where('project.instances.0.base_url', '')
+                    ->where('project.preflight.checks.6.id', 'simulation.no_secrets')
+                    ->where('project.preflight.checks.6.result', 'ERROR'));
+        }
+
+        $noSecrets = collect($project->fresh()->configuration->settings['preflight']['checks'])
+            ->firstWhere('id', 'simulation.no_secrets');
+        $this->assertSame('ERROR', $noSecrets['result']);
+        $this->assertStringNotContainsString('dummy_password', $noSecrets['detail']);
+        $this->assertStringNotContainsString($unsafeUrl, $noSecrets['detail']);
+        $auditPayload = json_encode(
+            AuditLog::query()->where('project_id', $project->getKey())->pluck('payload')->all(),
+            JSON_THROW_ON_ERROR,
+        );
+        $this->assertStringNotContainsString('dummy_password', $auditPayload);
+        $this->assertStringNotContainsString($unsafeUrl, $auditPayload);
     }
 
     public function test_draft_can_be_incomplete_but_invalid_cardinalities_are_rejected(): void
@@ -422,6 +578,20 @@ class ProjectWizardTest extends TestCase
         $this->assertSame($version, $audit->payload['configuration_version']);
         $this->assertSame(['simulation.capacity'], $audit->payload['checks']);
         $this->assertSame(ProjectStatus::READY, $project->fresh()->status);
+
+        $confirmedSettings = $project->fresh()->configuration->settings;
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.preflight', $project->uuid))
+            ->assertSessionHasNoErrors();
+
+        $configuration = $project->fresh()->configuration;
+        $this->assertSame(ProjectStatus::READY, $project->fresh()->status);
+        $this->assertSame($version, $configuration->version);
+        $this->assertSame($confirmedSettings['confirmation'], $configuration->settings['confirmation']);
+        $this->assertSame(1, AuditLog::query()
+            ->where('project_id', $project->getKey())
+            ->where('action', 'PROJECT_WARNINGS_ACCEPTED')
+            ->count());
     }
 
     public function test_configuration_change_invalidates_preflight_and_old_warning_acceptance(): void
@@ -512,6 +682,139 @@ class ProjectWizardTest extends TestCase
             ->where('action', 'PROJECT_CONFIGURATION_CONFIRMED')
             ->count());
         $this->assertSame($initialProjects + 1, Project::query()->count());
+        $this->assertSame($initialExecutions, DB::table('executions')->count());
+        $this->assertSame($initialCommands, DB::table('execution_commands')->count());
+        $this->assertSame($initialJobs, DB::table('jobs')->count());
+    }
+
+    public function test_error_preflight_invalidates_a_ready_legacy_confirmation_atomically(): void
+    {
+        $initialExecutions = DB::table('executions')->count();
+        $initialCommands = DB::table('execution_commands')->count();
+        $initialJobs = DB::table('jobs')->count();
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $this->configure($operator, $project, 'SUCCESS');
+        $version = $project->fresh()->configuration->version;
+
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.confirm', $project->uuid), [
+                'configuration_version' => $version,
+                'accepted_warning_ids' => [],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $unsafeUrl = 'https://demo:dummy_password@moodle.test:99999';
+        $project->moodleInstances()->firstOrFail()->update(['base_url' => $unsafeUrl]);
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.preflight', $project->uuid))
+            ->assertSessionHasNoErrors();
+
+        $configuration = $project->fresh()->configuration;
+        $noSecrets = collect($configuration->settings['preflight']['checks'])
+            ->firstWhere('id', 'simulation.no_secrets');
+        $this->assertSame(ProjectStatus::CONFIGURING, $project->fresh()->status);
+        $this->assertSame($version, $configuration->version);
+        $this->assertNull($configuration->settings['confirmation']);
+        $this->assertSame('ERROR', $noSecrets['result']);
+        $this->assertSame(1, AuditLog::query()
+            ->where('project_id', $project->getKey())
+            ->where('action', 'PROJECT_CONFIGURATION_CONFIRMED')
+            ->count());
+        $invalidation = AuditLog::query()
+            ->where('project_id', $project->getKey())
+            ->where('action', 'PROJECT_CONFIRMATION_INVALIDATED')
+            ->sole();
+        $auditPayload = json_encode($invalidation->payload, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('dummy_password', $auditPayload);
+        $this->assertStringNotContainsString($unsafeUrl, $auditPayload);
+        $this->assertSame($initialExecutions, DB::table('executions')->count());
+        $this->assertSame($initialCommands, DB::table('execution_commands')->count());
+        $this->assertSame($initialJobs, DB::table('jobs')->count());
+    }
+
+    public function test_changed_preflight_fingerprint_and_warnings_invalidate_ready_without_incrementing_version(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $this->configure($operator, $project, 'WARNING');
+        $configuration = $project->fresh()->configuration;
+        $version = $configuration->version;
+
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.confirm', $project->uuid), [
+                'configuration_version' => $version,
+                'accepted_warning_ids' => ['simulation.capacity'],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $settings = $configuration->fresh()->settings;
+        $settings['options']['simulation_scenario'] = 'SUCCESS';
+        $configuration->settings = $settings;
+        $configuration->save();
+
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.preflight', $project->uuid))
+            ->assertSessionHasNoErrors();
+
+        $configuration = $project->fresh()->configuration;
+        $this->assertSame(ProjectStatus::CONFIGURING, $project->fresh()->status);
+        $this->assertSame($version, $configuration->version);
+        $this->assertNull($configuration->settings['confirmation']);
+        $this->assertDatabaseHas('audit_logs', [
+            'project_id' => $project->getKey(),
+            'action' => 'PROJECT_CONFIRMATION_INVALIDATED',
+        ]);
+    }
+
+    public function test_corrected_legacy_url_can_be_preflighted_and_confirmed_again_without_1d_records(): void
+    {
+        $initialExecutions = DB::table('executions')->count();
+        $initialCommands = DB::table('execution_commands')->count();
+        $initialJobs = DB::table('jobs')->count();
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $this->configure($operator, $project, 'SUCCESS');
+        $version = $project->fresh()->configuration->version;
+
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.confirm', $project->uuid), [
+                'configuration_version' => $version,
+                'accepted_warning_ids' => [],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $instance = $project->moodleInstances()->with('server')->firstOrFail();
+        $instance->update(['base_url' => 'https://demo:dummy_password@moodle.test:99999']);
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.preflight', $project->uuid))
+            ->assertSessionHasNoErrors();
+        $this->assertSame(ProjectStatus::CONFIGURING, $project->fresh()->status);
+
+        $corrected = [
+            ...$this->persistedInstancePayload($instance->fresh()),
+            'base_url' => 'https://corrected.test:8443',
+        ];
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$corrected]])
+            ->assertSessionHasNoErrors();
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.preflight', $project->uuid))
+            ->assertSessionHasNoErrors();
+
+        $configuration = $project->fresh()->configuration;
+        $this->assertNotContains(
+            'ERROR',
+            collect($configuration->settings['preflight']['checks'])->pluck('result')->all(),
+        );
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.confirm', $project->uuid), [
+                'configuration_version' => $configuration->version,
+                'accepted_warning_ids' => [],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(ProjectStatus::READY, $project->fresh()->status);
         $this->assertSame($initialExecutions, DB::table('executions')->count());
         $this->assertSame($initialCommands, DB::table('execution_commands')->count());
         $this->assertSame($initialJobs, DB::table('jobs')->count());

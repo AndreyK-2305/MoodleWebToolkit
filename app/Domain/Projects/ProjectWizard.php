@@ -182,18 +182,31 @@ class ProjectWizard
             $locked->load(['moodleInstances.server']);
             $checks = $this->preflight->evaluate($locked, $configuration);
             $settings = $this->settings($configuration);
+            $configurationHash = $this->preflight->fingerprint($locked, $configuration);
+            $invalidationReasons = $locked->status === ProjectStatus::READY
+                ? $this->confirmationInvalidationReasons($configuration, $settings, $configurationHash, $checks)
+                : [];
             $settings['wizard_step'] = 5;
             $settings['preflight'] = [
                 'configuration_version' => $configuration->version,
-                'configuration_hash' => $this->preflight->fingerprint($locked, $configuration),
+                'configuration_hash' => $configurationHash,
                 'checked_at' => now()->toIso8601String(),
                 'checks' => $checks,
             ];
-            if ($locked->status !== ProjectStatus::READY) {
+            if ($locked->status !== ProjectStatus::READY || $invalidationReasons !== []) {
                 $settings['confirmation'] = null;
             }
             $configuration->settings = $settings;
             $configuration->save();
+
+            if ($invalidationReasons !== []) {
+                $locked->transitionTo(ProjectStatus::CONFIGURING);
+                $this->audit($actor, $locked, 'PROJECT_CONFIRMATION_INVALIDATED', [
+                    'configuration_version' => $configuration->version,
+                    'reasons' => $invalidationReasons,
+                    'preflight_error_checks' => $this->checkIdsByResult($checks, 'ERROR'),
+                ]);
+            }
 
             $this->audit($actor, $locked, 'PROJECT_PREFLIGHT_COMPLETED', [
                 'configuration_version' => $configuration->version,
@@ -415,6 +428,81 @@ class ProjectWizard
     }
 
     /**
+     * @param  array<string, mixed>  $settings
+     * @param  list<array{id: string, description: string, result: string, detail: string}>  $checks
+     * @return list<string>
+     */
+    private function confirmationInvalidationReasons(
+        ProjectConfiguration $configuration,
+        array $settings,
+        string $configurationHash,
+        array $checks,
+    ): array {
+        $reasons = [];
+        $storedPreflight = $settings['preflight'] ?? null;
+        $confirmation = $settings['confirmation'] ?? null;
+
+        if ($this->checkIdsByResult($checks, 'ERROR') !== []) {
+            $reasons[] = 'PREFLIGHT_ERRORS';
+        }
+
+        if (! is_array($storedPreflight)
+            || ! is_array($confirmation)
+            || ($storedPreflight['configuration_version'] ?? null) !== $configuration->version
+            || ($confirmation['configuration_version'] ?? null) !== $configuration->version
+        ) {
+            $reasons[] = 'CONFIRMATION_STALE';
+        }
+
+        if (! is_array($storedPreflight)
+            || ($storedPreflight['configuration_hash'] ?? null) !== $configurationHash
+        ) {
+            $reasons[] = 'CONFIGURATION_FINGERPRINT_CHANGED';
+        }
+
+        $storedChecks = is_array($storedPreflight) ? ($storedPreflight['checks'] ?? null) : null;
+
+        if (! is_array($storedChecks)
+            || collect($storedChecks)->contains(
+                fn (mixed $check): bool => is_array($check) && ($check['result'] ?? null) === 'ERROR',
+            )
+        ) {
+            $reasons[] = 'PREVIOUS_PREFLIGHT_INVALID';
+        }
+
+        $storedAcceptedWarnings = is_array($confirmation)
+            && is_array($confirmation['accepted_warning_ids'] ?? null)
+                ? $confirmation['accepted_warning_ids']
+                : [];
+        $acceptedWarnings = collect($storedAcceptedWarnings)
+            ->map(fn (mixed $id): string => (string) $id)
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
+
+        if ($acceptedWarnings !== $this->checkIdsByResult($checks, 'WARNING')) {
+            $reasons[] = 'WARNINGS_CHANGED';
+        }
+
+        return array_values(array_unique($reasons));
+    }
+
+    /**
+     * @param  list<array{id: string, description: string, result: string, detail: string}>  $checks
+     * @return list<string>
+     */
+    private function checkIdsByResult(array $checks, string $result): array
+    {
+        return array_values(collect($checks)
+            ->filter(fn (array $check): bool => $check['result'] === $result)
+            ->map(fn (array $check): string => $check['id'])
+            ->sort()
+            ->values()
+            ->all());
+    }
+
+    /**
      * @param  array<string, mixed>  $instance
      * @return array<string, mixed>
      */
@@ -484,12 +572,8 @@ class ProjectWizard
                 $messages["instances.{$index}.uuid"] = 'Las referencias de instancia y servidor deben enviarse juntas.';
             }
 
-            if (mb_strlen((string) $instance['base_url']) > 255) {
-                $messages["instances.{$index}.base_url"] = 'La URL no puede superar 255 caracteres.';
-            }
-
-            if ($this->urlSafety->hasEmbeddedCredentials((string) $instance['base_url'])) {
-                $messages["instances.{$index}.base_url"] = 'La URL no puede incluir usuario ni contraseña.';
+            if (($urlError = $this->urlSafety->validationError((string) $instance['base_url'])) !== null) {
+                $messages["instances.{$index}.base_url"] = $urlError;
             }
         }
 

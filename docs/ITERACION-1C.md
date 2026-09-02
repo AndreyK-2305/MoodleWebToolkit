@@ -115,6 +115,36 @@ entrega. Se corrigieron sin ampliar el alcance hacia 1D:
   valor tampoco se entrega en las propiedades Inertia, incluidas las consultas
   de AUDITOR.
 
+Una segunda revisión sobre `cc0aa45009e2bee112dfef9e8ec7d3170a2dc5cc`
+detectó dos defectos adicionales. Antes de modificar la implementación se
+añadieron regresiones que reprodujeron 7 fallos y dejaron 18 pruebas aprobadas
+(292 aserciones):
+
+- `https://demo:dummy_password@moodle.test:99999` y una URL sin credenciales con
+  el mismo puerto atravesaban la validación. Cuando `parse_url()` devolvía
+  `false`, la política asumía incorrectamente que no había credenciales y la
+  serialización devolvía el valor completo;
+- repetir el preflight de un proyecto `READY` conservaba el estado y la
+  confirmación aunque apareciera un `ERROR` o la huella y las advertencias ya no
+  correspondieran.
+
+La corrección centraliza en `SimulatedUrlSafety` la validez y seguridad de las
+URL: exige HTTP/HTTPS, host interpretable, puerto entre 1 y 65535 cuando exista,
+ausencia de usuario o contraseña y un máximo de 255 caracteres. Un fallo del
+parser se considera inseguro. Controlador, servicio de dominio, preflight y
+serialización consumen esa misma política. Los registros legados inválidos
+producen `ERROR` y su URL se oculta para ADMIN, OPERATOR y AUDITOR; los mensajes
+de formulario, preflight y auditoría sólo incluyen diagnósticos genéricos.
+
+`runPreflight()` calcula la vigencia de la confirmación antes de reemplazar el
+preflight almacenado. En la misma transacción persiste las comprobaciones nuevas
+y, si hay errores o dejaron de coincidir versión, huella o advertencias, elimina
+la confirmación, devuelve el proyecto a `CONFIGURING` y registra
+`PROJECT_CONFIRMATION_INVALIDATED` con códigos y IDs de checks no sensibles. Un
+preflight válido repetido sin cambios conserva `READY`, versión, confirmación y
+aceptaciones sin duplicarlas. Corregir una URL legada, repetir el preflight y
+confirmar permite volver a `READY`.
+
 ## Permisos comprobados
 
 | Rol        | Comportamiento en 1C                                                                                |
@@ -153,7 +183,7 @@ ninguna ejecución asociada.
 
 ## Pruebas de aceptación
 
-`ProjectWizardTest` añade 18 pruebas y 254 aserciones que cubren:
+`ProjectWizardTest` contiene 27 pruebas y 377 aserciones que cubren:
 
 - creación y configuración de los tres tipos;
 - asignación atómica del OPERATOR y ausencia de asignación redundante para
@@ -161,15 +191,20 @@ ninguna ejecución asociada.
 - persistencia del paso y los datos al volver a abrir el proyecto;
 - reemplazo conservando nombres e intercambio de nombres de instancias y
   servidores;
-- límites 255/256 de URL y rechazo de credenciales incrustadas;
-- preflight efectivo y serialización segura ante un registro legado inseguro;
+- límites 255/256, URL segura, credenciales con puerto válido o inválido y
+  puerto inválido sin credenciales, tanto en HTTP como directamente en dominio;
+- preflight efectivo y serialización segura ante registros legados inválidos o
+  inseguros para ADMIN, OPERATOR y AUDITOR;
 - borradores incompletos, cardinalidades inválidas, destinos incompatibles y
   referencias entre proyectos;
 - acceso de AUDITOR asignado, denegación de escritura y denegación total a no
   asignados;
 - bloqueo por `ERROR`, aceptación y auditoría de `WARNING`;
 - invalidación por cambios y rechazo mediante versión o huella obsoleta;
-- transición idempotente a `READY`;
+- invalidación transaccional de confirmaciones `READY` por errores, huella o
+  advertencias nuevas, con recuperación posterior mediante nueva confirmación;
+- transición idempotente a `READY`, sin incrementar versión al repetir el
+  preflight ni duplicar confirmación o aceptación de advertencias;
 - ausencia de nuevas filas en `executions`, `execution_commands` y `jobs`;
 - protecciones HTTP de `REVIEW` y `COMPLETED`;
 - visibilidad del listado por rol.
@@ -179,7 +214,9 @@ ninguna ejecución asociada.
 | Comando o comprobación                                                     | Resultado real                                                                                    |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `php artisan migrate:fresh` con variables explícitas de `postgres-testing` | 9 migraciones aplicadas desde cero exclusivamente en la base aislada                              |
-| `php artisan test`                                                         | 133 pruebas, 630 aserciones, aprobado                                                             |
+| Regresiones antes de la corrección                                         | 7 fallidas, 18 aprobadas, 292 aserciones; ambos defectos reproducidos                             |
+| Regresiones después de la corrección                                       | 27 pruebas, 377 aserciones, aprobado                                                              |
+| `php artisan test`                                                         | 142 pruebas, 753 aserciones, aprobado                                                             |
 | `composer lint:check`                                                      | 134 archivos, aprobado                                                                            |
 | `composer types:check`                                                     | 103 archivos, 0 errores                                                                           |
 | `npm run check`                                                            | 78 archivos con formato correcto; 67 sin warnings ni errores                                      |

@@ -24,8 +24,8 @@ class SimulatedPreflight
         $instances = $project->moodleInstances;
         $errors = $this->configurationErrors($project, $configuration);
         $scenario = $settings['options']['simulation_scenario'] ?? null;
-        $hasEmbeddedCredentials = $instances->contains(
-            fn (MoodleInstance $instance): bool => $this->urlSafety->hasEmbeddedCredentials($instance->base_url),
+        $hasUnsafeUrls = $instances->contains(
+            fn (MoodleInstance $instance): bool => ! $this->urlSafety->isSafe($instance->base_url),
         );
 
         $checks = [
@@ -68,10 +68,10 @@ class SimulatedPreflight
             $this->check(
                 'simulation.no_secrets',
                 'Configuración sin secretos reales',
-                $hasEmbeddedCredentials ? PreflightResult::ERROR : PreflightResult::SUCCESS,
-                $hasEmbeddedCredentials
-                    ? 'Se detectaron credenciales incrustadas en una URL. Sustituya la URL antes de confirmar.'
-                    : 'Las URL y metadatos simulados no contienen credenciales incrustadas; el wizard no solicita secretos.',
+                $hasUnsafeUrls ? PreflightResult::ERROR : PreflightResult::SUCCESS,
+                $hasUnsafeUrls
+                    ? 'Se detectaron URL simuladas inválidas o inseguras. Sustitúyalas antes de confirmar.'
+                    : 'Las URL simuladas son válidas y no contienen credenciales incrustadas; el wizard no solicita secretos.',
             ),
         ];
 
@@ -117,8 +117,8 @@ class SimulatedPreflight
                 $errors[] = "La instancia {$instance->name} no está validada en la simulación.";
             }
 
-            if ($this->urlSafety->hasEmbeddedCredentials($instance->base_url)) {
-                $errors[] = 'Las URL simuladas no pueden incluir usuario ni contraseña.';
+            if (! $this->urlSafety->isSafe($instance->base_url)) {
+                $errors[] = 'Las URL simuladas deben ser HTTP o HTTPS válidas, usar puertos válidos y no incluir credenciales.';
             }
         }
 

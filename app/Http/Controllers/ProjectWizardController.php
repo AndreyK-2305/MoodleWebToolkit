@@ -53,11 +53,9 @@ class ProjectWizardController extends Controller
             'instances.*.base_url' => [
                 'required',
                 'string',
-                'url:http,https',
-                'max:255',
-                function (string $attribute, mixed $value, Closure $fail) use ($urlSafety): void {
-                    if (is_string($value) && $urlSafety->hasEmbeddedCredentials($value)) {
-                        $fail('La URL no puede incluir usuario ni contraseña.');
+                function (string $_attribute, mixed $value, Closure $fail) use ($urlSafety): void {
+                    if (is_string($value) && ($error = $urlSafety->validationError($value)) !== null) {
+                        $fail($error);
                     }
                 },
             ],
@@ -66,7 +64,6 @@ class ProjectWizardController extends Controller
             'instances.*.destination_kind' => ['nullable', Rule::in(['PREPARED', 'EXISTING_CONSOLIDATED'])],
         ], [
             'instances.*.server_host.regex' => 'Use un host simulado válido, sin protocolo ni ruta.',
-            'instances.*.base_url.url' => 'Use una URL HTTP o HTTPS válida.',
         ]);
         /** @var User $actor */
         $actor = $request->user();
