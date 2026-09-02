@@ -24,6 +24,8 @@ iteración 1B, sin anticipar entidades ni flujos de migración.
   correo, passkeys y segundo factor provistos por Laravel Fortify.
 - Registro público deshabilitado.
 - Usuarios inactivos bloqueados tanto al autenticar como durante una sesión.
+- Los correos se recortan y normalizan a minúsculas antes de validar, guardar y
+  autenticar. Las variantes de capitalización no pueden crear duplicados.
 - Una contraseña temporal obliga a cambiarla antes de entrar al resto de la
   aplicación.
 - Comando interactivo e idempotente `php artisan app:create-admin` para crear o
@@ -72,7 +74,14 @@ de Windows sea funcional.
 Reverb y el worker. La comprobación reproducible está en
 `tests/Infrastructure/verify-baseline-readonly.ps1`. La prueba complementaria
 `tests/Infrastructure/verify-baseline-integrity.ps1` comprueba los 131 archivos
-contra la huella canónica previa a esta intervención.
+contra la huella canónica previa a esta intervención. La prueba de solo lectura
+comprueba primero que cada contenedor está activo y puede acceder al directorio;
+solo acepta como resultado válido el error `read-only file system` al intentar
+escribir, evitando falsos positivos si un servicio está detenido.
+
+El workflow de CI construye y levanta la misma composición Docker del entorno
+local. De esta forma usa PHP 8.4 y las dos instancias PostgreSQL declaradas por el
+proyecto, sin depender del PHP, Node.js ni bases de datos instalados en el runner.
 
 Reverb y el worker están en ejecución, pero 1A no publica eventos funcionales ni
 despacha trabajos del dominio; eso comenzará en iteraciones posteriores.
@@ -94,7 +103,7 @@ No existen migraciones para `Project`, `Server`, `MoodleInstance`, `Execution`,
 | Aplicación y pantalla `/login`          | HTTP 200; módulos Vite cargados sin errores CORS ni de consola   |
 | Migraciones                             | 6 aplicadas en PostgreSQL                                        |
 | Administrador inicial                   | Segunda ejecución actualiza; queda exactamente un `ADMIN` activo |
-| PHPUnit                                 | 41 pruebas, 158 aserciones, todas aprobadas                      |
+| PHPUnit                                 | 45 pruebas, 172 aserciones, todas aprobadas                      |
 | Base PostgreSQL de PHPUnit              | `current_database() = moodle_toolkit_testing`                    |
 | Laravel Pint                            | Aprobado sobre el código de la plataforma                        |
 | Larastan/PHPStan                        | 0 errores                                                        |
@@ -104,7 +113,7 @@ No existen migraciones para `Project`, `Server`, `MoodleInstance`, `Execution`,
 | Build de producción                     | Aprobado                                                         |
 | `docker compose config --quiet`         | Aprobado                                                         |
 | Servicios Docker                        | 9 servicios `healthy`, incluido worker, Reverb, app y Nginx      |
-| `BaseLine/`                             | Escritura rechazada desde los 5 servicios que la montan          |
+| `BaseLine/`                             | Accesible y escritura rechazada por `read-only` en 5 servicios   |
 | Log Laravel tras recorrido normal       | 0 bytes; 0 errores nuevos                                        |
 
 PHPUnit se ejecuta contra `moodle_toolkit_testing` en `postgres-testing`; la

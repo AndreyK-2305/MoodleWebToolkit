@@ -39,7 +39,7 @@ class FortifyServiceProvider extends ServiceProvider
         $this->configureRateLimiting();
 
         Fortify::authenticateUsing(function (Request $request): ?User {
-            $user = User::query()->where('email', mb_strtolower((string) $request->email))->first();
+            $user = User::query()->where('email', User::normalizeEmail((string) $request->email))->first();
 
             return $user && $user->is_active && Hash::check((string) $request->password, $user->password)
                 ? $user

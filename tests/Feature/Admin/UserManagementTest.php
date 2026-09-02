@@ -26,7 +26,7 @@ class UserManagementTest extends TestCase
 
         $this->actingAs($admin)->post(route('admin.users.store'), [
             'name' => 'Operador Moodle',
-            'email' => 'operador@example.com',
+            'email' => ' Operador@Example.COM ',
             'role' => UserRole::OPERATOR->value,
             'password' => 'Temporal12345',
             'password_confirmation' => 'Temporal12345',
@@ -38,6 +38,22 @@ class UserManagementTest extends TestCase
             'is_active' => true,
             'must_change_password' => true,
         ]);
+    }
+
+    public function test_admin_cannot_create_a_case_variant_of_an_existing_email(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        User::factory()->create(['email' => 'existing@example.com']);
+
+        $this->actingAs($admin)->post(route('admin.users.store'), [
+            'name' => 'Correo duplicado',
+            'email' => 'Existing@Example.COM',
+            'role' => UserRole::AUDITOR->value,
+            'password' => 'Temporal12345',
+            'password_confirmation' => 'Temporal12345',
+        ])->assertSessionHasErrors('email');
+
+        $this->assertSame(1, User::query()->where('email', 'existing@example.com')->count());
     }
 
     public function test_admin_cannot_deactivate_or_demote_their_own_account(): void

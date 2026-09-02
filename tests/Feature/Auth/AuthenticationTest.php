@@ -32,6 +32,19 @@ class AuthenticationTest extends TestCase
         $response->assertRedirect(route('dashboard', absolute: false));
     }
 
+    public function test_email_login_is_case_insensitive_and_trims_input(): void
+    {
+        User::factory()->create(['email' => 'operator@example.com']);
+
+        $response = $this->post(route('login.store'), [
+            'email' => ' Operator@Example.COM ',
+            'password' => 'password',
+        ]);
+
+        $this->assertAuthenticated();
+        $response->assertRedirect(route('dashboard', absolute: false));
+    }
+
     public function test_users_with_two_factor_enabled_are_redirected_to_two_factor_challenge()
     {
         $this->skipUnlessFortifyHas(Features::twoFactorAuthentication());

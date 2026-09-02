@@ -19,6 +19,8 @@ class CreateNewUser implements CreatesNewUsers
      */
     public function create(array $input): User
     {
+        $input['email'] = User::normalizeEmail($input['email'] ?? '');
+
         Validator::make($input, [
             ...$this->profileRules(),
             'password' => $this->passwordRules(),

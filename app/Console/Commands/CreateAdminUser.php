@@ -16,7 +16,7 @@ class CreateAdminUser extends Command
     public function handle(): int
     {
         $name = (string) ($this->option('name') ?: $this->ask('Nombre completo'));
-        $email = mb_strtolower((string) ($this->option('email') ?: $this->ask('Correo electrónico')));
+        $email = User::normalizeEmail((string) ($this->option('email') ?: $this->ask('Correo electrónico')));
         $existing = User::query()->where('email', $email)->first();
         $password = $this->option('password');
 
