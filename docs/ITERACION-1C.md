@@ -96,6 +96,25 @@ identificadores aceptados y versión. La acción posterior
 transacción. Repetir una confirmación ya válida es idempotente y no duplica
 auditoría ni crea efectos de ejecución.
 
+## Correcciones posteriores a revisión
+
+La revisión del SHA `4c0a65c` identificó tres casos no cubiertos por la primera
+entrega. Se corrigieron sin ampliar el alcance hacia 1D:
+
+- la sincronización resuelve primero todas las referencias, elimina el conjunto
+  descartado y usa nombres transitorios únicos para los registros conservados
+  antes de aplicar el estado final. Esto permite reemplazar una instancia
+  conservando sus nombres e intercambiar nombres entre instancias o servidores
+  sin violar los índices únicos de PostgreSQL;
+- `base_url` admite como máximo 255 caracteres, exactamente la longitud de la
+  columna existente. Se comprobaron los límites de 255 aceptado y 256 rechazado
+  mediante un error de formulario controlado;
+- las URL con usuario o contraseña incrustados se rechazan tanto en la ruta como
+  en el servicio de dominio. `simulation.no_secrets` inspecciona los datos
+  persistidos y devuelve `ERROR` si encuentra un registro legado inseguro; su
+  valor tampoco se entrega en las propiedades Inertia, incluidas las consultas
+  de AUDITOR.
+
 ## Permisos comprobados
 
 | Rol        | Comportamiento en 1C                                                                                |
@@ -134,12 +153,16 @@ ninguna ejecución asociada.
 
 ## Pruebas de aceptación
 
-`ProjectWizardTest` añade 14 pruebas que cubren:
+`ProjectWizardTest` añade 18 pruebas y 254 aserciones que cubren:
 
 - creación y configuración de los tres tipos;
 - asignación atómica del OPERATOR y ausencia de asignación redundante para
   ADMIN;
 - persistencia del paso y los datos al volver a abrir el proyecto;
+- reemplazo conservando nombres e intercambio de nombres de instancias y
+  servidores;
+- límites 255/256 de URL y rechazo de credenciales incrustadas;
+- preflight efectivo y serialización segura ante un registro legado inseguro;
 - borradores incompletos, cardinalidades inválidas, destinos incompatibles y
   referencias entre proyectos;
 - acceso de AUDITOR asignado, denegación de escritura y denegación total a no
@@ -156,9 +179,9 @@ ninguna ejecución asociada.
 | Comando o comprobación                                                     | Resultado real                                                                                    |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `php artisan migrate:fresh` con variables explícitas de `postgres-testing` | 9 migraciones aplicadas desde cero exclusivamente en la base aislada                              |
-| `php artisan test`                                                         | 129 pruebas, 583 aserciones, aprobado                                                             |
-| `composer lint:check`                                                      | 133 archivos, aprobado                                                                            |
-| `composer types:check`                                                     | 102 archivos, 0 errores                                                                           |
+| `php artisan test`                                                         | 133 pruebas, 630 aserciones, aprobado                                                             |
+| `composer lint:check`                                                      | 134 archivos, aprobado                                                                            |
+| `composer types:check`                                                     | 103 archivos, 0 errores                                                                           |
 | `npm run check`                                                            | 78 archivos con formato correcto; 67 sin warnings ni errores                                      |
 | `npm run lint`                                                             | aprobado, cero warnings permitidos                                                                |
 | `npm run types:check`                                                      | aprobado                                                                                          |

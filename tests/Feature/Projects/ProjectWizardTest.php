@@ -3,10 +3,13 @@
 namespace Tests\Feature\Projects;
 
 use App\Domain\Projects\ProjectAssignmentManager;
+use App\Enums\MoodleInstanceRole;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
+use App\Enums\ServerRole;
 use App\Enums\UserRole;
 use App\Models\AuditLog;
+use App\Models\MoodleInstance;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -110,6 +113,166 @@ class ProjectWizardTest extends TestCase
                 ->where('project.preflight.configuration_version', 3)
                 ->has('project.instances', 2)
                 ->has('project.preflight.checks', 7));
+    }
+
+    public function test_saved_instance_can_be_replaced_while_reusing_its_unique_names(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $originalPayload = $this->instancePayload('SOURCE', 1);
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$originalPayload]])
+            ->assertSessionHasNoErrors();
+
+        $original = $project->moodleInstances()->with('server')->firstOrFail();
+        $replacementPayload = [
+            ...$originalPayload,
+            'server_host' => 'replacement.test',
+            'base_url' => 'https://replacement.test',
+        ];
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$replacementPayload]])
+            ->assertSessionHasNoErrors();
+
+        $replacement = $project->moodleInstances()->with('server')->firstOrFail();
+        $this->assertSame(1, $project->moodleInstances()->count());
+        $this->assertNotSame($original->uuid, $replacement->uuid);
+        $this->assertFalse(MoodleInstance::query()->where('uuid', $original->uuid)->exists());
+        $this->assertSame($originalPayload['name'], $replacement->name);
+        $this->assertSame($originalPayload['server_name'], $replacement->server->name);
+        $this->assertSame('replacement.test', $replacement->server->host);
+    }
+
+    public function test_saved_instances_and_servers_can_exchange_unique_names(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::CONSOLIDATE);
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), [
+                'instances' => [
+                    $this->instancePayload('SOURCE', 11),
+                    $this->instancePayload('SOURCE', 12),
+                    $this->instancePayload('DESTINATION', 13, 'PREPARED'),
+                ],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $instances = $project->moodleInstances()->with('server')->orderBy('id')->get();
+        $sources = $instances
+            ->filter(fn (MoodleInstance $instance): bool => $instance->role === MoodleInstanceRole::SOURCE)
+            ->values();
+        $destination = $instances
+            ->first(fn (MoodleInstance $instance): bool => $instance->role === MoodleInstanceRole::DESTINATION);
+        $first = $this->persistedInstancePayload($sources[0]);
+        $second = $this->persistedInstancePayload($sources[1]);
+        $destinationPayload = $this->persistedInstancePayload($destination);
+        [$first['name'], $second['name']] = [$second['name'], $first['name']];
+        [$first['server_name'], $second['server_name']] = [$second['server_name'], $first['server_name']];
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), [
+                'instances' => [$first, $second, $destinationPayload],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $firstSaved = MoodleInstance::query()->with('server')->where('uuid', $first['uuid'])->firstOrFail();
+        $secondSaved = MoodleInstance::query()->with('server')->where('uuid', $second['uuid'])->firstOrFail();
+        $this->assertSame($first['name'], $firstSaved->name);
+        $this->assertSame($first['server_name'], $firstSaved->server->name);
+        $this->assertSame($second['name'], $secondSaved->name);
+        $this->assertSame($second['server_name'], $secondSaved->server->name);
+        $this->assertSame(3, $project->moodleInstances()->count());
+    }
+
+    public function test_base_url_validation_matches_the_database_limit_at_both_boundaries(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $prefix = 'https://moodle.test/';
+        $maximumUrl = $prefix.str_repeat('a', 255 - mb_strlen($prefix));
+        $this->assertSame(255, mb_strlen($maximumUrl));
+        $payload = [
+            ...$this->instancePayload('SOURCE', 21),
+            'base_url' => $maximumUrl,
+        ];
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$payload]])
+            ->assertSessionHasNoErrors();
+
+        $saved = $project->moodleInstances()->with('server')->firstOrFail();
+        $this->assertSame($maximumUrl, $saved->base_url);
+        $tooLong = [
+            ...$this->persistedInstancePayload($saved),
+            'base_url' => $maximumUrl.'a',
+        ];
+        $this->assertSame(256, mb_strlen($tooLong['base_url']));
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$tooLong]])
+            ->assertSessionHasErrors('instances.0.base_url');
+
+        $this->assertSame($maximumUrl, $saved->fresh()->base_url);
+    }
+
+    public function test_embedded_url_credentials_are_rejected_and_the_preflight_check_is_effective(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $unsafeUrl = 'https://demo:dummy_password@moodle.test';
+        $payload = [
+            ...$this->instancePayload('SOURCE', 31),
+            'base_url' => $unsafeUrl,
+        ];
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$payload]])
+            ->assertSessionHasErrors('instances.0.base_url');
+        $this->assertSame(0, $project->moodleInstances()->count());
+
+        $server = $project->servers()->create([
+            'name' => 'Servidor legado inseguro',
+            'role' => ServerRole::SOURCE,
+            'host' => 'moodle.test',
+            'metadata' => ['simulated' => true],
+        ]);
+        $project->moodleInstances()->create([
+            'server_id' => $server->getKey(),
+            'name' => 'Moodle legado inseguro',
+            'role' => MoodleInstanceRole::SOURCE,
+            'base_url' => $unsafeUrl,
+            'moodle_version' => '4.5',
+            'validated' => true,
+            'metadata' => ['simulated' => true],
+        ]);
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.options', $project->uuid), $this->optionsPayload(ProjectType::COLLECT, 'SUCCESS'))
+            ->assertSessionHasNoErrors();
+        $this->actingAs($operator)
+            ->post(route('projects.wizard.preflight', $project->uuid))
+            ->assertSessionHasNoErrors();
+
+        $checks = $project->fresh()->configuration->settings['preflight']['checks'];
+        $noSecrets = collect($checks)->firstWhere('id', 'simulation.no_secrets');
+        $this->assertSame('ERROR', $noSecrets['result']);
+        $this->assertStringNotContainsString('dummy_password', $noSecrets['detail']);
+
+        $admin = $this->user(UserRole::ADMIN);
+        $auditor = $this->user(UserRole::AUDITOR);
+        app(ProjectAssignmentManager::class)->assign($project, $auditor, $admin);
+        $response = $this->actingAs($auditor)->get(route('projects.show', $project->uuid));
+
+        $response
+            ->assertOk()
+            ->assertDontSee('dummy_password')
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('project.instances.0.base_url', '')
+                ->where('project.preflight.checks.6.id', 'simulation.no_secrets')
+                ->where('project.preflight.checks.6.result', 'ERROR'));
     }
 
     public function test_draft_can_be_incomplete_but_invalid_cardinalities_are_rejected(): void
@@ -502,6 +665,27 @@ class ProjectWizardTest extends TestCase
             'moodle_version' => '4.5',
             'validated' => true,
             'destination_kind' => $destinationKind,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function persistedInstancePayload(MoodleInstance $instance): array
+    {
+        $instance->loadMissing('server');
+
+        return [
+            'uuid' => $instance->uuid,
+            'server_uuid' => $instance->server->uuid,
+            'role' => $instance->role->value,
+            'server_name' => $instance->server->name,
+            'server_host' => $instance->server->host,
+            'name' => $instance->name,
+            'base_url' => $instance->base_url,
+            'moodle_version' => $instance->moodle_version,
+            'validated' => $instance->validated,
+            'destination_kind' => is_array($instance->metadata)
+                ? ($instance->metadata['destination_kind'] ?? null)
+                : null,
         ];
     }
 }

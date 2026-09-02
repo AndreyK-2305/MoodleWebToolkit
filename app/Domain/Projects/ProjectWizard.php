@@ -16,11 +16,15 @@ use App\Models\Server;
 use App\Models\User;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class ProjectWizard
 {
-    public function __construct(private readonly SimulatedPreflight $preflight) {}
+    public function __construct(
+        private readonly SimulatedPreflight $preflight,
+        private readonly SimulatedUrlSafety $urlSafety,
+    ) {}
 
     /** @param array{name: string, type: string, description?: string|null} $data */
     public function create(User $actor, array $data): Project
@@ -479,6 +483,14 @@ class ProjectWizard
             if (($instance['uuid'] === null) !== ($instance['server_uuid'] === null)) {
                 $messages["instances.{$index}.uuid"] = 'Las referencias de instancia y servidor deben enviarse juntas.';
             }
+
+            if (mb_strlen((string) $instance['base_url']) > 255) {
+                $messages["instances.{$index}.base_url"] = 'La URL no puede superar 255 caracteres.';
+            }
+
+            if ($this->urlSafety->hasEmbeddedCredentials((string) $instance['base_url'])) {
+                $messages["instances.{$index}.base_url"] = 'La URL no puede incluir usuario ni contraseña.';
+            }
         }
 
         foreach (['name', 'server_name', 'server_host', 'base_url'] as $field) {
@@ -495,6 +507,12 @@ class ProjectWizard
             $messages['instances'] = 'Una instancia simulada no puede aparecer más de una vez.';
         }
 
+        $referencedServerUuids = collect($instances)->pluck('server_uuid')->filter();
+
+        if ($referencedServerUuids->duplicates()->isNotEmpty()) {
+            $messages['instances'] = 'Un servidor simulado no puede aparecer más de una vez.';
+        }
+
         if ($messages !== []) {
             throw ValidationException::withMessages($messages);
         }
@@ -509,10 +527,8 @@ class ProjectWizard
             ->with('server')
             ->where('project_id', $project->getKey())
             ->lockForUpdate()
-            ->get()
-            ->keyBy('uuid');
-        $keptInstanceIds = [];
-        $keptServerIds = [];
+            ->get();
+        $resolved = [];
 
         foreach ($instances as $index => $data) {
             $instance = null;
@@ -545,6 +561,54 @@ class ProjectWizard
                     ]);
                 }
             }
+
+            $resolved[] = [
+                'data' => $data,
+                'instance' => $instance,
+                'server' => $server,
+            ];
+        }
+
+        $keptInstanceIds = collect($resolved)
+            ->pluck('instance')
+            ->filter()
+            ->map(fn (MoodleInstance $instance): int => (int) $instance->getKey())
+            ->all();
+        $keptServerIds = collect($resolved)
+            ->pluck('server')
+            ->filter()
+            ->map(fn (Server $server): int => (int) $server->getKey())
+            ->unique()
+            ->all();
+        $removed = $existing->reject(
+            fn (MoodleInstance $instance): bool => in_array($instance->getKey(), $keptInstanceIds, true),
+        );
+        $removedServers = $removed
+            ->pluck('server')
+            ->filter()
+            ->unique(fn (Server $server): int => (int) $server->getKey());
+
+        foreach ($removed as $instance) {
+            $instance->delete();
+        }
+
+        foreach ($removedServers as $server) {
+            if (! in_array($server->getKey(), $keptServerIds, true) && ! $server->moodleInstances()->exists()) {
+                $server->delete();
+            }
+        }
+
+        $syncToken = Str::uuid()->toString();
+
+        foreach ($resolved as $index => $item) {
+            $item['instance']?->update(['name' => "__wizard_sync_instance_{$index}_{$syncToken}"]);
+            $item['server']?->update(['name' => "__wizard_sync_server_{$index}_{$syncToken}"]);
+        }
+
+        foreach ($resolved as $item) {
+            $data = $item['data'];
+            $instance = $item['instance'];
+            $server = $item['server'];
 
             $role = MoodleInstanceRole::from((string) $data['role']);
             $serverRole = $role === MoodleInstanceRole::SOURCE ? ServerRole::SOURCE : ServerRole::DESTINATION;
@@ -586,20 +650,6 @@ class ProjectWizard
                 ]);
             } else {
                 $instance->update($instanceAttributes);
-            }
-
-            $keptInstanceIds[] = (int) $instance->getKey();
-            $keptServerIds[] = (int) $server->getKey();
-        }
-
-        $removed = $existing->reject(fn (MoodleInstance $instance): bool => in_array($instance->getKey(), $keptInstanceIds, true));
-
-        foreach ($removed as $instance) {
-            $server = $instance->server;
-            $instance->delete();
-
-            if ($server !== null && ! in_array($server->getKey(), $keptServerIds, true)) {
-                $server->delete();
             }
         }
     }

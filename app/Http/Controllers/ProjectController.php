@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Projects\ProjectWizard;
+use App\Domain\Projects\SimulatedUrlSafety;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
 use App\Models\MoodleInstance;
@@ -70,8 +71,12 @@ class ProjectController extends Controller
         return to_route('projects.show', $project->uuid);
     }
 
-    public function show(Request $request, Project $project, ProjectWizard $wizard): Response
-    {
+    public function show(
+        Request $request,
+        Project $project,
+        ProjectWizard $wizard,
+        SimulatedUrlSafety $urlSafety,
+    ): Response {
         Gate::authorize('view', $project);
         /** @var User $actor */
         $actor = $request->user();
@@ -103,7 +108,7 @@ class ProjectController extends Controller
                         'server_name' => $instance->server?->name,
                         'server_host' => $instance->server?->host,
                         'name' => $instance->name,
-                        'base_url' => $instance->base_url,
+                        'base_url' => $urlSafety->safeDisplayValue($instance->base_url),
                         'moodle_version' => $instance->moodle_version,
                         'validated' => $instance->validated,
                         'destination_kind' => is_array($instance->metadata)

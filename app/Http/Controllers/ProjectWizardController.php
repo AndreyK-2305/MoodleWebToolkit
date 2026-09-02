@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Projects\ProjectWizard;
+use App\Domain\Projects\SimulatedUrlSafety;
 use App\Enums\MoodleInstanceRole;
 use App\Enums\ProjectType;
 use App\Models\Project;
 use App\Models\User;
+use Closure;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -33,8 +35,12 @@ class ProjectWizardController extends Controller
         return to_route('projects.show', $project->uuid);
     }
 
-    public function instances(Request $request, Project $project, ProjectWizard $wizard): RedirectResponse
-    {
+    public function instances(
+        Request $request,
+        Project $project,
+        ProjectWizard $wizard,
+        SimulatedUrlSafety $urlSafety,
+    ): RedirectResponse {
         Gate::authorize('update', $project);
         $validated = $request->validate([
             'instances' => ['present', 'array', 'max:12'],
@@ -44,7 +50,17 @@ class ProjectWizardController extends Controller
             'instances.*.server_name' => ['required', 'string', 'max:120'],
             'instances.*.server_host' => ['required', 'string', 'max:253', 'regex:/^[a-zA-Z0-9.-]+$/'],
             'instances.*.name' => ['required', 'string', 'max:120'],
-            'instances.*.base_url' => ['required', 'url:http,https', 'max:2048'],
+            'instances.*.base_url' => [
+                'required',
+                'string',
+                'url:http,https',
+                'max:255',
+                function (string $attribute, mixed $value, Closure $fail) use ($urlSafety): void {
+                    if (is_string($value) && $urlSafety->hasEmbeddedCredentials($value)) {
+                        $fail('La URL no puede incluir usuario ni contraseña.');
+                    }
+                },
+            ],
             'instances.*.moodle_version' => ['required', 'string', 'max:40', 'regex:/^\d+\.\d+(?:\.\d+)?$/'],
             'instances.*.validated' => ['required', 'boolean'],
             'instances.*.destination_kind' => ['nullable', Rule::in(['PREPARED', 'EXISTING_CONSOLIDATED'])],

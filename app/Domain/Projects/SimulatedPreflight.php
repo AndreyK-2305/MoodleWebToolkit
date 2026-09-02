@@ -12,6 +12,8 @@ use Illuminate\Support\Collection;
 
 class SimulatedPreflight
 {
+    public function __construct(private readonly SimulatedUrlSafety $urlSafety) {}
+
     /**
      * @return list<array{id: string, description: string, result: string, detail: string}>
      */
@@ -22,6 +24,9 @@ class SimulatedPreflight
         $instances = $project->moodleInstances;
         $errors = $this->configurationErrors($project, $configuration);
         $scenario = $settings['options']['simulation_scenario'] ?? null;
+        $hasEmbeddedCredentials = $instances->contains(
+            fn (MoodleInstance $instance): bool => $this->urlSafety->hasEmbeddedCredentials($instance->base_url),
+        );
 
         $checks = [
             $this->check(
@@ -63,8 +68,10 @@ class SimulatedPreflight
             $this->check(
                 'simulation.no_secrets',
                 'Configuración sin secretos reales',
-                PreflightResult::SUCCESS,
-                'El wizard sólo usa metadatos simulados y no solicita credenciales, tokens ni claves privadas.',
+                $hasEmbeddedCredentials ? PreflightResult::ERROR : PreflightResult::SUCCESS,
+                $hasEmbeddedCredentials
+                    ? 'Se detectaron credenciales incrustadas en una URL. Sustituya la URL antes de confirmar.'
+                    : 'Las URL y metadatos simulados no contienen credenciales incrustadas; el wizard no solicita secretos.',
             ),
         ];
 
@@ -108,6 +115,10 @@ class SimulatedPreflight
 
             if (! $instance->validated) {
                 $errors[] = "La instancia {$instance->name} no está validada en la simulación.";
+            }
+
+            if ($this->urlSafety->hasEmbeddedCredentials($instance->base_url)) {
+                $errors[] = 'Las URL simuladas no pueden incluir usuario ni contraseña.';
             }
         }
 
