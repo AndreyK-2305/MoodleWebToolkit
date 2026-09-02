@@ -8,7 +8,7 @@ $baselineRoot = (Resolve-Path -LiteralPath 'BaseLine').Path
 $paths = New-Object 'System.Collections.Generic.List[string]'
 $rowsByPath = @{}
 
-Get-ChildItem -LiteralPath $baselineRoot -Recurse -File | ForEach-Object {
+Get-ChildItem -LiteralPath $baselineRoot -Recurse -File -Force | ForEach-Object {
     $relativePath = $_.FullName.Substring($baselineRoot.Length + 1).Replace('\', '/')
     $contentHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 
