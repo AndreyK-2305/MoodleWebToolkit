@@ -7,6 +7,20 @@ use App\Models\Concerns\HasPublicUuid;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property int $id
+ * @property int $project_id
+ * @property int $server_id
+ * @property string $uuid
+ * @property string $name
+ * @property MoodleInstanceRole $role
+ * @property string|null $base_url
+ * @property string|null $moodle_version
+ * @property string|null $database_name
+ * @property bool $validated
+ * @property array<string, mixed>|null $metadata
+ * @property-read Server|null $server
+ */
 class MoodleInstance extends Model
 {
     use HasPublicUuid;

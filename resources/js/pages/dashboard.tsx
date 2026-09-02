@@ -1,17 +1,37 @@
 import { Head } from '@inertiajs/react';
-import { Activity, Container, Radio, Users } from 'lucide-react';
+import {
+    Activity,
+    CheckCircle2,
+    FolderKanban,
+    Settings2,
+    Users,
+} from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { dashboard } from '@/routes';
 
 type Props = {
     userCounts: { total: number; active: number; admins: number } | null;
+    projectCounts: { total: number; configuring: number; ready: number };
 };
 
-export default function Dashboard({ userCounts }: Props) {
+export default function Dashboard({ userCounts, projectCounts }: Props) {
     const cards = [
         { label: 'Aplicación', value: 'Operativa', icon: Activity },
-        { label: 'Contenedores', value: '9 servicios', icon: Container },
-        { label: 'Tiempo real', value: 'Reverb listo', icon: Radio },
+        {
+            label: 'Proyectos visibles',
+            value: String(projectCounts.total),
+            icon: FolderKanban,
+        },
+        {
+            label: 'En configuración',
+            value: String(projectCounts.configuring),
+            icon: Settings2,
+        },
+        {
+            label: 'Listos',
+            value: String(projectCounts.ready),
+            icon: CheckCircle2,
+        },
         ...(userCounts
             ? [
                   {
@@ -29,15 +49,15 @@ export default function Dashboard({ userCounts }: Props) {
             <div className="flex h-full flex-1 flex-col gap-6 overflow-x-auto rounded-xl p-4 md:p-6">
                 <div>
                     <p className="text-sm font-medium text-amber-600 dark:text-amber-400">
-                        Iteración 1A
+                        Iteración 1C
                     </p>
                     <h1 className="text-2xl font-semibold tracking-tight">
-                        Base de la plataforma lista
+                        Gestión de migraciones Moodle
                     </h1>
                     <p className="text-muted-foreground mt-1 max-w-2xl text-sm">
-                        Autenticación cerrada, roles, infraestructura y tema
-                        visual preparados para construir el dominio en la
-                        siguiente iteración.
+                        Configure proyectos persistentes mediante el wizard y
+                        valide sus datos con un preflight completamente
+                        simulado.
                     </p>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -58,11 +78,12 @@ export default function Dashboard({ userCounts }: Props) {
                     ))}
                 </div>
                 <div className="border-border bg-card rounded-xl border p-6">
-                    <h2 className="font-semibold">Alcance actual</h2>
+                    <h2 className="font-semibold">Alcance de esta entrega</h2>
                     <p className="text-muted-foreground mt-2 text-sm">
-                        Esta entrega no contiene proyectos, servidores,
-                        instancias Moodle ni ejecuciones. Esos conceptos
-                        comienzan en 1B.
+                        La confirmación deja los proyectos en READY. No crea
+                        ejecuciones, no despacha jobs y no se conecta a
+                        servidores; esas capacidades corresponden a 1D y cortes
+                        posteriores.
                     </p>
                 </div>
             </div>

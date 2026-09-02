@@ -17,20 +17,20 @@ class NavigationPagesTest extends TestCase
     private function pages(): array
     {
         return [
-            'projects.index' => 'projects',
+            'projects.index' => 'projects/index',
             'manuals.index' => 'manuals',
             'about' => 'about',
         ];
     }
 
-    public function test_guests_cannot_open_placeholder_pages(): void
+    public function test_guests_cannot_open_navigation_pages(): void
     {
         foreach ($this->pages() as $routeName => $component) {
             $this->get(route($routeName))->assertRedirect(route('login'));
         }
     }
 
-    public function test_authenticated_users_can_open_placeholder_pages(): void
+    public function test_authenticated_users_can_open_navigation_pages(): void
     {
         $user = User::factory()->create();
 

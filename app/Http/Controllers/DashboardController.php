@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\ProjectStatus;
 use App\Enums\UserRole;
+use App\Models\Project;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -12,9 +14,10 @@ class DashboardController extends Controller
 {
     public function __invoke(Request $request): Response
     {
+        $actor = $request->user();
         $userCounts = null;
 
-        if ($request->user()->isAdmin()) {
+        if ($actor->isAdmin()) {
             $userCounts = [
                 'total' => User::query()->count(),
                 'active' => User::query()->where('is_active', true)->count(),
@@ -22,6 +25,18 @@ class DashboardController extends Controller
             ];
         }
 
-        return Inertia::render('dashboard', ['userCounts' => $userCounts]);
+        $visibleProjects = Project::query()->visibleTo($actor);
+        $projectCounts = [
+            'total' => (clone $visibleProjects)->count(),
+            'configuring' => (clone $visibleProjects)
+                ->whereIn('status', [ProjectStatus::DRAFT, ProjectStatus::CONFIGURING])
+                ->count(),
+            'ready' => (clone $visibleProjects)->where('status', ProjectStatus::READY)->count(),
+        ];
+
+        return Inertia::render('dashboard', [
+            'userCounts' => $userCounts,
+            'projectCounts' => $projectCounts,
+        ]);
     }
 }
