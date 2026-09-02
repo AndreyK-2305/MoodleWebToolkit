@@ -1,0 +1,66 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use LogicException;
+
+class Checkpoint extends Model
+{
+    public const UPDATED_AT = null;
+
+    protected $fillable = ['execution_id', 'step_key', 'type', 'resume_token', 'validated', 'metadata'];
+
+    protected $hidden = ['resume_token'];
+
+    protected static function booted(): void
+    {
+        static::updating(function (self $checkpoint): void {
+            if ($checkpoint->isDirty('execution_id')) {
+                throw new LogicException('La ejecución propietaria de un checkpoint es inmutable.');
+            }
+
+            if ($checkpoint->getRawOriginal('validated') === true && $checkpoint->validated === false) {
+                throw new LogicException('La validación de un checkpoint no se puede revocar.');
+            }
+
+            if ($checkpoint->isDirty() && $checkpoint->resumedExecutions()->exists()) {
+                throw new LogicException('Un checkpoint ya referenciado es inmutable.');
+            }
+        });
+
+        static::deleting(function (self $checkpoint): void {
+            if ($checkpoint->resumedExecutions()->exists()) {
+                throw new LogicException('Un checkpoint ya referenciado no se puede eliminar.');
+            }
+        });
+    }
+
+    public function isResumable(): bool
+    {
+        return $this->validated;
+    }
+
+    /** @return BelongsTo<Execution, $this> */
+    public function execution(): BelongsTo
+    {
+        return $this->belongsTo(Execution::class);
+    }
+
+    /** @return HasMany<Execution, $this> */
+    public function resumedExecutions(): HasMany
+    {
+        return $this->hasMany(Execution::class, 'resume_checkpoint_id');
+    }
+
+    protected function casts(): array
+    {
+        return [
+            'resume_token' => 'encrypted',
+            'validated' => 'boolean',
+            'metadata' => 'array',
+        ];
+    }
+}
