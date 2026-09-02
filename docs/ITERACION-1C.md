@@ -64,11 +64,11 @@ lo devuelve a `CONFIGURING` e invalida la confirmación.
 
 ## Reglas de los tres tipos
 
-| Tipo | Instancias exigidas al confirmar | Destino |
-| --- | --- | --- |
-| Recolectar | exactamente un origen | no admite destino |
-| Consolidar | dos o más orígenes y exactamente un destino | Moodle preparado y validado, sólo como referencia |
-| Integrar | exactamente un origen y exactamente un destino | Moodle consolidado existente y validado, sólo como referencia |
+| Tipo       | Instancias exigidas al confirmar               | Destino                                                       |
+| ---------- | ---------------------------------------------- | ------------------------------------------------------------- |
+| Recolectar | exactamente un origen                          | no admite destino                                             |
+| Consolidar | dos o más orígenes y exactamente un destino    | Moodle preparado y validado, sólo como referencia             |
+| Integrar   | exactamente un origen y exactamente un destino | Moodle consolidado existente y validado, sólo como referencia |
 
 El paso de instancias admite guardar un conjunto incompleto como borrador, pero
 rechaza exceso de cardinalidad, roles o tipos de destino incompatibles,
@@ -98,11 +98,11 @@ auditoría ni crea efectos de ejecución.
 
 ## Permisos comprobados
 
-| Rol | Comportamiento en 1C |
-| --- | --- |
-| `ADMIN` | lista y configura todos los proyectos; conserva administración global de asignaciones |
+| Rol        | Comportamiento en 1C                                                                                |
+| ---------- | --------------------------------------------------------------------------------------------------- |
+| `ADMIN`    | lista y configura todos los proyectos; conserva administración global de asignaciones               |
 | `OPERATOR` | crea proyectos y configura sólo los asignados; queda asignado únicamente a su propio proyecto nuevo |
-| `AUDITOR` | lista y consulta sólo proyectos asignados; no crea, modifica, ejecuta preflight ni confirma |
+| `AUDITOR`  | lista y consulta sólo proyectos asignados; no crea, modifica, ejecuta preflight ni confirma         |
 
 La ausencia o manipulación de controles en la interfaz no amplía permisos: las
 rutas directas de datos básicos, instancias, opciones, preflight y confirmación
@@ -153,19 +153,19 @@ ninguna ejecución asociada.
 
 ## Comprobaciones locales ejecutadas
 
-| Comando o comprobación | Resultado real |
-| --- | --- |
-| `php artisan migrate:fresh` con variables explícitas de `postgres-testing` | 9 migraciones aplicadas desde cero exclusivamente en la base aislada |
-| `php artisan test` | 129 pruebas, 583 aserciones, aprobado |
-| `composer lint:check` | 133 archivos, aprobado |
-| `composer types:check` | 102 archivos, 0 errores |
-| `npm run check` | 77 archivos con formato correcto; 67 sin warnings ni errores |
-| `npm run lint` | aprobado, cero warnings permitidos |
-| `npm run types:check` | aprobado |
-| `npm run build` | 2313 módulos transformados, aprobado |
-| `docker compose config --quiet` | aprobado |
-| Integridad de `BaseLine/` | 131 archivos; huella `5a996439d8432e13abecbc4ebf57f12654d15e14afef8b1160fe55dcf82ae1d3` |
-| Sólo lectura de `BaseLine/` | escritura rechazada por filesystem read-only en `app`, `queue-worker`, `reverb`, `vite` y `nginx` |
+| Comando o comprobación                                                     | Resultado real                                                                                    |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `php artisan migrate:fresh` con variables explícitas de `postgres-testing` | 9 migraciones aplicadas desde cero exclusivamente en la base aislada                              |
+| `php artisan test`                                                         | 129 pruebas, 583 aserciones, aprobado                                                             |
+| `composer lint:check`                                                      | 133 archivos, aprobado                                                                            |
+| `composer types:check`                                                     | 102 archivos, 0 errores                                                                           |
+| `npm run check`                                                            | 78 archivos con formato correcto; 67 sin warnings ni errores                                      |
+| `npm run lint`                                                             | aprobado, cero warnings permitidos                                                                |
+| `npm run types:check`                                                      | aprobado                                                                                          |
+| `npm run build`                                                            | 2313 módulos transformados, aprobado                                                              |
+| `docker compose config --quiet`                                            | aprobado                                                                                          |
+| Integridad de `BaseLine/`                                                  | 131 archivos; huella `5a996439d8432e13abecbc4ebf57f12654d15e14afef8b1160fe55dcf82ae1d3`           |
+| Sólo lectura de `BaseLine/`                                                | escritura rechazada por filesystem read-only en `app`, `queue-worker`, `reverb`, `vite` y `nginx` |
 
 La recreación destructiva se dirigió únicamente a
 `moodle_toolkit_testing`/`postgres-testing`; no se reiniciaron ni eliminaron los
