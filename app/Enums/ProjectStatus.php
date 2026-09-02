@@ -17,6 +17,24 @@ enum ProjectStatus: string
     case REVIEW = 'REVIEW';
     case COMPLETED = 'COMPLETED';
 
+    public function label(): string
+    {
+        return match ($this) {
+            self::DRAFT => 'Borrador',
+            self::CONFIGURING => 'En configuración',
+            self::READY => 'Listo',
+            self::QUEUED => 'En cola',
+            self::RUNNING => 'En curso',
+            self::WAITING_USER_ACTION => 'Requiere intervención',
+            self::CANCELLING => 'Cancelando',
+            self::CANCELLED => 'Cancelado',
+            self::FAILED => 'Fallido',
+            self::VERIFYING => 'Verificando',
+            self::REVIEW => 'En revisión',
+            self::COMPLETED => 'Completado',
+        };
+    }
+
     public function isTerminal(): bool
     {
         return $this === self::COMPLETED;

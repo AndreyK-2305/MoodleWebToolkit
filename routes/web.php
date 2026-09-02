@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\ProjectController;
+use App\Http\Controllers\ProjectWizardController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -9,7 +11,14 @@ Route::get('/', fn (Request $request) => redirect()->route($request->user() ? 'd
 
 Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(function () {
     Route::get('dashboard', DashboardController::class)->name('dashboard');
-    Route::inertia('projects', 'projects')->name('projects.index');
+    Route::get('projects', [ProjectController::class, 'index'])->name('projects.index');
+    Route::post('projects', [ProjectController::class, 'store'])->name('projects.store');
+    Route::get('projects/{project:uuid}', [ProjectController::class, 'show'])->name('projects.show');
+    Route::patch('projects/{project:uuid}/wizard/basics', [ProjectWizardController::class, 'basics'])->name('projects.wizard.basics');
+    Route::put('projects/{project:uuid}/wizard/instances', [ProjectWizardController::class, 'instances'])->name('projects.wizard.instances');
+    Route::put('projects/{project:uuid}/wizard/options', [ProjectWizardController::class, 'options'])->name('projects.wizard.options');
+    Route::post('projects/{project:uuid}/wizard/preflight', [ProjectWizardController::class, 'preflight'])->name('projects.wizard.preflight');
+    Route::post('projects/{project:uuid}/wizard/confirm', [ProjectWizardController::class, 'confirm'])->name('projects.wizard.confirm');
     Route::inertia('manuals', 'manuals')->name('manuals.index');
     Route::inertia('about', 'about')->name('about');
 
