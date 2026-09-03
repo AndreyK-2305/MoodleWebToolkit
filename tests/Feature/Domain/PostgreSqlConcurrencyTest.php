@@ -2,17 +2,26 @@
 
 namespace Tests\Feature\Domain;
 
+use App\Domain\Executions\ExecutionCommandLease;
+use App\Domain\Executions\ExecutionUnitState;
+use App\Domain\Executions\StartProjectExecution;
 use App\Domain\Projects\ProjectWizard;
+use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionStatus;
+use App\Enums\ExecutionStepStatus;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
 use App\Enums\UserRole;
 use App\Exceptions\ExecutionAlreadyActive;
+use App\Models\AuditLog;
 use App\Models\Execution;
+use App\Models\ExecutionCommand;
+use App\Models\ExecutionLog;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use JsonException;
 use Symfony\Component\Process\Process;
@@ -140,6 +149,58 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertSame(1, DB::table('execution_commands')->count());
     }
 
+    public function test_two_reconcilers_close_one_abandoned_command_exactly_once(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution, $command] = $this->claimedExecution($admin, expired: true);
+
+        $results = $this->runConcurrently([
+            ['recover-abandoned', (int) $command->getKey(), null],
+            ['recover-abandoned', (int) $command->getKey(), null],
+        ]);
+
+        $this->assertSame([], array_values(array_filter($results, fn (array $result): bool => $result['status'] !== 'ok')));
+        $this->assertSame([0, 0], collect($results)->pluck('exit_code')->all());
+        $this->assertNotNull($command->fresh()->processed_at);
+        $this->assertSame(ProjectStatus::FAILED, $project->fresh()->status);
+        $this->assertSame(ExecutionStatus::FAILED, $execution->fresh()->status);
+        $this->assertSame(ExecutionStepStatus::FAILED, $execution->steps()->orderBy('position')->firstOrFail()->status);
+        $this->assertSame(3, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
+        $this->assertSame(1, $execution->events()->where('type', 'execution.abandoned')->count());
+        $this->assertSame(1, ExecutionLog::query()->where('execution_id', $execution->getKey())->count());
+        $this->assertSame(1, AuditLog::query()
+            ->where('execution_id', $execution->getKey())
+            ->where('action', 'EXECUTION_ABANDONED')
+            ->count());
+    }
+
+    public function test_reconciler_does_not_override_worker_finishing_with_an_active_lease(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution, $command, $owner] = $this->claimedExecution($admin, expired: false);
+
+        $results = $this->runConcurrently([
+            ['recover-abandoned', (int) $command->getKey(), null],
+            ['finish-command', (int) $command->getKey(), null, $owner],
+        ]);
+
+        $this->assertSame('ok', $results[0]['status']);
+        $this->assertSame(0, $results[0]['exit_code']);
+        $this->assertSame('ok', $results[1]['status']);
+        $this->assertTrue($results[1]['completed']);
+        $this->assertNotNull($command->fresh()->processed_at);
+        $this->assertNull($command->fresh()->lease_owner);
+        $this->assertSame(ProjectStatus::RUNNING, $project->fresh()->status);
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertSame(25, $execution->fresh()->progress);
+        $this->assertSame(ExecutionStepStatus::SUCCESS, $execution->steps()->orderBy('position')->firstOrFail()->status);
+        $this->assertSame(3, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
+        $this->assertSame(1, $execution->events()->where('type', 'phase.completed')->count());
+        $this->assertSame(1, $execution->events()->where('type', 'iteration_1d.boundary')->count());
+        $this->assertSame(0, $execution->events()->where('type', 'execution.abandoned')->count());
+        $this->assertSame(0, ExecutionLog::query()->where('execution_id', $execution->getKey())->count());
+    }
+
     /**
      * @param  list<array{0: string, 1: int, 2: int|null, 3?: string}>  $workers
      * @return list<array<string, mixed>>
@@ -239,6 +300,38 @@ class PostgreSqlConcurrencyTest extends TestCase
         $wizard->confirm($project, $admin, $configuration->version, []);
 
         return $project->fresh(['configuration', 'moodleInstances.server']);
+    }
+
+    /** @return array{Project, Execution, ExecutionCommand, string} */
+    private function claimedExecution(User $admin, bool $expired): array
+    {
+        Queue::fake();
+        $project = $this->readyCollectionProject($admin);
+        $result = app(StartProjectExecution::class)->start(
+            $project,
+            $admin,
+            'concurrent-recovery-'.Str::uuid(),
+            $project->configuration->version,
+        );
+        $execution = $result->execution;
+        $command = $execution->commands()->sole();
+        $claimed = app(ExecutionCommandLease::class)->claim((int) $command->getKey());
+        $this->assertNotNull($claimed);
+        $owner = $claimed->owner;
+        $running = app(ExecutionUnitState::class)->begin((int) $command->getKey(), $owner);
+        $step = $running->steps()->orderBy('position')->firstOrFail();
+        app(ExecutionUnitState::class)->applyEvent(
+            (int) $command->getKey(),
+            $owner,
+            (int) $step->getKey(),
+            new NormalizedToolEvent('phase.started', $step->step_key),
+        );
+
+        if ($expired) {
+            $command->update(['lease_expires_at' => now()->utc()->subSecond()]);
+        }
+
+        return [$project, $execution, $command->fresh(), $owner];
     }
 
     private function waitUntilWorkersReachBarrier(string $prefix, int $expected): void

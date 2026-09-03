@@ -3,9 +3,16 @@
 namespace App\Models;
 
 use App\Enums\ExecutionCommandType;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property CarbonImmutable|null $processing_started_at
+ * @property string|null $lease_owner
+ * @property CarbonImmutable|null $lease_expires_at
+ * @property CarbonImmutable|null $processed_at
+ */
 class ExecutionCommand extends Model
 {
     protected $fillable = [
@@ -20,6 +27,8 @@ class ExecutionCommand extends Model
         'created_by',
         'dispatched_at',
         'processing_started_at',
+        'lease_owner',
+        'lease_expires_at',
         'dispatch_attempts',
         'processed_at',
     ];
@@ -43,6 +52,7 @@ class ExecutionCommand extends Model
             'payload' => 'array',
             'dispatched_at' => 'immutable_datetime',
             'processing_started_at' => 'immutable_datetime',
+            'lease_expires_at' => 'immutable_datetime',
             'dispatch_attempts' => 'integer',
             'processed_at' => 'immutable_datetime',
         ];

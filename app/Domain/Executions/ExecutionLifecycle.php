@@ -16,8 +16,7 @@ class ExecutionLifecycle
     public function transition(Execution $execution, ExecutionStatus $target, User $actor): Execution
     {
         return DB::transaction(function () use ($execution, $target, $actor): Execution {
-            $lockedExecution = Execution::query()->lockForUpdate()->findOrFail((int) $execution->getKey());
-            $lockedProject = Project::query()->lockForUpdate()->findOrFail($lockedExecution->project_id);
+            [$lockedProject, $lockedExecution] = $this->lockProjectAndExecution($execution);
             $lockedExecution->setRelation('project', $lockedProject);
 
             if (! $actor->can('control', $lockedExecution)) {
@@ -47,11 +46,20 @@ class ExecutionLifecycle
     public function transitionForWorker(Execution $execution, ExecutionStatus $target): Execution
     {
         return DB::transaction(function () use ($execution, $target): Execution {
-            $lockedExecution = Execution::query()->lockForUpdate()->findOrFail((int) $execution->getKey());
-            $lockedProject = Project::query()->lockForUpdate()->findOrFail($lockedExecution->project_id);
+            [$lockedProject, $lockedExecution] = $this->lockProjectAndExecution($execution);
 
             return $this->applyTransition($lockedExecution, $lockedProject, $target);
         }, attempts: 3);
+    }
+
+    /** @return array{Project, Execution} */
+    private function lockProjectAndExecution(Execution $execution): array
+    {
+        $seed = Execution::query()->select(['id', 'project_id'])->findOrFail((int) $execution->getKey());
+        $lockedProject = Project::query()->lockForUpdate()->findOrFail($seed->project_id);
+        $lockedExecution = Execution::query()->lockForUpdate()->findOrFail((int) $seed->getKey());
+
+        return [$lockedProject, $lockedExecution];
     }
 
     private function applyTransition(

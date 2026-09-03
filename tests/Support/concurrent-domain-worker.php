@@ -1,13 +1,17 @@
 <?php
 
 use App\Domain\Executions\ExecutionEventRecorder;
+use App\Domain\Executions\ExecutionUnitState;
 use App\Domain\Projects\ProjectExecutionManager;
+use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Models\Execution;
+use App\Models\ExecutionCommand;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 
 require dirname(__DIR__, 2).'/vendor/autoload.php';
@@ -47,6 +51,26 @@ try {
             $event = app(ExecutionEventRecorder::class)->record($execution, 'CONCURRENT_EVENT');
 
             return ['status' => 'ok', 'id' => $event->getKey(), 'sequence' => $event->sequence];
+        })(),
+        'recover-abandoned' => (function (): array {
+            $exitCode = Artisan::call('executions:recover-dispatches');
+
+            return [
+                'status' => $exitCode === 0 ? 'ok' : 'error',
+                'exit_code' => $exitCode,
+            ];
+        })(),
+        'finish-command' => (function () use ($resourceId, $extra): array {
+            $command = ExecutionCommand::query()->with('execution')->findOrFail((int) $resourceId);
+            $step = $command->execution->steps()->where('status', 'RUNNING')->sole();
+            $completed = app(ExecutionUnitState::class)->applyEvent(
+                (int) $command->getKey(),
+                (string) $extra,
+                (int) $step->getKey(),
+                new NormalizedToolEvent('phase.completed', $step->step_key, progress: 25),
+            );
+
+            return ['status' => 'ok', 'completed' => $completed];
         })(),
         'start-http' => (function () use ($app, $resourceId, $actorId, $extra): array {
             $project = Project::query()->with('configuration')->findOrFail((int) $resourceId);
