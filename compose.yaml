@@ -61,16 +61,10 @@ services:
 
     queue-worker:
         <<: *laravel-service
-        command:
-            [
-                'php',
-                'artisan',
-                'queue:work',
-                'redis',
-                '--sleep=1',
-                '--tries=3',
-                '--timeout=3600',
-            ]
+        command: >-
+            sh -lc "php artisan executions:assert-queue-safe &&
+            exec php artisan queue:work redis
+            --queue=executions,default --sleep=1 --tries=1 --timeout=120"
         stop_grace_period: 30s
         depends_on:
             app:
@@ -137,6 +131,24 @@ services:
             timeout: 5s
             retries: 18
             start_period: 30s
+        restart: unless-stopped
+
+    scheduler:
+        <<: *laravel-service
+        command: ['php', 'artisan', 'schedule:work', '--no-interaction']
+        depends_on:
+            app:
+                condition: service_healthy
+        healthcheck:
+            test:
+                [
+                    'CMD-SHELL',
+                    "grep -aq 'artisan' /proc/1/cmdline && grep -aq 'schedule:work' /proc/1/cmdline",
+                ]
+            interval: 15s
+            timeout: 5s
+            retries: 5
+            start_period: 15s
         restart: unless-stopped
 
     postgres:

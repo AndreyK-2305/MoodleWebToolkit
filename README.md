@@ -1,13 +1,16 @@
 # Moodle Consolidation Toolkit — Plataforma web
 
 Plataforma de administración para el kit de consolidación de instancias Moodle.
-El repositorio contiene las iteraciones **1A (Bootstrap)** y **1B (Dominio)** del
-Plan Maestro: infraestructura, autenticación, roles y el modelo persistente de
-proyectos y ejecuciones. El wizard y el motor asíncrono aún no están incluidos.
+El repositorio contiene las iteraciones **1A (Bootstrap)**, **1B (Dominio)**,
+**1C (Wizard persistente)** y **1D (Motor asíncrono simulado)** del Plan Maestro.
+Incluye el inicio idempotente por HTTP, Redis Queue, un worker acotado, eventos
+persistentes y actualización en tiempo real mediante canales privados de Reverb.
 
 La implementación y los resultados de validación están documentados en
 [`docs/ITERACION-1A.md`](docs/ITERACION-1A.md) y
-[`docs/ITERACION-1B.md`](docs/ITERACION-1B.md).
+[`docs/ITERACION-1B.md`](docs/ITERACION-1B.md),
+[`docs/ITERACION-1C.md`](docs/ITERACION-1C.md) y
+[`docs/ITERACION-1D.md`](docs/ITERACION-1D.md).
 
 ## Stack disponible
 
@@ -26,6 +29,19 @@ docker compose up -d --build
 docker compose exec app php artisan migrate --force
 docker compose exec app php artisan app:create-admin
 ```
+
+El servicio `queue-worker` consume la cola `executions` con `tries=1` y el
+servicio `scheduler` recupera comandos persistidos que no llegaron a Redis. Un
+despacho fallido también puede recuperarse repitiendo la solicitud con la misma
+`Idempotency-Key`, sin crear otro intento lógico.
+
+El timeout del job de 1D es de 120 segundos. Redis usa un `retry_after` de 180
+segundos incluso cuando un `.env` heredado no contiene
+`REDIS_QUEUE_RETRY_AFTER`. Si la variable se define explícitamente, debe ser
+mayor que 120; la aplicación rechazará el arranque con un mensaje accionable si
+el valor es incompatible. El `queue-worker` ejecuta esta comprobación antes de
+consumir trabajos. Tras cambiarla en una instalación con configuración cacheada,
+ejecute `php artisan config:clear` antes de reiniciar los servicios.
 
 La imagen instala las dependencias fijadas por `composer.lock` y
 `package-lock.json`. Si `.env` no existe, el contenedor `app` copia

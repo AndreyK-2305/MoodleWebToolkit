@@ -32,6 +32,13 @@ class DashboardController extends Controller
                 ->whereIn('status', [ProjectStatus::DRAFT, ProjectStatus::CONFIGURING])
                 ->count(),
             'ready' => (clone $visibleProjects)->where('status', ProjectStatus::READY)->count(),
+            'active' => (clone $visibleProjects)->whereIn('status', [
+                ProjectStatus::QUEUED,
+                ProjectStatus::RUNNING,
+                ProjectStatus::WAITING_USER_ACTION,
+                ProjectStatus::CANCELLING,
+                ProjectStatus::VERIFYING,
+            ])->count(),
         ];
 
         return Inertia::render('dashboard', [

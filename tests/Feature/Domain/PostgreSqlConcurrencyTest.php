@@ -2,16 +2,26 @@
 
 namespace Tests\Feature\Domain;
 
+use App\Domain\Executions\ExecutionCommandLease;
+use App\Domain\Executions\ExecutionUnitState;
+use App\Domain\Executions\StartProjectExecution;
+use App\Domain\Projects\ProjectWizard;
+use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionStatus;
+use App\Enums\ExecutionStepStatus;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
 use App\Enums\UserRole;
 use App\Exceptions\ExecutionAlreadyActive;
+use App\Models\AuditLog;
 use App\Models\Execution;
+use App\Models\ExecutionCommand;
+use App\Models\ExecutionLog;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use JsonException;
 use Symfony\Component\Process\Process;
@@ -31,6 +41,18 @@ class PostgreSqlConcurrencyTest extends TestCase
             '--force' => true,
             '--no-interaction' => true,
         ]));
+    }
+
+    protected function tearDown(): void
+    {
+        if (DB::getDriverName() === 'pgsql') {
+            Artisan::call('migrate:fresh', [
+                '--force' => true,
+                '--no-interaction' => true,
+            ]);
+        }
+
+        parent::tearDown();
     }
 
     public function test_two_independent_processes_cannot_queue_two_active_executions(): void
@@ -94,8 +116,93 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertSame(6, $execution->fresh()->last_event_sequence);
     }
 
+    public function test_two_concurrent_http_requests_with_same_key_create_one_execution(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        $project = $this->readyCollectionProject($admin);
+
+        $results = $this->runConcurrently([
+            ['start-http', (int) $project->getKey(), (int) $admin->getKey(), 'concurrent-same-key-0001'],
+            ['start-http', (int) $project->getKey(), (int) $admin->getKey(), 'concurrent-same-key-0001'],
+        ]);
+
+        $this->assertSame([], array_values(array_filter($results, fn (array $result): bool => $result['status'] !== 'ok')));
+        $this->assertSame([200, 201], collect($results)->pluck('http_status')->sort()->values()->all());
+        $this->assertCount(1, collect($results)->pluck('body.execution_uuid')->unique());
+        $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
+        $this->assertSame(1, DB::table('execution_commands')->count());
+    }
+
+    public function test_two_concurrent_http_requests_with_different_keys_keep_one_active_execution(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        $project = $this->readyCollectionProject($admin);
+
+        $results = $this->runConcurrently([
+            ['start-http', (int) $project->getKey(), (int) $admin->getKey(), 'concurrent-key-a-0001'],
+            ['start-http', (int) $project->getKey(), (int) $admin->getKey(), 'concurrent-key-b-0001'],
+        ]);
+
+        $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['status'] === 'ok'));
+        $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['http_status'] === 409));
+        $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
+        $this->assertSame(1, DB::table('execution_commands')->count());
+    }
+
+    public function test_two_reconcilers_close_one_abandoned_command_exactly_once(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution, $command] = $this->claimedExecution($admin, expired: true);
+
+        $results = $this->runConcurrently([
+            ['recover-abandoned', (int) $command->getKey(), null],
+            ['recover-abandoned', (int) $command->getKey(), null],
+        ]);
+
+        $this->assertSame([], array_values(array_filter($results, fn (array $result): bool => $result['status'] !== 'ok')));
+        $this->assertSame([0, 0], collect($results)->pluck('exit_code')->all());
+        $this->assertNotNull($command->fresh()->processed_at);
+        $this->assertSame(ProjectStatus::FAILED, $project->fresh()->status);
+        $this->assertSame(ExecutionStatus::FAILED, $execution->fresh()->status);
+        $this->assertSame(ExecutionStepStatus::FAILED, $execution->steps()->orderBy('position')->firstOrFail()->status);
+        $this->assertSame(3, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
+        $this->assertSame(1, $execution->events()->where('type', 'execution.abandoned')->count());
+        $this->assertSame(1, ExecutionLog::query()->where('execution_id', $execution->getKey())->count());
+        $this->assertSame(1, AuditLog::query()
+            ->where('execution_id', $execution->getKey())
+            ->where('action', 'EXECUTION_ABANDONED')
+            ->count());
+    }
+
+    public function test_reconciler_does_not_override_worker_finishing_with_an_active_lease(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution, $command, $owner] = $this->claimedExecution($admin, expired: false);
+
+        $results = $this->runConcurrently([
+            ['recover-abandoned', (int) $command->getKey(), null],
+            ['finish-command', (int) $command->getKey(), null, $owner],
+        ]);
+
+        $this->assertSame('ok', $results[0]['status']);
+        $this->assertSame(0, $results[0]['exit_code']);
+        $this->assertSame('ok', $results[1]['status']);
+        $this->assertTrue($results[1]['completed']);
+        $this->assertNotNull($command->fresh()->processed_at);
+        $this->assertNull($command->fresh()->lease_owner);
+        $this->assertSame(ProjectStatus::RUNNING, $project->fresh()->status);
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertSame(25, $execution->fresh()->progress);
+        $this->assertSame(ExecutionStepStatus::SUCCESS, $execution->steps()->orderBy('position')->firstOrFail()->status);
+        $this->assertSame(3, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
+        $this->assertSame(1, $execution->events()->where('type', 'phase.completed')->count());
+        $this->assertSame(1, $execution->events()->where('type', 'iteration_1d.boundary')->count());
+        $this->assertSame(0, $execution->events()->where('type', 'execution.abandoned')->count());
+        $this->assertSame(0, ExecutionLog::query()->where('execution_id', $execution->getKey())->count());
+    }
+
     /**
-     * @param  list<array{0: string, 1: int, 2: int|null}>  $workers
+     * @param  list<array{0: string, 1: int, 2: int|null, 3?: string}>  $workers
      * @return list<array<string, mixed>>
      *
      * @throws JsonException
@@ -110,7 +217,8 @@ class PostgreSqlConcurrencyTest extends TestCase
         DB::select('SELECT pg_advisory_lock(CAST(? AS bigint))', [$barrierKey]);
 
         try {
-            foreach ($workers as $index => [$mode, $resourceId, $actorId]) {
+            foreach ($workers as $index => $worker) {
+                [$mode, $resourceId, $actorId, $extra] = array_pad($worker, 4, null);
                 $marker = "{$prefix}:{$index}";
                 $command = [
                     PHP_BINARY,
@@ -120,6 +228,7 @@ class PostgreSqlConcurrencyTest extends TestCase
                     $marker,
                     (string) $resourceId,
                     (string) ($actorId ?? 0),
+                    (string) ($extra ?? ''),
                 ];
                 $process = new Process($command, base_path(), timeout: 30);
                 $process->start();
@@ -160,6 +269,69 @@ class PostgreSqlConcurrencyTest extends TestCase
 
             DB::table('cache')->where('key', 'like', "{$prefix}%")->delete();
         }
+    }
+
+    private function readyCollectionProject(User $admin): Project
+    {
+        $wizard = app(ProjectWizard::class);
+        $project = $wizard->create($admin, [
+            'name' => 'Concurrencia HTTP 1D',
+            'type' => ProjectType::COLLECT->value,
+            'description' => 'Inicio concurrente real.',
+        ]);
+        $wizard->saveInstances($project, $admin, [[
+            'uuid' => null,
+            'server_uuid' => null,
+            'role' => 'SOURCE',
+            'server_name' => 'Servidor concurrente',
+            'server_host' => 'concurrent.test',
+            'name' => 'Moodle concurrente',
+            'base_url' => 'https://concurrent.test',
+            'moodle_version' => '4.5',
+            'validated' => true,
+            'destination_kind' => null,
+        ]]);
+        $wizard->saveOptions($project, $admin, [
+            'simulation_scenario' => 'SUCCESS',
+            'artifact_name' => 'concurrent-package',
+        ]);
+        $wizard->runPreflight($project, $admin);
+        $configuration = $project->fresh('configuration')->configuration;
+        $wizard->confirm($project, $admin, $configuration->version, []);
+
+        return $project->fresh(['configuration', 'moodleInstances.server']);
+    }
+
+    /** @return array{Project, Execution, ExecutionCommand, string} */
+    private function claimedExecution(User $admin, bool $expired): array
+    {
+        Queue::fake();
+        $project = $this->readyCollectionProject($admin);
+        $result = app(StartProjectExecution::class)->start(
+            $project,
+            $admin,
+            'concurrent-recovery-'.Str::uuid(),
+            $project->configuration->version,
+        );
+        $execution = $result->execution;
+        $command = $execution->commands()->sole();
+        $claimed = app(ExecutionCommandLease::class)->claim((int) $command->getKey());
+        $this->assertNotNull($claimed);
+        $owner = $claimed->owner;
+        $running = app(ExecutionUnitState::class)->begin((int) $command->getKey(), $owner);
+        $step = $running->steps()->orderBy('position')->firstOrFail();
+        app(ExecutionUnitState::class)->applyEvent(
+            (int) $command->getKey(),
+            $owner,
+            (int) $step->getKey(),
+            new NormalizedToolEvent('phase.started', $step->step_key),
+        );
+
+        if ($expired) {
+            $command->update(['lease_expires_at' => now()->utc()->subSecond()]);
+        }
+
+        return [$project, $execution, $command->fresh(), $owner];
     }
 
     private function waitUntilWorkersReachBarrier(string $prefix, int $expected): void

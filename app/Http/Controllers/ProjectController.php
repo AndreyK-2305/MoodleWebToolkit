@@ -84,6 +84,7 @@ class ProjectController extends Controller
         $configuration = $project->configuration;
         abort_if($configuration === null, 409, 'El proyecto no tiene configuración de wizard.');
         $settings = $wizard->settings($configuration);
+        $latestExecution = $project->executions()->latest('attempt')->first();
 
         return Inertia::render('projects/show', [
             'project' => [
@@ -117,6 +118,13 @@ class ProjectController extends Controller
                     ])
                     ->values(),
                 'can_edit' => $this->canEdit($actor, $project),
+                'can_start' => $actor->can('startExecution', $project)
+                    && $project->status === ProjectStatus::READY,
+                'latest_execution' => $latestExecution === null ? null : [
+                    'uuid' => $latestExecution->uuid,
+                    'attempt' => $latestExecution->attempt,
+                    'status' => $latestExecution->status->value,
+                ],
             ],
             'projectTypes' => $this->projectTypes(),
         ]);

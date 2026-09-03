@@ -42,6 +42,18 @@ class ProjectPolicy
         return $user->isAdmin() || ($user->role === UserRole::OPERATOR && $this->isAssigned($user, $project));
     }
 
+    /**
+     * Authorization for a start request, kept separate from mutable lifecycle state.
+     * This allows a legitimate idempotent replay to recover its original result.
+     */
+    public function startExecution(User $user, Project $project): bool
+    {
+        return $user->is_active && (
+            $user->isAdmin()
+            || ($user->role === UserRole::OPERATOR && $this->isAssigned($user, $project))
+        );
+    }
+
     public function manageAssignments(User $user, Project $project): bool
     {
         return $user->is_active && $user->isAdmin() && ! $project->isReadOnly();
