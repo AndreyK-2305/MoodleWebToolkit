@@ -171,8 +171,28 @@ datos.
   escritura rechazada en `app`, `queue-worker`, `scheduler`, `reverb`, `vite` y
   `nginx`.
 
-La evidencia del recorrido de navegador y del CI del SHA publicado se registra
-en la entrega y en el PR draft.
+## Evidencia del recorrido de navegador
+
+El recorrido manual se ejecutó en la aplicación levantada por Docker Compose,
+con Redis, queue worker y Reverb activos:
+
+- un escenario `WARNING` alcanzó `WAITING_USER_ACTION` al 35 % sin retener el
+  worker;
+- aceptar la advertencia continuó sobre la misma Execution y llegó a la
+  frontera 1E al 50 %, dejando verificación y finalización pendientes;
+- cancelar mostró primero `CANCELLING` y el worker confirmó luego `CANCELLED`
+  en su punto seguro, sin trabajo tardío;
+- con el plazo de confirmación reducido temporalmente para la prueba, la UI
+  mantuvo el seguimiento, bloqueó una creación, conservó nombre y descripción
+  detrás del modal y reintentó exactamente esa creación después de confirmar;
+- el proyecto `Formulario preservado 1E` se creó una sola vez y el aviso de
+  seguimiento desapareció tras la recuperación;
+- la consola del navegador no registró advertencias ni errores.
+
+La configuración temporal se restauró a `AUTH_PASSWORD_TIMEOUT=7200` antes de
+cerrar el recorrido. La espera de dos horas y el caso de más de 24 horas se
+validaron con reloj controlado en las pruebas automatizadas. El CI del SHA
+publicado se registrará en la entrega y en el PR draft.
 
 ## Limitaciones conservadas
 
