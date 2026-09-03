@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\ExecutionController;
+use App\Http\Controllers\ExecutionEventController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\ProjectWizardController;
 use Illuminate\Http\Request;
@@ -14,6 +16,9 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::get('projects', [ProjectController::class, 'index'])->name('projects.index');
     Route::post('projects', [ProjectController::class, 'store'])->name('projects.store');
     Route::get('projects/{project:uuid}', [ProjectController::class, 'show'])->name('projects.show');
+    Route::post('projects/{project:uuid}/executions', [ExecutionController::class, 'store'])->name('projects.executions.store');
+    Route::get('projects/{project:uuid}/executions/{execution:uuid}', [ExecutionController::class, 'show'])->name('projects.executions.show');
+    Route::get('projects/{project:uuid}/executions/{execution:uuid}/events', [ExecutionEventController::class, 'index'])->name('projects.executions.events');
     Route::patch('projects/{project:uuid}/wizard/basics', [ProjectWizardController::class, 'basics'])->name('projects.wizard.basics');
     Route::put('projects/{project:uuid}/wizard/instances', [ProjectWizardController::class, 'instances'])->name('projects.wizard.instances');
     Route::put('projects/{project:uuid}/wizard/options', [ProjectWizardController::class, 'options'])->name('projects.wizard.options');

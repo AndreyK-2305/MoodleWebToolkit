@@ -2,17 +2,30 @@
 
 namespace App\Domain\Executions;
 
+use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\EventSeverity;
+use App\Events\ExecutionEventBroadcast;
 use App\Models\Execution;
 use App\Models\ExecutionEvent;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
+use Throwable;
 
-/**
- * Persists the monotonic sequence. Broadcasting after commit belongs to 1D.
- */
 class ExecutionEventRecorder
 {
+    public function recordNormalized(Execution $execution, NormalizedToolEvent $event): ExecutionEvent
+    {
+        return $this->record(
+            $execution,
+            $event->type,
+            $event->stepKey,
+            $event->severity,
+            $event->progress,
+            $event->message,
+            $event->payload,
+        );
+    }
+
     /** @param array<string, mixed>|null $payload */
     public function record(
         Execution $execution,
@@ -34,7 +47,7 @@ class ExecutionEventRecorder
             $lockedExecution->last_event_sequence = $sequence;
             $lockedExecution->save();
 
-            return $lockedExecution->events()->create([
+            $event = $lockedExecution->events()->create([
                 'sequence' => $sequence,
                 'type' => $type,
                 'step_key' => $stepKey,
@@ -43,6 +56,23 @@ class ExecutionEventRecorder
                 'message' => $message,
                 'payload' => $payload,
             ]);
+
+            $eventId = (int) $event->getKey();
+            DB::afterCommit(function () use ($eventId): void {
+                try {
+                    $persisted = ExecutionEvent::query()
+                        ->with('execution.project')
+                        ->find($eventId);
+
+                    if ($persisted !== null) {
+                        broadcast(new ExecutionEventBroadcast($persisted));
+                    }
+                } catch (Throwable $exception) {
+                    report($exception);
+                }
+            });
+
+            return $event;
         }, attempts: 3);
     }
 }

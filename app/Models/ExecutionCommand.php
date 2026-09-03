@@ -14,9 +14,13 @@ class ExecutionCommand extends Model
         'attempt',
         'command_type',
         'idempotency_key',
+        'idempotency_scope',
         'payload_hash',
         'payload',
         'created_by',
+        'dispatched_at',
+        'processing_started_at',
+        'dispatch_attempts',
         'processed_at',
     ];
 
@@ -37,6 +41,9 @@ class ExecutionCommand extends Model
         return [
             'command_type' => ExecutionCommandType::class,
             'payload' => 'array',
+            'dispatched_at' => 'immutable_datetime',
+            'processing_started_at' => 'immutable_datetime',
+            'dispatch_attempts' => 'integer',
             'processed_at' => 'immutable_datetime',
         ];
     }

@@ -6,6 +6,7 @@ import {
     CheckCircle2,
     CircleDot,
     Plus,
+    Play,
     Server,
     ShieldCheck,
     Trash2,
@@ -77,6 +78,12 @@ type ProjectData = {
     } | null;
     instances: InstanceDraft[];
     can_edit: boolean;
+    can_start: boolean;
+    latest_execution: {
+        uuid: string;
+        attempt: number;
+        status: string;
+    } | null;
 };
 type Props = {
     project: ProjectData;
@@ -194,8 +201,9 @@ export default function ProjectShow({ project, projectTypes }: Props) {
                     <AlertTitle>Entorno completamente simulado</AlertTitle>
                     <AlertDescription>
                         No se realizan conexiones SSH/SFTP, no se solicitan
-                        secretos y confirmar no inicia una ejecución ni despacha
-                        trabajos.
+                        secretos. Confirmar sólo deja el proyecto listo; el
+                        inicio asíncrono es una acción posterior e
+                        independiente.
                     </AlertDescription>
                 </Alert>
 
@@ -1144,10 +1152,24 @@ function ConfirmationStep({
                         <CheckCircle2 className="text-emerald-600" />
                         <AlertTitle>Proyecto listo</AlertTitle>
                         <AlertDescription>
-                            La configuración quedó confirmada. La ejecución se
-                            implementará en 1D y no forma parte de este wizard.
+                            La configuración quedó confirmada. Ya puede iniciar
+                            una ejecución asíncrona independiente del wizard.
                         </AlertDescription>
                     </Alert>
+                )}
+
+                {project.status === 'READY' && project.can_start && (
+                    <StartExecutionPanel project={project} />
+                )}
+
+                {project.latest_execution && (
+                    <Link
+                        href={`/projects/${project.uuid}/executions/${project.latest_execution.uuid}`}
+                        className="text-primary inline-flex items-center gap-1 text-sm font-medium hover:underline"
+                    >
+                        Ver ejecución #{project.latest_execution.attempt} ·{' '}
+                        {project.latest_execution.status}
+                    </Link>
                 )}
 
                 <InputError message={form.errors.configuration_version} />
@@ -1175,6 +1197,43 @@ function ConfirmationStep({
                 </div>
             </CardContent>
         </Card>
+    );
+}
+
+function StartExecutionPanel({ project }: { project: ProjectData }) {
+    const [idempotencyKey] = useState(() => crypto.randomUUID());
+    const form = useForm({
+        configuration_version: project.configuration_version,
+    });
+    const fieldErrors = form.errors as Record<string, string>;
+
+    return (
+        <div className="border-primary/30 bg-primary/5 rounded-lg border p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <p className="font-medium">Motor asíncrono preparado</p>
+                    <p className="text-muted-foreground text-sm">
+                        Persistirá el intento y sus pasos antes de enviarlo a
+                        Redis.
+                    </p>
+                </div>
+                <Button
+                    type="button"
+                    disabled={form.processing}
+                    onClick={() =>
+                        form.post(`/projects/${project.uuid}/executions`, {
+                            headers: { 'Idempotency-Key': idempotencyKey },
+                        })
+                    }
+                >
+                    <Play /> Iniciar ejecución
+                </Button>
+            </div>
+            <InputError message={fieldErrors.idempotency_key} />
+            <InputError message={fieldErrors.execution} />
+            <InputError message={fieldErrors.project} />
+            <InputError message={fieldErrors.confirmation} />
+        </div>
     );
 }
 

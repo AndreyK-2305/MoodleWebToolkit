@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Domain;
 
+use App\Domain\Projects\ProjectWizard;
 use App\Enums\ExecutionStatus;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
@@ -31,6 +32,18 @@ class PostgreSqlConcurrencyTest extends TestCase
             '--force' => true,
             '--no-interaction' => true,
         ]));
+    }
+
+    protected function tearDown(): void
+    {
+        if (DB::getDriverName() === 'pgsql') {
+            Artisan::call('migrate:fresh', [
+                '--force' => true,
+                '--no-interaction' => true,
+            ]);
+        }
+
+        parent::tearDown();
     }
 
     public function test_two_independent_processes_cannot_queue_two_active_executions(): void
@@ -94,8 +107,41 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertSame(6, $execution->fresh()->last_event_sequence);
     }
 
+    public function test_two_concurrent_http_requests_with_same_key_create_one_execution(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        $project = $this->readyCollectionProject($admin);
+
+        $results = $this->runConcurrently([
+            ['start-http', (int) $project->getKey(), (int) $admin->getKey(), 'concurrent-same-key-0001'],
+            ['start-http', (int) $project->getKey(), (int) $admin->getKey(), 'concurrent-same-key-0001'],
+        ]);
+
+        $this->assertSame([], array_values(array_filter($results, fn (array $result): bool => $result['status'] !== 'ok')));
+        $this->assertSame([200, 201], collect($results)->pluck('http_status')->sort()->values()->all());
+        $this->assertCount(1, collect($results)->pluck('body.execution_uuid')->unique());
+        $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
+        $this->assertSame(1, DB::table('execution_commands')->count());
+    }
+
+    public function test_two_concurrent_http_requests_with_different_keys_keep_one_active_execution(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        $project = $this->readyCollectionProject($admin);
+
+        $results = $this->runConcurrently([
+            ['start-http', (int) $project->getKey(), (int) $admin->getKey(), 'concurrent-key-a-0001'],
+            ['start-http', (int) $project->getKey(), (int) $admin->getKey(), 'concurrent-key-b-0001'],
+        ]);
+
+        $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['status'] === 'ok'));
+        $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['http_status'] === 409));
+        $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
+        $this->assertSame(1, DB::table('execution_commands')->count());
+    }
+
     /**
-     * @param  list<array{0: string, 1: int, 2: int|null}>  $workers
+     * @param  list<array{0: string, 1: int, 2: int|null, 3?: string}>  $workers
      * @return list<array<string, mixed>>
      *
      * @throws JsonException
@@ -110,7 +156,8 @@ class PostgreSqlConcurrencyTest extends TestCase
         DB::select('SELECT pg_advisory_lock(CAST(? AS bigint))', [$barrierKey]);
 
         try {
-            foreach ($workers as $index => [$mode, $resourceId, $actorId]) {
+            foreach ($workers as $index => $worker) {
+                [$mode, $resourceId, $actorId, $extra] = array_pad($worker, 4, null);
                 $marker = "{$prefix}:{$index}";
                 $command = [
                     PHP_BINARY,
@@ -120,6 +167,7 @@ class PostgreSqlConcurrencyTest extends TestCase
                     $marker,
                     (string) $resourceId,
                     (string) ($actorId ?? 0),
+                    (string) ($extra ?? ''),
                 ];
                 $process = new Process($command, base_path(), timeout: 30);
                 $process->start();
@@ -160,6 +208,37 @@ class PostgreSqlConcurrencyTest extends TestCase
 
             DB::table('cache')->where('key', 'like', "{$prefix}%")->delete();
         }
+    }
+
+    private function readyCollectionProject(User $admin): Project
+    {
+        $wizard = app(ProjectWizard::class);
+        $project = $wizard->create($admin, [
+            'name' => 'Concurrencia HTTP 1D',
+            'type' => ProjectType::COLLECT->value,
+            'description' => 'Inicio concurrente real.',
+        ]);
+        $wizard->saveInstances($project, $admin, [[
+            'uuid' => null,
+            'server_uuid' => null,
+            'role' => 'SOURCE',
+            'server_name' => 'Servidor concurrente',
+            'server_host' => 'concurrent.test',
+            'name' => 'Moodle concurrente',
+            'base_url' => 'https://concurrent.test',
+            'moodle_version' => '4.5',
+            'validated' => true,
+            'destination_kind' => null,
+        ]]);
+        $wizard->saveOptions($project, $admin, [
+            'simulation_scenario' => 'SUCCESS',
+            'artifact_name' => 'concurrent-package',
+        ]);
+        $wizard->runPreflight($project, $admin);
+        $configuration = $project->fresh('configuration')->configuration;
+        $wizard->confirm($project, $admin, $configuration->version, []);
+
+        return $project->fresh(['configuration', 'moodleInstances.server']);
     }
 
     private function waitUntilWorkersReachBarrier(string $prefix, int $expected): void

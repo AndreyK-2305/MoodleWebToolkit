@@ -11,7 +11,12 @@ import { dashboard } from '@/routes';
 
 type Props = {
     userCounts: { total: number; active: number; admins: number } | null;
-    projectCounts: { total: number; configuring: number; ready: number };
+    projectCounts: {
+        total: number;
+        configuring: number;
+        ready: number;
+        active: number;
+    };
 };
 
 export default function Dashboard({ userCounts, projectCounts }: Props) {
@@ -32,6 +37,11 @@ export default function Dashboard({ userCounts, projectCounts }: Props) {
             value: String(projectCounts.ready),
             icon: CheckCircle2,
         },
+        {
+            label: 'En ejecución',
+            value: String(projectCounts.active),
+            icon: Activity,
+        },
         ...(userCounts
             ? [
                   {
@@ -49,15 +59,14 @@ export default function Dashboard({ userCounts, projectCounts }: Props) {
             <div className="flex h-full flex-1 flex-col gap-6 overflow-x-auto rounded-xl p-4 md:p-6">
                 <div>
                     <p className="text-sm font-medium text-amber-600 dark:text-amber-400">
-                        Iteración 1C
+                        Iteración 1D
                     </p>
                     <h1 className="text-2xl font-semibold tracking-tight">
                         Gestión de migraciones Moodle
                     </h1>
                     <p className="text-muted-foreground mt-1 max-w-2xl text-sm">
-                        Configure proyectos persistentes mediante el wizard y
-                        valide sus datos con un preflight completamente
-                        simulado.
+                        Configure proyectos mediante el wizard e inicie una
+                        ejecución simulada real sobre Redis Queue y Reverb.
                     </p>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -80,10 +89,10 @@ export default function Dashboard({ userCounts, projectCounts }: Props) {
                 <div className="border-border bg-card rounded-xl border p-6">
                     <h2 className="font-semibold">Alcance de esta entrega</h2>
                     <p className="text-muted-foreground mt-2 text-sm">
-                        La confirmación deja los proyectos en READY. No crea
-                        ejecuciones, no despacha jobs y no se conecta a
-                        servidores; esas capacidades corresponden a 1D y cortes
-                        posteriores.
+                        Confirmar deja el proyecto en READY. Iniciar es una
+                        acción posterior que persiste el intento antes de
+                        despacharlo al worker. La conexión a servidores y las
+                        herramientas reales permanecen fuera de este corte.
                     </p>
                 </div>
             </div>

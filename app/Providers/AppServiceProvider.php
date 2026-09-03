@@ -2,6 +2,12 @@
 
 namespace App\Providers;
 
+use App\Domain\Artifacts\Contracts\ArtifactStorage;
+use App\Domain\Artifacts\LocalArtifactStorage;
+use App\Domain\Executions\Contracts\ExecutionProvider;
+use App\Domain\Executions\FakeExecutionProvider;
+use App\Domain\Tools\Contracts\ToolAdapter;
+use App\Domain\Tools\FakeToolAdapter;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +21,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->bind(ToolAdapter::class, FakeToolAdapter::class);
+        $this->app->bind(ExecutionProvider::class, FakeExecutionProvider::class);
+        $this->app->bind(ArtifactStorage::class, LocalArtifactStorage::class);
     }
 
     /**

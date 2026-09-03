@@ -3,10 +3,24 @@
 namespace App\Models;
 
 use App\Enums\ExecutionStepStatus;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * @property int $id
+ * @property int $execution_id
+ * @property string $step_key
+ * @property int $attempt
+ * @property string $name
+ * @property int $position
+ * @property ExecutionStepStatus $status
+ * @property int|null $progress
+ * @property array<string, mixed>|null $metadata
+ * @property CarbonImmutable|null $started_at
+ * @property CarbonImmutable|null $finished_at
+ */
 class ExecutionStep extends Model
 {
     protected $fillable = [
