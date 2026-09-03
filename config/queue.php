@@ -1,5 +1,7 @@
 <?php
 
+use App\Domain\Executions\ExecutionQueueConfiguration;
+
 return [
 
     /*
@@ -68,7 +70,10 @@ return [
             'driver' => 'redis',
             'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 90),
+            'retry_after' => (int) env(
+                'REDIS_QUEUE_RETRY_AFTER',
+                ExecutionQueueConfiguration::DEFAULT_REDIS_RETRY_AFTER_SECONDS,
+            ),
             'block_for' => null,
             'after_commit' => false,
         ],

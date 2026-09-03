@@ -65,8 +65,13 @@ Execution. El scheduler de Compose revisa ese outbox cada minuto.
 ## Worker y límite deliberado de la demostración
 
 `RunExecutionUnit` usa la cola `executions`, `tries=1`, timeout de 120 segundos y
-`failOnTimeout`. `REDIS_QUEUE_RETRY_AFTER=180` mantiene el timeout del broker por
-encima del timeout del job. El worker de Compose usa los mismos valores.
+`failOnTimeout`. El fallback de `REDIS_QUEUE_RETRY_AFTER` es 180 segundos tanto
+en `.env.example` como en `config/queue.php`, por lo que un `.env` heredado de 1C
+sin esa variable conserva un plazo seguro. El arranque valida además que todo
+valor explícito sea mayor que 120 segundos. Antes de consumir trabajos, el
+`queue-worker` ejecuta `executions:assert-queue-safe` y falla con una indicación
+clara si el valor es incompatible, sin impedir que `config:clear` pueda reparar
+una configuración cacheada. El worker de Compose usa el mismo timeout de 120.
 
 Antes de trabajar, `FakeExecutionProvider` bloquea el comando y persiste
 `processing_started_at`. Una segunda entrega sale sin producir eventos ni
@@ -134,6 +139,8 @@ La batería específica `ExecutionEngineTest` cubre:
 - entrega duplicada sin trabajo ni eventos duplicados;
 - permisos de inicio, lectura y canales para ADMIN, OPERATOR y AUDITOR;
 - catch-up persistente, paginación ordenada y progreso indeterminado;
+- fallback seguro para un `.env` heredado y rechazo de un `retry_after`
+  explícito incompatible;
 - seguridad e integridad de `LocalArtifactStorage`.
 
 `PostgreSqlConcurrencyTest` ejecuta procesos PHP independientes detrás de una
@@ -172,8 +179,8 @@ powershell -File tests/Infrastructure/verify-baseline-readonly.ps1
 
 Resultados comprobados antes de publicar:
 
-- 154 pruebas PHP aprobadas, con 873 aserciones;
-- Pint aprobado sobre 164 archivos y Larastan sin errores sobre 132 rutas;
+- 156 pruebas PHP aprobadas, con 879 aserciones;
+- Pint aprobado sobre 167 archivos y Larastan sin errores sobre 134 rutas;
 - Vite Plus aprobó formato y diagnósticos, ESLint y TypeScript finalizaron sin
   errores y el build procesó 2317 módulos;
 - Docker Compose válido, servicios `app`, `queue-worker`, `scheduler`, `reverb`,

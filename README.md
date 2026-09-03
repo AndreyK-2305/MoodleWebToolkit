@@ -35,6 +35,14 @@ servicio `scheduler` recupera comandos persistidos que no llegaron a Redis. Un
 despacho fallido también puede recuperarse repitiendo la solicitud con la misma
 `Idempotency-Key`, sin crear otro intento lógico.
 
+El timeout del job de 1D es de 120 segundos. Redis usa un `retry_after` de 180
+segundos incluso cuando un `.env` heredado no contiene
+`REDIS_QUEUE_RETRY_AFTER`. Si la variable se define explícitamente, debe ser
+mayor que 120; la aplicación rechazará el arranque con un mensaje accionable si
+el valor es incompatible. El `queue-worker` ejecuta esta comprobación antes de
+consumir trabajos. Tras cambiarla en una instalación con configuración cacheada,
+ejecute `php artisan config:clear` antes de reiniciar los servicios.
+
 La imagen instala las dependencias fijadas por `composer.lock` y
 `package-lock.json`. Si `.env` no existe, el contenedor `app` copia
 `.env.example` y genera una clave local antes de iniciar PHP-FPM. No se necesita

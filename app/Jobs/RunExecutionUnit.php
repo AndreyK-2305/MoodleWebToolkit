@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Domain\Executions\Contracts\ExecutionProvider;
 use App\Domain\Executions\ExecutionEventRecorder;
 use App\Domain\Executions\ExecutionLifecycle;
+use App\Domain\Executions\ExecutionQueueConfiguration;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\EventSeverity;
@@ -22,7 +23,7 @@ class RunExecutionUnit implements ShouldQueue
 
     public int $tries = 1;
 
-    public int $timeout = 120;
+    public int $timeout = ExecutionQueueConfiguration::JOB_TIMEOUT_SECONDS;
 
     public bool $failOnTimeout = true;
 

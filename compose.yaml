@@ -61,17 +61,10 @@ services:
 
     queue-worker:
         <<: *laravel-service
-        command:
-            [
-                'php',
-                'artisan',
-                'queue:work',
-                'redis',
-                '--queue=executions,default',
-                '--sleep=1',
-                '--tries=1',
-                '--timeout=120',
-            ]
+        command: >-
+            sh -lc "php artisan executions:assert-queue-safe &&
+            exec php artisan queue:work redis
+            --queue=executions,default --sleep=1 --tries=1 --timeout=120"
         stop_grace_period: 30s
         depends_on:
             app:
