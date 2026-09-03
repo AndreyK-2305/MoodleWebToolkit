@@ -11,6 +11,13 @@ declare module '@inertiajs/core' {
         sharedPageProps: {
             name: string;
             auth: Auth;
+            actionConfirmation: {
+                required: boolean;
+                expired: boolean;
+                confirmed_at: number | null;
+                expires_at: number | null;
+                lifetime_minutes: number;
+            };
             sidebarOpen: boolean;
             [key: string]: unknown;
         };

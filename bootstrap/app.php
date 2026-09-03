@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsureActionPasswordConfirmed;
 use App\Http\Middleware\EnsurePasswordWasChanged;
 use App\Http\Middleware\EnsureUserIsActive;
 use App\Http\Middleware\EnsureUserIsAdmin;
@@ -24,6 +25,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'active' => EnsureUserIsActive::class,
             'admin' => EnsureUserIsAdmin::class,
+            'action.confirmed' => EnsureActionPasswordConfirmed::class,
             'password.changed' => EnsurePasswordWasChanged::class,
         ]);
 
