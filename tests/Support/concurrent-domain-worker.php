@@ -85,6 +85,38 @@ try {
                     'HTTP_IDEMPOTENCY_KEY' => (string) $extra,
                 ],
             );
+            $session = $app->make('session')->driver();
+            $session->start();
+            $session->put('auth.password_confirmed_at', (int) now()->timestamp);
+            $request->setLaravelSession($session);
+            $request->setUserResolver(fn () => $actor);
+            $kernel = $app->make(HttpKernel::class);
+            $response = $kernel->handle($request);
+            $decoded = json_decode((string) $response->getContent(), true);
+            $kernel->terminate($request, $response);
+
+            return [
+                'status' => $response->getStatusCode() < 400 ? 'ok' : 'error',
+                'http_status' => $response->getStatusCode(),
+                'body' => is_array($decoded) ? $decoded : [],
+            ];
+        })(),
+        'cancel-http' => (function () use ($app, $resourceId, $actorId, $extra): array {
+            $execution = Execution::query()->with('project')->findOrFail((int) $resourceId);
+            $actor = User::query()->findOrFail((int) $actorId);
+            $app->make('auth')->guard('web')->setUser($actor);
+            $request = Request::create(
+                "/projects/{$execution->project->uuid}/executions/{$execution->uuid}/cancel",
+                'POST',
+                server: [
+                    'HTTP_ACCEPT' => 'application/json',
+                    'HTTP_IDEMPOTENCY_KEY' => (string) $extra,
+                ],
+            );
+            $session = $app->make('session')->driver();
+            $session->start();
+            $session->put('auth.password_confirmed_at', (int) now()->timestamp);
+            $request->setLaravelSession($session);
             $request->setUserResolver(fn () => $actor);
             $kernel = $app->make(HttpKernel::class);
             $response = $kernel->handle($request);

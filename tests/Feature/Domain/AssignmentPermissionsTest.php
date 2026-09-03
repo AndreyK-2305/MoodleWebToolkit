@@ -29,7 +29,7 @@ class AssignmentPermissionsTest extends DomainTestCase
 
         $this->assertTrue($assignment->project->is($project));
         $this->assertTrue($assignment->user->is($operator));
-        $this->assertSame(1, $manager->assign($project, $operator, $admin)->getKey());
+        $this->assertSame($assignment->getKey(), $manager->assign($project, $operator, $admin)->getKey());
         $this->assertDatabaseCount('project_assignments', 1);
     }
 

@@ -33,7 +33,7 @@ enum ExecutionStatus: string
     public function canTransitionTo(self $target): bool
     {
         return in_array($target, match ($this) {
-            self::QUEUED => [self::RUNNING, self::CANCELLED, self::FAILED],
+            self::QUEUED => [self::RUNNING, self::CANCELLING, self::CANCELLED, self::FAILED],
             self::RUNNING => [self::WAITING_USER_ACTION, self::CANCELLING, self::FAILED, self::VERIFYING],
             self::WAITING_USER_ACTION => [self::RUNNING, self::CANCELLING, self::FAILED],
             self::CANCELLING => [self::CANCELLED, self::FAILED],

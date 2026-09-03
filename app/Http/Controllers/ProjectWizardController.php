@@ -80,6 +80,7 @@ class ProjectWizardController extends Controller
         Gate::authorize('update', $project);
         $validated = $request->validate([
             'simulation_scenario' => ['nullable', Rule::in(['SUCCESS', 'WARNING', 'ERROR'])],
+            'processing_scenario' => ['nullable', Rule::in(['SUCCESS', 'WARNING', 'INTERVENTION', 'FAILURE'])],
             'artifact_name' => ['nullable', 'string', 'max:120'],
             'category_strategy' => ['nullable', Rule::in(['PRESERVE', 'PREFIX_SOURCE'])],
             'user_conflict_strategy' => ['nullable', Rule::in(['KEEP_DESTINATION', 'REVIEW'])],

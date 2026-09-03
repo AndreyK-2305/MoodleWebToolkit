@@ -3,9 +3,22 @@
 namespace App\Models;
 
 use App\Enums\ConflictStatus;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property int $id
+ * @property int $execution_id
+ * @property int|null $execution_step_id
+ * @property string $key
+ * @property string $type
+ * @property ConflictStatus $status
+ * @property int $version
+ * @property array<string, mixed> $details
+ * @property array<string, mixed>|null $resolution
+ * @property CarbonImmutable|null $resolved_at
+ */
 class Conflict extends Model
 {
     protected $fillable = [
@@ -14,6 +27,7 @@ class Conflict extends Model
         'key',
         'type',
         'status',
+        'version',
         'details',
         'resolution',
         'resolved_by',
@@ -42,6 +56,7 @@ class Conflict extends Model
     {
         return [
             'status' => ConflictStatus::class,
+            'version' => 'integer',
             'details' => 'array',
             'resolution' => 'array',
             'resolved_at' => 'immutable_datetime',

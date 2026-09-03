@@ -746,6 +746,7 @@ class ProjectWizard
     {
         $normalized = [
             'simulation_scenario' => $this->nullableTrim($options['simulation_scenario'] ?? null),
+            'processing_scenario' => $this->nullableTrim($options['processing_scenario'] ?? null) ?? 'SUCCESS',
         ];
 
         return match ($type) {

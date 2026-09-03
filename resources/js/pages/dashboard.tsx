@@ -59,7 +59,7 @@ export default function Dashboard({ userCounts, projectCounts }: Props) {
             <div className="flex h-full flex-1 flex-col gap-6 overflow-x-auto rounded-xl p-4 md:p-6">
                 <div>
                     <p className="text-sm font-medium text-amber-600 dark:text-amber-400">
-                        Iteración 1D
+                        Iteración 1E
                     </p>
                     <h1 className="text-2xl font-semibold tracking-tight">
                         Gestión de migraciones Moodle

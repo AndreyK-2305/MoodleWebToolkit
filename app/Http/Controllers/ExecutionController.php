@@ -71,7 +71,7 @@ class ExecutionController extends Controller
     ): Response {
         $this->ensureBelongsToProject($project, $execution);
         Gate::authorize('view', $execution);
-        $execution->load('steps');
+        $execution->load(['steps', 'conflicts', 'checkpoints', 'resumedFromExecution']);
         $events = $execution->events()->orderBy('sequence')->limit(200)->get();
 
         return Inertia::render('projects/executions/show', [
@@ -83,6 +83,7 @@ class ExecutionController extends Controller
             ],
             'execution' => $presenter->execution($execution),
             'events' => $events->map(fn ($event): array => $presenter->event($event))->values(),
+            'canControl' => $request->user()->can('control', $execution),
         ]);
     }
 

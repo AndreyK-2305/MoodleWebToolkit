@@ -25,7 +25,7 @@ class RecoverExecutionDispatches extends Command
         $failed = 0;
 
         ExecutionCommand::query()
-            ->where('command_type', ExecutionCommandType::START->value)
+            ->whereIn('command_type', array_column(ExecutionCommandType::cases(), 'value'))
             ->whereNull('processed_at')
             ->whereNull('processing_started_at')
             ->where(function ($query) use ($staleBefore): void {
@@ -42,7 +42,7 @@ class RecoverExecutionDispatches extends Command
             });
 
         ExecutionCommand::query()
-            ->where('command_type', ExecutionCommandType::START->value)
+            ->whereIn('command_type', array_column(ExecutionCommandType::cases(), 'value'))
             ->whereNull('processed_at')
             ->whereNotNull('processing_started_at')
             ->where(function ($query) use ($leases): void {

@@ -23,7 +23,7 @@ class AssertExecutionQueueConfiguration extends Command
         }
 
         $this->components->info(sprintf(
-            'Redis retry_after=%d s supera el timeout del job 1D=%d s.',
+            'Redis retry_after=%d s supera el timeout de la unidad asíncrona=%d s.',
             (int) config('queue.connections.redis.retry_after'),
             ExecutionQueueConfiguration::JOB_TIMEOUT_SECONDS,
         ));

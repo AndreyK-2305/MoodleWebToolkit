@@ -96,7 +96,7 @@ class ExecutionEngineTest extends TestCase
         $second->assertOk()
             ->assertJson(['created' => false, 'execution_uuid' => $first->json('execution_uuid'), 'status' => 'RUNNING']);
         $this->assertDatabaseCount('executions', 1);
-        $this->assertDatabaseCount('execution_commands', 1);
+        $this->assertDatabaseCount('execution_commands', 2);
     }
 
     public function test_same_key_with_different_content_and_different_key_while_active_are_rejected(): void
