@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Executions\ExecutionPresenter;
+use App\Domain\Realtime\ProjectSessionChannels;
 use App\Models\Execution;
 use App\Models\ExecutionEvent;
 use App\Models\Project;
@@ -17,6 +18,7 @@ class ExecutionEventController extends Controller
         Project $project,
         Execution $execution,
         ExecutionPresenter $presenter,
+        ProjectSessionChannels $channels,
     ): JsonResponse {
         abort_unless($execution->project_id === $project->getKey(), 404);
         Gate::authorize('view', $execution);
@@ -36,6 +38,7 @@ class ExecutionEventController extends Controller
             'events' => $events->map(fn (ExecutionEvent $event): array => $presenter->event($event))->values(),
             'has_more' => $events->count() === 200
                 && (int) $events->last()?->sequence < $execution->last_event_sequence,
+            'realtime_channel' => $channels->current($project, $request->session()->getId()),
         ]);
     }
 }

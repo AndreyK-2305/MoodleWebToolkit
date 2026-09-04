@@ -1,4 +1,4 @@
-import { Head, Link, useForm } from '@inertiajs/react';
+import { Head, Link, router, useForm } from '@inertiajs/react';
 import {
     Activity,
     ArrowLeft,
@@ -25,6 +25,13 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { echo } from '@/lib/echo';
+import {
+    executionScopeReplacement,
+    initialTrackingCursor,
+    mergeSequencedEvents,
+    responseBelongsToExecution,
+    resumePayload,
+} from '@/lib/execution-tracking';
 import { cn } from '@/lib/utils';
 
 type Step = {
@@ -91,29 +98,67 @@ type Props = {
     execution: ExecutionData;
     events: FunctionalEvent[];
     canControl: boolean;
+    realtimeChannel: string;
 };
 
 type CatchUpResponse = {
     execution: ExecutionData;
     events: FunctionalEvent[];
     has_more: boolean;
+    realtime_channel: string;
 };
 
-export default function ExecutionShow({
+export default function ExecutionShow(props: Props) {
+    return <ExecutionTracker key={props.execution.uuid} {...props} />;
+}
+
+function ExecutionTracker({
     project,
     execution: initialExecution,
     events: initialEvents,
     canControl,
+    realtimeChannel: initialRealtimeChannel,
 }: Props) {
     const [execution, setExecution] = useState(initialExecution);
     const [events, setEvents] = useState(initialEvents);
+    const [realtimeChannel, setRealtimeChannel] = useState(
+        initialRealtimeChannel,
+    );
     const [live, setLive] = useState(false);
     const [updatesPaused, setUpdatesPaused] = useState(false);
     const [reauthOpen, setReauthOpen] = useState(false);
     const lastSequence = useRef(
-        initialEvents.at(-1)?.sequence ?? initialExecution.last_event_sequence,
+        initialTrackingCursor(initialExecution, initialEvents),
     );
     const catchingUp = useRef(false);
+    const requestGeneration = useRef(0);
+    const inFlightRequest = useRef<AbortController | null>(null);
+    const trackedExecutionUuid = useRef(initialExecution.uuid);
+
+    useEffect(() => {
+        const replacement = executionScopeReplacement(
+            trackedExecutionUuid.current,
+            initialExecution,
+            initialEvents,
+        );
+
+        if (replacement === null) {
+            return;
+        }
+
+        trackedExecutionUuid.current = replacement.uuid;
+        requestGeneration.current += 1;
+        inFlightRequest.current?.abort();
+        inFlightRequest.current = null;
+        catchingUp.current = false;
+        lastSequence.current = replacement.cursor;
+        setExecution(initialExecution);
+        setEvents(replacement.events);
+        setRealtimeChannel(initialRealtimeChannel);
+        setLive(false);
+        setUpdatesPaused(false);
+        setReauthOpen(false);
+    }, [initialEvents, initialExecution, initialRealtimeChannel]);
 
     const mergeEvents = useCallback((incoming: FunctionalEvent[]) => {
         if (incoming.length === 0) {
@@ -121,15 +166,7 @@ export default function ExecutionShow({
         }
 
         setEvents((current) => {
-            const indexed = new Map(
-                [...current, ...incoming].map((event) => [
-                    event.sequence,
-                    event,
-                ]),
-            );
-            const merged = [...indexed.values()].sort(
-                (left, right) => left.sequence - right.sequence,
-            );
+            const merged = mergeSequencedEvents(current, incoming);
             lastSequence.current = merged.at(-1)?.sequence ?? 0;
 
             return merged;
@@ -142,6 +179,9 @@ export default function ExecutionShow({
         }
 
         catchingUp.current = true;
+        const generation = requestGeneration.current;
+        const controller = new AbortController();
+        inFlightRequest.current = controller;
 
         try {
             let hasMore = true;
@@ -152,8 +192,16 @@ export default function ExecutionShow({
                     {
                         credentials: 'same-origin',
                         headers: { Accept: 'application/json' },
+                        signal: controller.signal,
                     },
                 );
+
+                if (
+                    controller.signal.aborted ||
+                    generation !== requestGeneration.current
+                ) {
+                    return;
+                }
 
                 if (
                     !response.ok ||
@@ -168,6 +216,15 @@ export default function ExecutionShow({
                 }
 
                 const data = (await response.json()) as CatchUpResponse;
+
+                if (
+                    controller.signal.aborted ||
+                    generation !== requestGeneration.current ||
+                    !responseBelongsToExecution(initialExecution.uuid, data)
+                ) {
+                    return;
+                }
+
                 const newestSequence = data.events.at(-1)?.sequence;
 
                 if (newestSequence !== undefined) {
@@ -178,20 +235,29 @@ export default function ExecutionShow({
                 }
 
                 setExecution(data.execution);
+                setRealtimeChannel(data.realtime_channel);
                 setUpdatesPaused(false);
                 mergeEvents(data.events);
                 hasMore = data.has_more && data.events.length > 0;
             }
         } catch {
-            setUpdatesPaused(true);
-            setLive(false);
+            if (
+                !controller.signal.aborted &&
+                generation === requestGeneration.current
+            ) {
+                setUpdatesPaused(true);
+                setLive(false);
+            }
         } finally {
-            catchingUp.current = false;
+            if (inFlightRequest.current === controller) {
+                inFlightRequest.current = null;
+                catchingUp.current = false;
+            }
         }
     }, [initialExecution.uuid, mergeEvents, project.uuid]);
 
     useEffect(() => {
-        const channel = echo.private(`projects.${project.uuid}`);
+        const channel = echo.private(realtimeChannel);
         const listener = (payload: {
             execution_uuid?: string;
             event?: FunctionalEvent;
@@ -225,10 +291,14 @@ export default function ExecutionShow({
 
         return () => {
             window.clearInterval(fallback);
+            requestGeneration.current += 1;
+            inFlightRequest.current?.abort();
+            inFlightRequest.current = null;
+            catchingUp.current = false;
             channel.stopListening('.execution.event', listener);
-            echo.leave(`projects.${project.uuid}`);
+            echo.leave(realtimeChannel);
         };
-    }, [catchUp, initialExecution.uuid, project.uuid]);
+    }, [catchUp, initialExecution.uuid, realtimeChannel]);
 
     useEffect(() => {
         if (!updatesPaused) {
@@ -312,6 +382,7 @@ export default function ExecutionShow({
 
                 {canControl && (
                     <ExecutionActions
+                        key={execution.uuid}
                         projectUuid={project.uuid}
                         execution={execution}
                         disabled={updatesPaused}
@@ -495,9 +566,9 @@ function ExecutionActions({
 }) {
     const [cancelKey] = useState(() => crypto.randomUUID());
     const [resumeKey] = useState(() => crypto.randomUUID());
+    const [resumeProcessing, setResumeProcessing] = useState(false);
     const cancelForm = useForm({});
-    const checkpoint = execution.checkpoints.find((item) => item.validated);
-    const resumeForm = useForm({ checkpoint_id: checkpoint?.id ?? 0 });
+    const currentResumePayload = resumePayload(execution);
     const cancellable = ['QUEUED', 'RUNNING', 'WAITING_USER_ACTION'].includes(
         execution.status,
     );
@@ -549,23 +620,29 @@ function ExecutionActions({
                             Cancelación pendiente de confirmación segura
                         </Badge>
                     )}
-                    {execution.status === 'FAILED' && checkpoint && (
-                        <Button
-                            disabled={disabled || resumeForm.processing}
-                            onClick={() =>
-                                resumeForm.post(
-                                    `/projects/${projectUuid}/executions/${execution.uuid}/resume`,
-                                    {
-                                        headers: {
-                                            'Idempotency-Key': resumeKey,
+                    {execution.status === 'FAILED' &&
+                        currentResumePayload !== null && (
+                            <Button
+                                disabled={disabled || resumeProcessing}
+                                onClick={() =>
+                                    router.post(
+                                        `/projects/${projectUuid}/executions/${execution.uuid}/resume`,
+                                        currentResumePayload,
+                                        {
+                                            headers: {
+                                                'Idempotency-Key': resumeKey,
+                                            },
+                                            onStart: () =>
+                                                setResumeProcessing(true),
+                                            onFinish: () =>
+                                                setResumeProcessing(false),
                                         },
-                                    },
-                                )
-                            }
-                        >
-                            <RotateCcw /> Reanudar desde checkpoint
-                        </Button>
-                    )}
+                                    )
+                                }
+                            >
+                                <RotateCcw /> Reanudar desde checkpoint
+                            </Button>
+                        )}
                 </div>
             </CardContent>
         </Card>

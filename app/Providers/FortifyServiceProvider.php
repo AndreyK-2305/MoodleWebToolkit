@@ -9,8 +9,10 @@ use App\Actions\Fortify\CreateNewUser;
 use App\Actions\Fortify\ResetUserPassword;
 use App\Models\User;
 use Illuminate\Auth\Events\Login;
+use Illuminate\Auth\SessionGuard;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
@@ -40,10 +42,20 @@ class FortifyServiceProvider extends ServiceProvider
         $this->configureViews();
         $this->configureRateLimiting();
 
-        Event::listen(Login::class, function (): void {
-            if (request()->hasSession()) {
-                request()->session()->put('auth.password_confirmed_at', (int) now()->timestamp);
+        Event::listen(Login::class, function (Login $event): void {
+            if (! request()->hasSession()) {
+                return;
             }
+
+            $guard = Auth::guard($event->guard);
+
+            if ($guard instanceof SessionGuard && $guard->viaRemember()) {
+                request()->session()->forget('auth.password_confirmed_at');
+
+                return;
+            }
+
+            request()->session()->put('auth.password_confirmed_at', (int) now()->timestamp);
         });
 
         Fortify::authenticateUsing(function (Request $request): ?User {

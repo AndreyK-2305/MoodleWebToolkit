@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Domain\Executions\ExecutionPresenter;
 use App\Domain\Executions\StartProjectExecution;
+use App\Domain\Realtime\ProjectSessionChannels;
 use App\Exceptions\ExecutionDispatchFailed;
 use App\Http\Requests\StartExecutionRequest;
 use App\Models\Execution;
@@ -68,6 +69,7 @@ class ExecutionController extends Controller
         Project $project,
         Execution $execution,
         ExecutionPresenter $presenter,
+        ProjectSessionChannels $channels,
     ): Response {
         $this->ensureBelongsToProject($project, $execution);
         Gate::authorize('view', $execution);
@@ -84,6 +86,7 @@ class ExecutionController extends Controller
             'execution' => $presenter->execution($execution),
             'events' => $events->map(fn ($event): array => $presenter->event($event))->values(),
             'canControl' => $request->user()->can('control', $execution),
+            'realtimeChannel' => $channels->current($project, $request->session()->getId()),
         ]);
     }
 

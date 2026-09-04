@@ -6,6 +6,7 @@
         "build": "vp build",
         "build:ssr": "vp build && vp build --ssr",
         "dev": "vp dev",
+        "test": "vp test run",
         "check": "vp check",
         "check:fix": "vp check --fix",
         "lint": "eslint resources/js --max-warnings=0",

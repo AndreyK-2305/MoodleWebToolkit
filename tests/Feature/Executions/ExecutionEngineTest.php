@@ -8,6 +8,7 @@ use App\Domain\Executions\ExecutionEventRecorder;
 use App\Domain\Executions\StartProjectExecution;
 use App\Domain\Projects\ProjectAssignmentManager;
 use App\Domain\Projects\ProjectWizard;
+use App\Domain\Realtime\ProjectSessionChannels;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Enums\ExecutionStatus;
 use App\Enums\ProjectStatus;
@@ -269,16 +270,40 @@ class ExecutionEngineTest extends TestCase
             ->getJson(route('projects.executions.events', [$project->uuid, $execution->uuid]))
             ->assertForbidden();
 
+        config()->set('session.driver', 'database');
+
         foreach ([$admin, $operator, $auditor] as $allowed) {
+            $sessionId = 'channel-authorization-'.$allowed->getKey();
+            DB::table('sessions')->insert([
+                'id' => $sessionId,
+                'user_id' => $allowed->getKey(),
+                'ip_address' => '127.0.0.1',
+                'user_agent' => 'Channel authorization regression',
+                'payload' => '',
+                'last_activity' => now()->timestamp,
+            ]);
+            $channel = app(ProjectSessionChannels::class)->current($project, $sessionId);
+
             $this->actingAs($allowed)->postJson('/broadcasting/auth', [
                 'socket_id' => '123.456',
-                'channel_name' => "private-projects.{$project->uuid}",
+                'channel_name' => 'private-'.$channel,
             ])->assertOk();
         }
 
+        $unassignedSessionId = 'channel-authorization-'.$unassigned->getKey();
+        DB::table('sessions')->insert([
+            'id' => $unassignedSessionId,
+            'user_id' => $unassigned->getKey(),
+            'ip_address' => '127.0.0.1',
+            'user_agent' => 'Channel authorization regression',
+            'payload' => '',
+            'last_activity' => now()->timestamp,
+        ]);
+        $unassignedChannel = app(ProjectSessionChannels::class)->current($project, $unassignedSessionId);
+
         $this->actingAs($unassigned)->postJson('/broadcasting/auth', [
             'socket_id' => '123.456',
-            'channel_name' => "private-projects.{$project->uuid}",
+            'channel_name' => 'private-'.$unassignedChannel,
         ])->assertForbidden();
     }
 

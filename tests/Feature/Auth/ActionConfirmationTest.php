@@ -11,7 +11,10 @@ use App\Models\Execution;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Queue;
+use Laravel\Fortify\Features;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class ActionConfirmationTest extends TestCase
@@ -54,13 +57,90 @@ class ActionConfirmationTest extends TestCase
         $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
     }
 
-    public function test_full_login_initializes_the_standard_confirmation_timestamp(): void
+    #[DataProvider('rememberChoices')]
+    public function test_full_login_initializes_the_standard_confirmation_timestamp(bool $remember): void
     {
         $user = User::factory()->create(['password' => 'password']);
 
-        $this->post('/login', ['email' => $user->email, 'password' => 'password'])
+        $this->post('/login', [
+            'email' => $user->email,
+            'password' => 'password',
+            'remember' => $remember,
+        ])
             ->assertRedirect(route('dashboard'))
             ->assertSessionHas('auth.password_confirmed_at');
+    }
+
+    /** @return iterable<string, array{bool}> */
+    public static function rememberChoices(): iterable
+    {
+        yield 'without remember' => [false];
+        yield 'with remember' => [true];
+    }
+
+    public function test_remember_cookie_restores_read_only_access_without_renewing_modification_permission(): void
+    {
+        Queue::fake();
+        [$admin, $project, $execution] = $this->runningExecution();
+
+        $login = $this->post('/login', [
+            'email' => $admin->email,
+            'password' => 'password',
+            'remember' => true,
+        ])->assertRedirect(route('dashboard'));
+        $recallerName = Auth::guard('web')->getRecallerName();
+        $recaller = $login->getCookie($recallerName);
+        $this->assertNotNull($recaller);
+
+        $this->app['session']->flush();
+        Auth::forgetGuards();
+
+        $this->withCredentials()
+            ->withCookie($recallerName, $recaller->getValue())
+            ->getJson(route('projects.executions.events', [$project->uuid, $execution->uuid]))
+            ->assertOk();
+        $this->assertAuthenticatedAs($admin);
+        $this->assertTrue(Auth::guard('web')->viaRemember());
+        $this->assertNull(session('auth.password_confirmed_at'));
+
+        $this->postJson(
+            route('projects.executions.cancel', [$project->uuid, $execution->uuid]),
+            [],
+            ['Idempotency-Key' => 'remembered-cancel-0001'],
+        )->assertStatus(423);
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+
+        $this->postJson(route('action-password.confirm'), ['password' => 'incorrect'])
+            ->assertUnprocessable();
+        $this->assertNull(session('auth.password_confirmed_at'));
+
+        $this->postJson(route('action-password.confirm'), ['password' => 'password'])
+            ->assertOk();
+        $this->assertIsInt(session('auth.password_confirmed_at'));
+    }
+
+    public function test_two_factor_challenge_does_not_confirm_the_password_until_it_succeeds(): void
+    {
+        $this->skipUnlessFortifyHas(Features::twoFactorAuthentication());
+        Features::twoFactorAuthentication([
+            'confirm' => true,
+            'confirmPassword' => true,
+        ]);
+        $user = User::factory()->withTwoFactor()->create();
+
+        $this->post('/login', [
+            'email' => $user->email,
+            'password' => 'password',
+            'remember' => true,
+        ])->assertRedirect(route('two-factor.login'))
+            ->assertSessionMissing('auth.password_confirmed_at');
+        $this->assertGuest();
+
+        $this->post(route('two-factor.login.store'), [
+            'recovery_code' => 'recovery-code-1',
+        ])->assertRedirect(route('dashboard'))
+            ->assertSessionHas('auth.password_confirmed_at');
+        $this->assertAuthenticatedAs($user);
     }
 
     public function test_wrong_password_keeps_lock_and_correct_password_renews_it(): void

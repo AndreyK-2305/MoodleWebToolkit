@@ -34,6 +34,7 @@ jobs:
 
       - name: Run frontend checks
         run: |
+          docker compose exec -T vite npm run test
           docker compose exec -T vite npm run check
           docker compose exec -T vite npm run lint
           docker compose exec -T vite npm run types:check

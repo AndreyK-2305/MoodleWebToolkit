@@ -144,26 +144,142 @@ append-only, constraints de PostgreSQL, checkpoints inmutables, autorización de
 canal privado, recuperación de eventos y publicación exclusivamente posterior
 al commit.
 
+## Correcciones posteriores a la revisión
+
+Las regresiones se construyeron contra el SHA revisado
+`0e41502bf93ead8585b46c369c8cdf69b324379a` antes de aplicar cada corrección.
+
+### 1. Recuperación mediante «Recordarme»
+
+- **Reproducción previa:** una sesión descartada se recuperó con la cookie real
+  de recaller. La primera consulta autenticada volvió a emitir `Login` y dejó
+  `auth.password_confirmed_at` con un timestamp nuevo, por lo que una mutación
+  quedaba habilitada sin volver a introducir la contraseña.
+- **Causa:** el listener de `Login` trataba por igual el login interactivo y la
+  recuperación automática del `SessionGuard`.
+- **Solución:** el listener consulta `SessionGuard::viaRemember()`. El login
+  completo, incluso si se marcó «Recordarme», inicia el plazo; la recuperación
+  por recaller elimina cualquier evidencia de confirmación heredada y exige una
+  confirmación explícita antes de modificar.
+- **Regresión añadida:** `ActionConfirmationTest` usa login y cookies reales
+  para cubrir login con/sin remember, recuperación, consulta, mutación 423,
+  contraseña incorrecta/correcta y segundo factor pendiente/completado. La
+  prueba previa de consultas por más de 24 horas conserva la comprobación de que
+  el seguimiento no renueva el timestamp.
+- **Evidencia y límite:** la suite confirma el flujo Fortify completo y el
+  recaller de Laravel sobre PostgreSQL; no se habilitó un proveedor externo de
+  passkeys, que conserva su flujo existente y no fue modificado.
+
+### 2. Checkpoint vigente al reanudar
+
+- **Reproducción previa:** al abrir el seguimiento en `RUNNING`, el `useForm`
+  fijaba `checkpoint_id=0`. Después del catch-up a `FAILED` aparecía el botón,
+  pero el formulario seguía enviando el valor inicial.
+- **Causa:** el cuerpo de reanudación se derivaba una sola vez al montar el
+  formulario, antes de que existiera el checkpoint.
+- **Solución:** el click construye el cuerpo de `router.post` con el checkpoint
+  validado de la Execution renderizada en ese instante. No depende de una
+  actualización asíncrona de estado inmediatamente anterior al envío.
+- **Regresión añadida:** la prueba frontend abre el estado lógico sin checkpoint
+  y comprueba que una actualización posterior selecciona el id validado. Las
+  pruebas de dominio conservan la pertenencia, identidad, validación y creación
+  de un único intento enlazado.
+- **Evidencia y límite:** el payload y el linaje están cubiertos por frontend y
+  PostgreSQL; el recorrido interactivo se registra por separado en la sección de
+  navegador.
+
+### 3. Aislamiento entre intentos
+
+- **Reproducción previa:** una navegación Inertia desde el intento fallido a su
+  reanudación conservaba `useState`/`useRef`; el cursor alto del intento anterior
+  impedía recuperar los primeros eventos del nuevo y una respuesta tardía podía
+  mezclarlos.
+- **Causa:** la identidad de Execution no delimitaba el ciclo de vida del
+  tracker, las peticiones ni la suscripción.
+- **Solución:** un componente interno usa `execution.uuid` como `key` y una
+  frontera explícita detecta el cambio de UUID incluso cuando Inertia preserva la
+  instancia del componente. Cada intento reinicia estado, cursor, formularios,
+  llaves de idempotencia y canal; el cleanup cancela catch-ups y abandona la
+  suscripción. Además, cada respuesta se valida por UUID y generación antes de
+  aplicarse.
+- **Regresión añadida:** las pruebas frontend cubren cursor menor en el nuevo
+  intento, rechazo de respuesta tardía, orden y deduplicación dentro del mismo
+  intento. Las pruebas PHP comprueban navegación al intento enlazado y secuencias
+  persistidas independientes.
+- **Evidencia y límite:** el aislamiento puro se ejecuta de forma determinista en
+  Vitest y el linaje en PostgreSQL; las condiciones de red tardía se fuerzan en
+  la unidad frontend, no mediante latencia artificial del navegador.
+
+### 4. Revocación efectiva de WebSocket
+
+- **Reproducción previa:** el canal privado por proyecto sólo aplicaba la policy
+  al suscribirse. Una conexión ya autorizada continuaba recibiendo el payload
+  completo después de desactivar la cuenta o retirar su asignación.
+- **Causa:** Reverb no vuelve a ejecutar la autorización de un canal existente
+  para cada broadcast.
+- **Solución:** cada sesión de base de datos recibe un canal privado opaco,
+  derivado con HMAC y entregado sólo por endpoints protegidos. La suscripción
+  vuelve a comprobar la policy y el formato opaco. Al distribuir cada evento,
+  después del commit, el servidor consulta usuarios activos, rol/asignación
+  vigente y sesiones no vencidas, y publica únicamente a esos canales. El
+  endpoint HTTP entrega el canal de la sesión actual y el catch-up permite
+  renovarlo tras reautenticar. Con un driver de sesión distinto de `database`
+  la distribución falla cerrada.
+- **Regresión añadida:** `RealtimeRevocationTest` realiza handshakes y frames
+  RFC 6455 contra Reverb real. Verifica recepción previa, ausencia posterior a
+  desactivación, retiro de asignación, cambio de rol y eliminación de sesión;
+  también confirma continuidad para el administrador y rechazo de reconexión.
+- **Evidencia y límite:** son sockets Reverb reales, no `Event::fake`; las
+  mutaciones de autorización se hacen en la base aislada de testing. La prueba
+  de logout elimina la sesión persistida y el flujo HTTP separado comprueba la
+  pérdida de autenticación; no intenta retirar de la red bytes emitidos antes
+  del commit de revocación.
+
+### 5. Upgrade con proyectos completados
+
+- **Reproducción previa:** una base anterior a 1E con una ejecución de un Project
+  `COMPLETED` falló al rellenar `workspace_key`; PostgreSQL devolvió SQLSTATE
+  `23514` desde `executions_completed_project_read_only`.
+- **Causa:** el backfill legítimo de esquema era una actualización de la misma
+  tabla protegida por el trigger de inmutabilidad de 1D.
+- **Solución:** en PostgreSQL la migración elimina exclusivamente ese trigger
+  durante el backfill y lo recrea en un `finally` antes de terminar. El `DROP
+TRIGGER` conserva un lock `ACCESS EXCLUSIVE` hasta el commit, de modo que no
+  existe una ventana para escrituras de aplicación. Después se aplica `NOT
+NULL` y permanecen las nuevas restricciones de 1E.
+- **Regresión añadida:** `Iteration1EMigrationUpgradeTest` crea un schema aislado,
+  ejecuta todas las migraciones previas, inserta estados válidos y un linaje de
+  reanudación, ejecuta la migración real de 1E y vuelve a intentar una escritura
+  prohibida sobre el proyecto completado.
+- **Evidencia y límite:** el upgrade conserva tres ejecuciones, tres workspaces
+  UUID únicos, historial y referencias de linaje; la escritura posterior vuelve
+  a fallar con SQLSTATE `23514`. La prueba es PostgreSQL real en un schema
+  desechable, no `migrate:fresh`, y no toca la base de desarrollo.
+
 ## Evidencia automatizada local
 
 La base de testing usa exclusivamente `postgres-testing` en `tmpfs`; se ejecutó
 `migrate:fresh` allí. En desarrollo sólo se ejecutó `migrate` y no se borraron
 datos.
 
-- Suite PHP completa: 191 pruebas aprobadas, 1214 aserciones.
+- Suite PHP completa: 197 pruebas aprobadas, 1270 aserciones.
 - Casos específicos 1E: 11 pruebas aprobadas, incluidas espera prolongada,
   conflictos múltiples, reanudación, cancelación y rollback.
-- Autorización temporal: 10 pruebas aprobadas para expiración, ausencia de
-  evidencia, login completo, contraseña incorrecta/correcta con rate limit,
-  AUDITOR, OPERATOR sin asignación, acción obsoleta, pérdida de sesión y
-  reautenticación con catch-up.
+- Autorización temporal: 13 casos aprobados, incluidos login completo con y sin
+  remember, recaller real, segundo factor, contraseña incorrecta/correcta con
+  rate limit, permisos, acción obsoleta y pérdida/recuperación de sesión.
+- Upgrade real pre-1E: 1 prueba aprobada en schema PostgreSQL aislado.
+- Revocación Reverb real: 2 pruebas aprobadas, 23 aserciones, con conexiones
+  WebSocket y distribución posterior a la revocación.
+- Estado frontend: 4 pruebas Vitest aprobadas para checkpoint, cursor, respuesta
+  tardía, orden y deduplicación.
 - Concurrencia PostgreSQL multiproceso: 7 pruebas aprobadas, incluida la carrera
   cancelación/continuación.
-- Pint: 183 archivos aprobados.
-- Larastan/PHPStan: 147 rutas analizadas sin errores.
-- Vite Plus: 83 archivos formateados y 70 sin diagnósticos.
+- Pint: 187 archivos aprobados.
+- Larastan/PHPStan: 148 rutas analizadas sin errores.
+- Vite Plus: 85 archivos formateados y 72 sin diagnósticos.
 - TypeScript y ESLint: sin errores.
-- Build de producción: 2318 módulos transformados.
+- Build de producción: 2319 módulos transformados.
 - Docker Compose: configuración válida y diez servicios saludables.
 - Cola: `retry_after=180 s` supera el timeout de unidad de `120 s`.
 - `BaseLine/`: 131 archivos, SHA-256 canónico
@@ -187,6 +303,20 @@ con Redis, queue worker y Reverb activos:
   detrás del modal y reintentó exactamente esa creación después de confirmar;
 - el proyecto `Formulario preservado 1E` se creó una sola vez y el aviso de
   seguimiento desapareció tras la recuperación;
+- un intento con fallo recuperable pasó de la pantalla inicial sin checkpoint a
+  `FAILED` con checkpoint y eventos `#1–#9` sin recargar; la reanudación envió el
+  checkpoint vigente y PostgreSQL registró exactamente un intento enlazado;
+- el recorrido descubrió que `preserveState` de Inertia podía conservar el
+  cursor del intento anterior aunque el componente tuviera `key`; se añadió la
+  frontera explícita por UUID y se repitió la prueba con el bundle reconstruido;
+- en la repetición final, el proyecto `Validación correctiva 1E - aislamiento`
+  navegó de la Execution
+  `a0e06878-3f04-4081-8c5d-dac523abbee1` a
+  `73be7ef5-4262-4a90-b813-d3541839929d` sin recarga: la vista mostró sólo los
+  eventos nuevos `#1–#6`, comenzando en `execution.resumed`, y mantuvo
+  `Tiempo real conectado`;
+- PostgreSQL confirmó dos workspaces diferentes, linaje `4 → 5`, checkpoint
+  `2` y secuencias independientes `1–9` / `1–6`;
 - la consola del navegador no registró advertencias ni errores.
 
 La configuración temporal se restauró a `AUTH_PASSWORD_TIMEOUT=7200` antes de

@@ -23,9 +23,25 @@ return new class extends Migration
             $table->unsignedInteger('version')->default(1)->after('status');
         });
 
-        DB::table('executions')->whereNull('workspace_key')->orderBy('id')->eachById(function ($execution): void {
-            DB::table('executions')->where('id', $execution->id)->update(['workspace_key' => (string) Str::uuid()]);
-        });
+        if (DB::getDriverName() === 'pgsql') {
+            // DROP TRIGGER takes an ACCESS EXCLUSIVE lock until this migration
+            // transaction commits. Application writes cannot enter this window.
+            DB::statement('DROP TRIGGER IF EXISTS executions_completed_project_read_only ON executions');
+        }
+
+        try {
+            DB::table('executions')->whereNull('workspace_key')->orderBy('id')->eachById(function ($execution): void {
+                DB::table('executions')->where('id', $execution->id)->update(['workspace_key' => (string) Str::uuid()]);
+            });
+        } finally {
+            if (DB::getDriverName() === 'pgsql') {
+                DB::statement(<<<'SQL'
+                    CREATE TRIGGER executions_completed_project_read_only
+                        BEFORE INSERT OR UPDATE OR DELETE ON executions
+                        FOR EACH ROW EXECUTE FUNCTION reject_completed_project_child_change()
+                    SQL);
+            }
+        }
 
         if (DB::getDriverName() === 'pgsql') {
             DB::statement('ALTER TABLE executions ALTER COLUMN workspace_key SET NOT NULL');
