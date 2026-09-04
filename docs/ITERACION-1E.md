@@ -262,7 +262,7 @@ NULL` y permanecen las nuevas restricciones de 1E.
 
 - **Reproducción previa:** al detener Reverb con una pantalla de seguimiento
   abierta, el catch-up HTTP continuaba, pero la insignia permanecía en `Tiempo
-  real conectado` durante los intentos de reconexión.
+real conectado` durante los intentos de reconexión.
 - **Causa:** el componente sólo atendía la suscripción confirmada y el callback
   de error del canal. Pusher cambia primero la conexión global a `connecting`,
   estado que no llegaba a React.
