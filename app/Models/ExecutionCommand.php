@@ -9,6 +9,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * @property ExecutionCommandType $command_type
+ * @property array<string, mixed>|null $payload
+ * @property CarbonImmutable|null $created_at
  * @property CarbonImmutable|null $processing_started_at
  * @property string|null $lease_owner
  * @property CarbonImmutable|null $lease_expires_at

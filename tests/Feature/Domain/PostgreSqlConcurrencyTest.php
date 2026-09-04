@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Domain;
 
+use App\Domain\Academic\ProposeAcademicChange;
 use App\Domain\Executions\Contracts\ExecutionProvider;
 use App\Domain\Executions\ExecutionCommandLease;
 use App\Domain\Executions\ExecutionUnitState;
@@ -25,6 +26,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use JsonException;
 use Symfony\Component\Process\Process;
@@ -133,7 +135,7 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertSame([200, 201], collect($results)->pluck('http_status')->sort()->values()->all());
         $this->assertCount(1, collect($results)->pluck('body.execution_uuid')->unique());
         $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
-        $this->assertSame(2, DB::table('execution_commands')->count());
+        $this->assertSame(3, DB::table('execution_commands')->count());
     }
 
     public function test_two_concurrent_http_requests_with_different_keys_keep_one_active_execution(): void
@@ -149,7 +151,7 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['status'] === 'ok'));
         $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['http_status'] === 409));
         $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
-        $this->assertSame(2, DB::table('execution_commands')->count());
+        $this->assertSame(3, DB::table('execution_commands')->count());
     }
 
     public function test_two_reconcilers_close_one_abandoned_command_exactly_once(): void
@@ -193,14 +195,14 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertTrue($results[1]['completed']);
         $this->assertNotNull($command->fresh()->processed_at);
         $this->assertNull($command->fresh()->lease_owner);
-        $this->assertSame(ProjectStatus::RUNNING, $project->fresh()->status);
-        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
-        $this->assertSame(50, $execution->fresh()->progress);
+        $this->assertSame(ProjectStatus::REVIEW, $project->fresh()->status);
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+        $this->assertSame(75, $execution->fresh()->progress);
         $this->assertSame(ExecutionStepStatus::SUCCESS, $execution->steps()->orderBy('position')->firstOrFail()->status);
-        $this->assertSame(2, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
+        $this->assertSame(1, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
         $this->assertSame(2, $execution->events()->where('type', 'phase.completed')->count());
         $this->assertSame(1, $execution->events()->where('type', 'execution.command_queued')->count());
-        $this->assertSame(1, $execution->events()->where('type', 'iteration_1e.boundary')->count());
+        $this->assertSame(1, $execution->events()->where('type', 'verification.completed')->count());
         $this->assertSame(0, $execution->events()->where('type', 'execution.abandoned')->count());
         $this->assertSame(0, ExecutionLog::query()->where('execution_id', $execution->getKey())->count());
     }
@@ -241,6 +243,80 @@ class PostgreSqlConcurrencyTest extends TestCase
 
         $this->assertSame(ExecutionStatus::CANCELLED, $execution->fresh()->status);
         $this->assertSame(1, $execution->events()->where('type', 'execution.cancelled')->count());
+    }
+
+    public function test_two_validation_requests_create_one_validation_effect(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution] = $this->reviewedCollectionExecution($admin);
+        app(ProposeAcademicChange::class)->propose($execution, $admin, [
+            'operation' => 'RENAME_CATEGORY',
+            'node_id' => 'cat:collection-academic',
+            'value' => 'Oferta concurrente',
+            'expected_version' => 0,
+            'base_fingerprint' => (string) $execution->review_fingerprint,
+        ], 'concurrent-proposal-seed');
+
+        $results = $this->runConcurrently([
+            ['validate-http', (int) $execution->getKey(), (int) $admin->getKey(), 'concurrent-validate-a'],
+            ['validate-http', (int) $execution->getKey(), (int) $admin->getKey(), 'concurrent-validate-b'],
+        ]);
+
+        $this->assertSame([], array_values(array_filter($results, fn (array $result): bool => $result['status'] !== 'ok')));
+        $this->assertEqualsCanonicalizing([200, 202], collect($results)->pluck('http_status')->all());
+        $this->assertSame(1, $execution->verifications()->where('proposal_version', 1)->count());
+        $this->assertSame(1, $execution->commands()->where('command_type', 'VALIDATE')->where('attempt', 2)->count());
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+        $this->assertSame(ProjectStatus::REVIEW, $project->fresh()->status);
+    }
+
+    public function test_two_finalization_requests_create_one_atomic_closure(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution] = $this->reviewedCollectionExecution($admin);
+
+        try {
+            $results = $this->runConcurrently([
+                ['finalize-http', (int) $execution->getKey(), (int) $admin->getKey(), 'concurrent-finalize-a'],
+                ['finalize-http', (int) $execution->getKey(), (int) $admin->getKey(), 'concurrent-finalize-b'],
+            ]);
+
+            $this->assertSame([], array_values(array_filter($results, fn (array $result): bool => $result['status'] !== 'ok')));
+            $this->assertEqualsCanonicalizing([200, 202], collect($results)->pluck('http_status')->all());
+            $this->assertSame(ExecutionStatus::COMPLETED, $execution->fresh()->status);
+            $this->assertSame(ProjectStatus::COMPLETED, $project->fresh()->status);
+            $this->assertSame(1, $execution->commands()->where('command_type', 'FINALIZE')->count());
+            $this->assertSame(1, $execution->events()->where('type', 'execution.completed')->count());
+            $this->assertSame(4, $execution->artifacts()->count());
+        } finally {
+            Storage::disk('local')->deleteDirectory("executions/{$execution->workspace_key}");
+        }
+    }
+
+    public function test_concurrent_proposals_conflict_on_the_locked_version(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [, $execution] = $this->reviewedCollectionExecution($admin);
+        $base = [
+            'operation' => 'RENAME_CATEGORY',
+            'expected_version' => 0,
+            'base_fingerprint' => $execution->review_fingerprint,
+        ];
+        $results = $this->runConcurrently([
+            ['proposal-http', (int) $execution->getKey(), (int) $admin->getKey(), json_encode([
+                'idempotency_key' => 'concurrent-proposal-a',
+                'payload' => [...$base, 'node_id' => 'cat:collection-academic', 'value' => 'Nombre A'],
+            ], JSON_THROW_ON_ERROR)],
+            ['proposal-http', (int) $execution->getKey(), (int) $admin->getKey(), json_encode([
+                'idempotency_key' => 'concurrent-proposal-b',
+                'payload' => [...$base, 'node_id' => 'cat:collection-archive', 'value' => 'Nombre B'],
+            ], JSON_THROW_ON_ERROR)],
+        ]);
+
+        $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['http_status'] === 201));
+        $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['http_status'] === 422));
+        $this->assertSame(1, $execution->academicProposals()->count());
+        $this->assertSame(1, $execution->fresh()->proposal_version);
     }
 
     /**
@@ -342,6 +418,41 @@ class PostgreSqlConcurrencyTest extends TestCase
         $wizard->confirm($project, $admin, $configuration->version, []);
 
         return $project->fresh(['configuration', 'moodleInstances.server']);
+    }
+
+    /** @return array{Project, Execution} */
+    private function reviewedCollectionExecution(User $admin): array
+    {
+        Queue::fake();
+        $project = $this->readyCollectionProject($admin);
+        $result = app(StartProjectExecution::class)->start(
+            $project,
+            $admin,
+            'concurrent-review-'.Str::uuid(),
+            $project->configuration->version,
+        );
+        $execution = $result->execution;
+
+        foreach ([
+            $execution->commands()->where('command_type', 'START')->sole(),
+            null,
+            null,
+        ] as $index => $command) {
+            if ($index === 1) {
+                $command = $execution->commands()->where('command_type', 'CONTINUE')->sole();
+            } elseif ($index === 2) {
+                $command = $execution->commands()->where('command_type', 'VALIDATE')->sole();
+            }
+
+            (new RunExecutionUnit((int) $command->getKey()))->handle(
+                app(ExecutionProvider::class),
+                app(ToolAdapter::class),
+            );
+        }
+
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+
+        return [$project, $execution->fresh()];
     }
 
     /** @return array{Project, Execution, ExecutionCommand, string} */

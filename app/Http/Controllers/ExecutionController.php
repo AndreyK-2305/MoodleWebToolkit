@@ -80,10 +80,12 @@ class ExecutionController extends Controller
             'project' => [
                 'uuid' => $project->uuid,
                 'name' => $project->name,
+                'type' => $project->type->value,
                 'status' => $project->status->value,
                 'status_label' => $project->status->label(),
             ],
             'execution' => $presenter->execution($execution),
+            'review' => $presenter->review($execution),
             'events' => $events->map(fn ($event): array => $presenter->event($event))->values(),
             'canControl' => $request->user()->can('control', $execution),
             'realtimeChannel' => $channels->current($project, $request->session()->getId()),

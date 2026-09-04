@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Artifact extends Model
 {
@@ -25,6 +26,12 @@ class Artifact extends Model
     public function execution(): BelongsTo
     {
         return $this->belongsTo(Execution::class);
+    }
+
+    /** @return HasMany<ArtifactDownload, $this> */
+    public function downloads(): HasMany
+    {
+        return $this->hasMany(ArtifactDownload::class);
     }
 
     protected function casts(): array

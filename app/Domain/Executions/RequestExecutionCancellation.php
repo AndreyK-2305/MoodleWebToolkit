@@ -56,6 +56,7 @@ class RequestExecutionCancellation
                 ExecutionStatus::QUEUED,
                 ExecutionStatus::RUNNING,
                 ExecutionStatus::WAITING_USER_ACTION,
+                ExecutionStatus::VERIFYING,
             ], true)) {
                 throw ValidationException::withMessages([
                     'execution' => 'El estado vigente de la ejecución no permite solicitar cancelación.',

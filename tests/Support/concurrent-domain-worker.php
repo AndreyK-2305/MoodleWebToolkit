@@ -27,6 +27,33 @@ if ($mode === null || $barrierKey === null || $marker === null || $resourceId ==
 }
 
 $hasSharedLock = false;
+$postJson = function (string $path, User $actor, string $idempotencyKey, array $data = []) use ($app): array {
+    $app->make('auth')->guard('web')->setUser($actor);
+    $request = Request::create(
+        $path,
+        'POST',
+        $data,
+        server: [
+            'HTTP_ACCEPT' => 'application/json',
+            'HTTP_IDEMPOTENCY_KEY' => $idempotencyKey,
+        ],
+    );
+    $session = $app->make('session')->driver();
+    $session->start();
+    $session->put('auth.password_confirmed_at', (int) now()->timestamp);
+    $request->setLaravelSession($session);
+    $request->setUserResolver(fn () => $actor);
+    $kernel = $app->make(HttpKernel::class);
+    $response = $kernel->handle($request);
+    $decoded = json_decode((string) $response->getContent(), true);
+    $kernel->terminate($request, $response);
+
+    return [
+        'status' => $response->getStatusCode() < 400 ? 'ok' : 'error',
+        'http_status' => $response->getStatusCode(),
+        'body' => is_array($decoded) ? $decoded : [],
+    ];
+};
 
 try {
     DB::table('cache')->insert([
@@ -128,6 +155,38 @@ try {
                 'http_status' => $response->getStatusCode(),
                 'body' => is_array($decoded) ? $decoded : [],
             ];
+        })(),
+        'validate-http' => (function () use ($postJson, $resourceId, $actorId, $extra): array {
+            $execution = Execution::query()->with('project')->findOrFail((int) $resourceId);
+            $actor = User::query()->findOrFail((int) $actorId);
+
+            return $postJson(
+                "/projects/{$execution->project->uuid}/executions/{$execution->uuid}/validate",
+                $actor,
+                (string) $extra,
+            );
+        })(),
+        'finalize-http' => (function () use ($postJson, $resourceId, $actorId, $extra): array {
+            $execution = Execution::query()->with('project')->findOrFail((int) $resourceId);
+            $actor = User::query()->findOrFail((int) $actorId);
+
+            return $postJson(
+                "/projects/{$execution->project->uuid}/executions/{$execution->uuid}/finalize",
+                $actor,
+                (string) $extra,
+            );
+        })(),
+        'proposal-http' => (function () use ($postJson, $resourceId, $actorId, $extra): array {
+            $execution = Execution::query()->with('project')->findOrFail((int) $resourceId);
+            $actor = User::query()->findOrFail((int) $actorId);
+            $input = json_decode((string) $extra, true, flags: JSON_THROW_ON_ERROR);
+
+            return $postJson(
+                "/projects/{$execution->project->uuid}/executions/{$execution->uuid}/proposals",
+                $actor,
+                (string) ($input['idempotency_key'] ?? ''),
+                is_array($input['payload'] ?? null) ? $input['payload'] : [],
+            );
         })(),
         default => throw new InvalidArgumentException("Unknown worker mode [{$mode}]."),
     };
