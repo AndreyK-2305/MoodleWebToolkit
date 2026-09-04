@@ -4,6 +4,7 @@ namespace Tests\Feature\Domain;
 
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -22,27 +23,46 @@ class Iteration1EMigrationUpgradeTest extends TestCase
             $migration = require database_path('migrations/2026_09_03_020000_add_iteration_1e_fields.php');
             $migration->up();
 
-            $executions = DB::table('executions')->orderBy('id')->get();
-            $this->assertCount(3, $executions);
-            $this->assertSame(3, $executions->pluck('workspace_key')->filter()->unique()->count());
-            $this->assertSame(
-                $lineage['source_execution_id'],
-                (int) DB::table('executions')->where('id', $lineage['resumed_execution_id'])->value('resumed_from_execution_id'),
-            );
-            $this->assertSame(
-                $lineage['checkpoint_id'],
-                (int) DB::table('executions')->where('id', $lineage['resumed_execution_id'])->value('resume_checkpoint_id'),
-            );
+            $this->assertMigratedState($lineage);
+            $this->assertCompletedExecutionIsReadOnly($lineage['completed_execution_id']);
 
-            try {
-                DB::table('executions')->where('id', $lineage['completed_execution_id'])->update(['progress' => 99]);
-                $this->fail('El guard de proyecto completado debía seguir activo después de la migración.');
-            } catch (QueryException $exception) {
-                $this->assertSame('23514', $exception->getCode());
-            }
+            $migration->down();
+            $this->assertFalse(Schema::hasColumn('executions', 'workspace_key'));
+            $this->assertFalse(Schema::hasColumn('checkpoints', 'adapter_key'));
+            $this->assertFalse(Schema::hasColumn('conflicts', 'version'));
+
+            $migration->up();
+            $this->assertMigratedState($lineage);
+            $this->assertCompletedExecutionIsReadOnly($lineage['completed_execution_id']);
         } finally {
             DB::statement('SET search_path TO public');
             DB::statement(sprintf('DROP SCHEMA IF EXISTS "%s" CASCADE', $schema));
+        }
+    }
+
+    /** @param array{completed_execution_id: int, source_execution_id: int, checkpoint_id: int, resumed_execution_id: int} $lineage */
+    private function assertMigratedState(array $lineage): void
+    {
+        $executions = DB::table('executions')->orderBy('id')->get();
+        $this->assertCount(3, $executions);
+        $this->assertSame(3, $executions->pluck('workspace_key')->filter()->unique()->count());
+        $this->assertSame(
+            $lineage['source_execution_id'],
+            (int) DB::table('executions')->where('id', $lineage['resumed_execution_id'])->value('resumed_from_execution_id'),
+        );
+        $this->assertSame(
+            $lineage['checkpoint_id'],
+            (int) DB::table('executions')->where('id', $lineage['resumed_execution_id'])->value('resume_checkpoint_id'),
+        );
+    }
+
+    private function assertCompletedExecutionIsReadOnly(int $executionId): void
+    {
+        try {
+            DB::table('executions')->where('id', $executionId)->update(['progress' => 99]);
+            $this->fail('El guard de proyecto completado debía seguir activo después de la migración.');
+        } catch (QueryException $exception) {
+            $this->assertSame('23514', $exception->getCode());
         }
     }
 

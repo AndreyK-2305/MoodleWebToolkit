@@ -29,6 +29,7 @@ import {
     executionScopeReplacement,
     initialTrackingCursor,
     mergeSequencedEvents,
+    realtimeLiveState,
     responseBelongsToExecution,
     resumePayload,
 } from '@/lib/execution-tracking';
@@ -258,6 +259,11 @@ function ExecutionTracker({
 
     useEffect(() => {
         const channel = echo.private(realtimeChannel);
+        const connection = echo.connector.pusher.connection;
+        const reflectConnectionState = (state: { current: string }) =>
+            setLive((current) => realtimeLiveState(current, state.current));
+        const markFailed = () =>
+            setLive((current) => realtimeLiveState(current, 'failed'));
         const listener = (payload: {
             execution_uuid?: string;
             event?: FunctionalEvent;
@@ -281,10 +287,12 @@ function ExecutionTracker({
         channel
             .listen('.execution.event', listener)
             .subscribed(() => {
-                setLive(true);
+                setLive((current) => realtimeLiveState(current, 'subscribed'));
                 void catchUp();
             })
-            .error(() => setLive(false));
+            .error(markFailed);
+
+        connection.bind('state_change', reflectConnectionState);
 
         void catchUp();
         const fallback = window.setInterval(() => void catchUp(), 15_000);
@@ -295,6 +303,7 @@ function ExecutionTracker({
             inFlightRequest.current?.abort();
             inFlightRequest.current = null;
             catchingUp.current = false;
+            connection.unbind('state_change', reflectConnectionState);
             channel.stopListening('.execution.event', listener);
             echo.leave(realtimeChannel);
         };

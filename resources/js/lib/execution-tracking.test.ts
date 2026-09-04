@@ -3,6 +3,7 @@ import {
     executionScopeReplacement,
     initialTrackingCursor,
     mergeSequencedEvents,
+    realtimeLiveState,
     responseBelongsToExecution,
     resumePayload,
 } from './execution-tracking';
@@ -59,5 +60,13 @@ describe('execution tracking isolation', () => {
                 [{ sequence: 2 }, { sequence: 4 }, { sequence: 3 }],
             ).map((event) => event.sequence),
         ).toEqual([1, 2, 3, 4]);
+    });
+
+    it('reflects websocket disconnection and resubscription', () => {
+        expect(realtimeLiveState(true, 'disconnected')).toBe(false);
+        expect(realtimeLiveState(true, 'connecting')).toBe(false);
+        expect(realtimeLiveState(true, 'unavailable')).toBe(false);
+        expect(realtimeLiveState(true, 'failed')).toBe(false);
+        expect(realtimeLiveState(false, 'subscribed')).toBe(true);
     });
 });

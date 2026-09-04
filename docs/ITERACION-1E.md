@@ -249,12 +249,33 @@ TRIGGER` conserva un lock `ACCESS EXCLUSIVE` hasta el commit, de modo que no
 NULL` y permanecen las nuevas restricciones de 1E.
 - **Regresión añadida:** `Iteration1EMigrationUpgradeTest` crea un schema aislado,
   ejecuta todas las migraciones previas, inserta estados válidos y un linaje de
-  reanudación, ejecuta la migración real de 1E y vuelve a intentar una escritura
-  prohibida sobre el proyecto completado.
+  reanudación, ejecuta la migración real de 1E, hace rollback y la aplica de
+  nuevo. Después de cada aplicación vuelve a intentar una escritura prohibida
+  sobre el proyecto completado.
 - **Evidencia y límite:** el upgrade conserva tres ejecuciones, tres workspaces
   UUID únicos, historial y referencias de linaje; la escritura posterior vuelve
-  a fallar con SQLSTATE `23514`. La prueba es PostgreSQL real en un schema
-  desechable, no `migrate:fresh`, y no toca la base de desarrollo.
+  a fallar con SQLSTATE `23514` antes y después del rollback/reaplicación. La
+  prueba consta de 13 aserciones sobre PostgreSQL real en un schema desechable,
+  no `migrate:fresh`, y no toca la base de desarrollo.
+
+### 6. Estado visible durante la reconexión Reverb
+
+- **Reproducción previa:** al detener Reverb con una pantalla de seguimiento
+  abierta, el catch-up HTTP continuaba, pero la insignia permanecía en `Tiempo
+  real conectado` durante los intentos de reconexión.
+- **Causa:** el componente sólo atendía la suscripción confirmada y el callback
+  de error del canal. Pusher cambia primero la conexión global a `connecting`,
+  estado que no llegaba a React.
+- **Solución:** el tracker escucha `state_change`, baja el indicador para todo
+  estado que no sea la conexión vigente y sólo vuelve a marcar tiempo real
+  después de que el canal privado confirma su resuscripción. El polling de 15
+  segundos permanece independiente.
+- **Regresión añadida:** Vitest cubre `connecting`, `disconnected`, `unavailable`
+  y `failed`, además de la recuperación posterior mediante `subscribed`.
+- **Evidencia y límite:** en el navegador real se detuvo Reverb, la pantalla
+  cambió a `Recuperación activa` y siguió consultando por HTTP; al levantar el
+  servicio, regresó a `Tiempo real conectado` tras el backoff de Pusher y sin
+  recarga. No se alteraron datos ni volúmenes durante esta comprobación.
 
 ## Evidencia automatizada local
 
@@ -262,17 +283,18 @@ La base de testing usa exclusivamente `postgres-testing` en `tmpfs`; se ejecutó
 `migrate:fresh` allí. En desarrollo sólo se ejecutó `migrate` y no se borraron
 datos.
 
-- Suite PHP completa: 197 pruebas aprobadas, 1270 aserciones.
+- Suite PHP completa: 197 pruebas aprobadas, 1278 aserciones.
 - Casos específicos 1E: 11 pruebas aprobadas, incluidas espera prolongada,
   conflictos múltiples, reanudación, cancelación y rollback.
 - Autorización temporal: 13 casos aprobados, incluidos login completo con y sin
   remember, recaller real, segundo factor, contraseña incorrecta/correcta con
   rate limit, permisos, acción obsoleta y pérdida/recuperación de sesión.
-- Upgrade real pre-1E: 1 prueba aprobada en schema PostgreSQL aislado.
+- Upgrade, rollback y reaplicación pre-1E: 1 prueba y 13 aserciones aprobadas en
+  un schema PostgreSQL aislado.
 - Revocación Reverb real: 2 pruebas aprobadas, 23 aserciones, con conexiones
   WebSocket y distribución posterior a la revocación.
-- Estado frontend: 4 pruebas Vitest aprobadas para checkpoint, cursor, respuesta
-  tardía, orden y deduplicación.
+- Estado frontend: 5 pruebas Vitest aprobadas para checkpoint, cursor, respuesta
+  tardía, orden, deduplicación y estado de reconexión.
 - Concurrencia PostgreSQL multiproceso: 7 pruebas aprobadas, incluida la carrera
   cancelación/continuación.
 - Pint: 187 archivos aprobados.
@@ -317,6 +339,12 @@ con Redis, queue worker y Reverb activos:
   `Tiempo real conectado`;
 - PostgreSQL confirmó dos workspaces diferentes, linaje `4 → 5`, checkpoint
   `2` y secuencias independientes `1–9` / `1–6`;
+- durante el cierre técnico, la Execution reanudada pasó en vivo por
+  `CANCELLING` y terminó en `CANCELLED` cuando el worker confirmó su punto
+  seguro, sin trabajo tardío;
+- al detener Reverb, el seguimiento cambió a `Recuperación activa` y mantuvo el
+  catch-up HTTP; al levantarlo recuperó `Tiempo real conectado` tras el backoff
+  y sin recargar la página;
 - la consola del navegador no registró advertencias ni errores.
 
 La configuración temporal se restauró a `AUTH_PASSWORD_TIMEOUT=7200` antes de

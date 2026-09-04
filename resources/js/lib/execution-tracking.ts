@@ -41,6 +41,18 @@ export function responseBelongsToExecution(
     return response.execution.uuid === expectedUuid;
 }
 
+export function realtimeLiveState(current: boolean, event: string): boolean {
+    if (event === 'subscribed') {
+        return true;
+    }
+
+    if (event === 'connected') {
+        return current;
+    }
+
+    return false;
+}
+
 export function executionScopeReplacement<T extends SequencedEvent>(
     currentUuid: string,
     nextExecution: Pick<ExecutionIdentity, 'uuid' | 'last_event_sequence'>,
