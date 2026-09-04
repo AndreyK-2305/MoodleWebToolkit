@@ -65,6 +65,7 @@ class SecurityController extends Controller
             'password' => $request->password,
             'must_change_password' => false,
         ]);
+        $request->session()->put('auth.password_confirmed_at', (int) now()->timestamp);
 
         Inertia::flash('toast', ['type' => 'success', 'message' => __('Password updated.')]);
 

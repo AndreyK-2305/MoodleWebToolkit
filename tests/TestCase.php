@@ -2,6 +2,7 @@
 
 namespace Tests;
 
+use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 use Laravel\Fortify\Features;
@@ -20,5 +21,14 @@ abstract class TestCase extends BaseTestCase
         if (! Features::enabled($feature)) {
             $this->markTestSkipped($message ?? "Fortify feature [{$feature}] is not enabled.");
         }
+    }
+
+    public function actingAs(Authenticatable $user, $guard = null): static
+    {
+        parent::actingAs($user, $guard);
+
+        return $this->withSession([
+            'auth.password_confirmed_at' => (int) now()->timestamp,
+        ]);
     }
 }

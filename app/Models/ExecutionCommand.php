@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
+ * @property ExecutionCommandType $command_type
  * @property CarbonImmutable|null $processing_started_at
  * @property string|null $lease_owner
  * @property CarbonImmutable|null $lease_expires_at

@@ -51,7 +51,7 @@ enum ProjectStatus: string
             self::DRAFT => [self::CONFIGURING],
             self::CONFIGURING => [self::DRAFT, self::READY],
             self::READY => [self::CONFIGURING, self::QUEUED],
-            self::QUEUED => [self::RUNNING, self::CANCELLED, self::FAILED],
+            self::QUEUED => [self::RUNNING, self::CANCELLING, self::CANCELLED, self::FAILED],
             self::RUNNING => [self::WAITING_USER_ACTION, self::CANCELLING, self::FAILED, self::VERIFYING],
             self::WAITING_USER_ACTION => [self::RUNNING, self::CANCELLING, self::FAILED],
             self::CANCELLING => [self::CANCELLED, self::FAILED],

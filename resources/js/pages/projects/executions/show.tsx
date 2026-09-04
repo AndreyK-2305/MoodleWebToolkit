@@ -1,19 +1,38 @@
-import { Head, Link } from '@inertiajs/react';
+import { Head, Link, router, useForm } from '@inertiajs/react';
 import {
     Activity,
     ArrowLeft,
+    Ban,
     CheckCircle2,
     Circle,
     CircleDashed,
     Clock3,
     Radio,
+    RotateCcw,
+    ShieldAlert,
     TriangleAlert,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
 import { echo } from '@/lib/echo';
+import {
+    executionScopeReplacement,
+    initialTrackingCursor,
+    mergeSequencedEvents,
+    realtimeLiveState,
+    responseBelongsToExecution,
+    resumePayload,
+} from '@/lib/execution-tracking';
 import { cn } from '@/lib/utils';
 
 type Step = {
@@ -35,6 +54,28 @@ type ExecutionData = {
     finished_at: string | null;
     last_event_sequence: number;
     steps: Step[];
+    resumed_from_execution_uuid: string | null;
+    conflicts: ConflictData[];
+    checkpoints: CheckpointData[];
+};
+
+type ConflictData = {
+    id: number;
+    key: string;
+    type: string;
+    status: string;
+    version: number;
+    message: string | null;
+    allowed_decisions: string[];
+    resolved_at: string | null;
+};
+
+type CheckpointData = {
+    id: number;
+    step_key: string;
+    type: string;
+    validated: boolean;
+    created_at: string | null;
 };
 
 type FunctionalEvent = {
@@ -57,26 +98,68 @@ type Props = {
     };
     execution: ExecutionData;
     events: FunctionalEvent[];
+    canControl: boolean;
+    realtimeChannel: string;
 };
 
 type CatchUpResponse = {
     execution: ExecutionData;
     events: FunctionalEvent[];
     has_more: boolean;
+    realtime_channel: string;
 };
 
-export default function ExecutionShow({
+export default function ExecutionShow(props: Props) {
+    return <ExecutionTracker key={props.execution.uuid} {...props} />;
+}
+
+function ExecutionTracker({
     project,
     execution: initialExecution,
     events: initialEvents,
+    canControl,
+    realtimeChannel: initialRealtimeChannel,
 }: Props) {
     const [execution, setExecution] = useState(initialExecution);
     const [events, setEvents] = useState(initialEvents);
+    const [realtimeChannel, setRealtimeChannel] = useState(
+        initialRealtimeChannel,
+    );
     const [live, setLive] = useState(false);
+    const [updatesPaused, setUpdatesPaused] = useState(false);
+    const [reauthOpen, setReauthOpen] = useState(false);
     const lastSequence = useRef(
-        initialEvents.at(-1)?.sequence ?? initialExecution.last_event_sequence,
+        initialTrackingCursor(initialExecution, initialEvents),
     );
     const catchingUp = useRef(false);
+    const requestGeneration = useRef(0);
+    const inFlightRequest = useRef<AbortController | null>(null);
+    const trackedExecutionUuid = useRef(initialExecution.uuid);
+
+    useEffect(() => {
+        const replacement = executionScopeReplacement(
+            trackedExecutionUuid.current,
+            initialExecution,
+            initialEvents,
+        );
+
+        if (replacement === null) {
+            return;
+        }
+
+        trackedExecutionUuid.current = replacement.uuid;
+        requestGeneration.current += 1;
+        inFlightRequest.current?.abort();
+        inFlightRequest.current = null;
+        catchingUp.current = false;
+        lastSequence.current = replacement.cursor;
+        setExecution(initialExecution);
+        setEvents(replacement.events);
+        setRealtimeChannel(initialRealtimeChannel);
+        setLive(false);
+        setUpdatesPaused(false);
+        setReauthOpen(false);
+    }, [initialEvents, initialExecution, initialRealtimeChannel]);
 
     const mergeEvents = useCallback((incoming: FunctionalEvent[]) => {
         if (incoming.length === 0) {
@@ -84,15 +167,7 @@ export default function ExecutionShow({
         }
 
         setEvents((current) => {
-            const indexed = new Map(
-                [...current, ...incoming].map((event) => [
-                    event.sequence,
-                    event,
-                ]),
-            );
-            const merged = [...indexed.values()].sort(
-                (left, right) => left.sequence - right.sequence,
-            );
+            const merged = mergeSequencedEvents(current, incoming);
             lastSequence.current = merged.at(-1)?.sequence ?? 0;
 
             return merged;
@@ -105,6 +180,9 @@ export default function ExecutionShow({
         }
 
         catchingUp.current = true;
+        const generation = requestGeneration.current;
+        const controller = new AbortController();
+        inFlightRequest.current = controller;
 
         try {
             let hasMore = true;
@@ -115,14 +193,39 @@ export default function ExecutionShow({
                     {
                         credentials: 'same-origin',
                         headers: { Accept: 'application/json' },
+                        signal: controller.signal,
                     },
                 );
 
-                if (!response.ok) {
+                if (
+                    controller.signal.aborted ||
+                    generation !== requestGeneration.current
+                ) {
+                    return;
+                }
+
+                if (
+                    !response.ok ||
+                    response.redirected ||
+                    !response.headers
+                        .get('content-type')
+                        ?.includes('application/json')
+                ) {
+                    setUpdatesPaused(true);
+                    setLive(false);
                     break;
                 }
 
                 const data = (await response.json()) as CatchUpResponse;
+
+                if (
+                    controller.signal.aborted ||
+                    generation !== requestGeneration.current ||
+                    !responseBelongsToExecution(initialExecution.uuid, data)
+                ) {
+                    return;
+                }
+
                 const newestSequence = data.events.at(-1)?.sequence;
 
                 if (newestSequence !== undefined) {
@@ -133,16 +236,34 @@ export default function ExecutionShow({
                 }
 
                 setExecution(data.execution);
+                setRealtimeChannel(data.realtime_channel);
+                setUpdatesPaused(false);
                 mergeEvents(data.events);
                 hasMore = data.has_more && data.events.length > 0;
             }
+        } catch {
+            if (
+                !controller.signal.aborted &&
+                generation === requestGeneration.current
+            ) {
+                setUpdatesPaused(true);
+                setLive(false);
+            }
         } finally {
-            catchingUp.current = false;
+            if (inFlightRequest.current === controller) {
+                inFlightRequest.current = null;
+                catchingUp.current = false;
+            }
         }
     }, [initialExecution.uuid, mergeEvents, project.uuid]);
 
     useEffect(() => {
-        const channel = echo.private(`projects.${project.uuid}`);
+        const channel = echo.private(realtimeChannel);
+        const connection = echo.connector.pusher.connection;
+        const reflectConnectionState = (state: { current: string }) =>
+            setLive((current) => realtimeLiveState(current, state.current));
+        const markFailed = () =>
+            setLive((current) => realtimeLiveState(current, 'failed'));
         const listener = (payload: {
             execution_uuid?: string;
             event?: FunctionalEvent;
@@ -166,20 +287,33 @@ export default function ExecutionShow({
         channel
             .listen('.execution.event', listener)
             .subscribed(() => {
-                setLive(true);
+                setLive((current) => realtimeLiveState(current, 'subscribed'));
                 void catchUp();
             })
-            .error(() => setLive(false));
+            .error(markFailed);
+
+        connection.bind('state_change', reflectConnectionState);
 
         void catchUp();
         const fallback = window.setInterval(() => void catchUp(), 15_000);
 
         return () => {
             window.clearInterval(fallback);
+            requestGeneration.current += 1;
+            inFlightRequest.current?.abort();
+            inFlightRequest.current = null;
+            catchingUp.current = false;
+            connection.unbind('state_change', reflectConnectionState);
             channel.stopListening('.execution.event', listener);
-            echo.leave(`projects.${project.uuid}`);
+            echo.leave(realtimeChannel);
         };
-    }, [catchUp, initialExecution.uuid, project.uuid]);
+    }, [catchUp, initialExecution.uuid, realtimeChannel]);
+
+    useEffect(() => {
+        if (!updatesPaused) {
+            setReauthOpen(false);
+        }
+    }, [updatesPaused]);
 
     return (
         <>
@@ -208,14 +342,61 @@ export default function ExecutionShow({
 
                 <Alert className="border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30">
                     <TriangleAlert className="text-amber-700 dark:text-amber-400" />
-                    <AlertTitle>Punto de entrega de 1D</AlertTitle>
+                    <AlertTitle>Frontera explícita de 1E</AlertTitle>
                     <AlertDescription>
-                        El worker completa una sola unidad simulada y conserva
-                        la ejecución en RUNNING. Las unidades restantes
-                        continuarán en cortes posteriores; aquí no se fuerza
-                        REVIEW ni COMPLETED.
+                        El procesamiento satisfactorio termina en RUNNING con
+                        verificación y finalización pendientes de 1F. Esta fase
+                        no fuerza REVIEW ni COMPLETED.
                     </AlertDescription>
                 </Alert>
+
+                {updatesPaused && (
+                    <Alert variant="destructive">
+                        <ShieldAlert />
+                        <AlertTitle>Actualizaciones pausadas</AlertTitle>
+                        <AlertDescription className="space-y-3">
+                            <p>
+                                La sesión autenticada ya no puede recuperar
+                                eventos. Lo mostrado se conserva, pero no se
+                                presenta como información nueva ni se permiten
+                                modificaciones.
+                            </p>
+                            <Button
+                                variant="outline"
+                                onClick={() => setReauthOpen(true)}
+                            >
+                                Reautenticar en esta pantalla
+                            </Button>
+                        </AlertDescription>
+                    </Alert>
+                )}
+
+                <Dialog open={reauthOpen} onOpenChange={setReauthOpen}>
+                    <DialogContent className="h-[min(760px,90vh)] max-w-2xl grid-rows-[auto_1fr]">
+                        <DialogHeader>
+                            <DialogTitle>Recuperar acceso</DialogTitle>
+                            <DialogDescription>
+                                Complete la autenticación y cualquier segundo
+                                factor habilitado. El seguimiento se pondrá al
+                                día automáticamente sin descartar esta pantalla.
+                            </DialogDescription>
+                        </DialogHeader>
+                        <iframe
+                            title="Reautenticación"
+                            src="/login"
+                            className="border-border size-full rounded-md border"
+                        />
+                    </DialogContent>
+                </Dialog>
+
+                {canControl && (
+                    <ExecutionActions
+                        key={execution.uuid}
+                        projectUuid={project.uuid}
+                        execution={execution}
+                        disabled={updatesPaused}
+                    />
+                )}
 
                 <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
                     <div className="space-y-6">
@@ -372,7 +553,7 @@ export default function ExecutionShow({
 }
 
 function StepIcon({ status }: { status: string }) {
-    if (status === 'SUCCESS') {
+    if (status === 'SUCCESS' || status === 'REUSED') {
         return <CheckCircle2 className="mt-0.5 size-5 text-emerald-600" />;
     }
 
@@ -381,6 +562,149 @@ function StepIcon({ status }: { status: string }) {
     }
 
     return <Circle className="text-muted-foreground mt-0.5 size-5" />;
+}
+
+function ExecutionActions({
+    projectUuid,
+    execution,
+    disabled,
+}: {
+    projectUuid: string;
+    execution: ExecutionData;
+    disabled: boolean;
+}) {
+    const [cancelKey] = useState(() => crypto.randomUUID());
+    const [resumeKey] = useState(() => crypto.randomUUID());
+    const [resumeProcessing, setResumeProcessing] = useState(false);
+    const cancelForm = useForm({});
+    const currentResumePayload = resumePayload(execution);
+    const cancellable = ['QUEUED', 'RUNNING', 'WAITING_USER_ACTION'].includes(
+        execution.status,
+    );
+
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle>Acciones controladas</CardTitle>
+                <p className="text-muted-foreground text-sm">
+                    Todas vuelven a validar permisos, estado e idempotencia en
+                    el backend.
+                </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+                {execution.conflicts
+                    .filter((conflict) => conflict.status === 'OPEN')
+                    .map((conflict) => (
+                        <ConflictAction
+                            key={conflict.id}
+                            projectUuid={projectUuid}
+                            executionUuid={execution.uuid}
+                            conflict={conflict}
+                            disabled={disabled}
+                        />
+                    ))}
+
+                <div className="flex flex-wrap gap-2">
+                    {cancellable && (
+                        <Button
+                            variant="destructive"
+                            disabled={disabled || cancelForm.processing}
+                            onClick={() =>
+                                cancelForm.post(
+                                    `/projects/${projectUuid}/executions/${execution.uuid}/cancel`,
+                                    {
+                                        headers: {
+                                            'Idempotency-Key': cancelKey,
+                                        },
+                                        preserveScroll: true,
+                                    },
+                                )
+                            }
+                        >
+                            <Ban /> Solicitar cancelación
+                        </Button>
+                    )}
+                    {execution.status === 'CANCELLING' && (
+                        <Badge variant="outline">
+                            Cancelación pendiente de confirmación segura
+                        </Badge>
+                    )}
+                    {execution.status === 'FAILED' &&
+                        currentResumePayload !== null && (
+                            <Button
+                                disabled={disabled || resumeProcessing}
+                                onClick={() =>
+                                    router.post(
+                                        `/projects/${projectUuid}/executions/${execution.uuid}/resume`,
+                                        currentResumePayload,
+                                        {
+                                            headers: {
+                                                'Idempotency-Key': resumeKey,
+                                            },
+                                            onStart: () =>
+                                                setResumeProcessing(true),
+                                            onFinish: () =>
+                                                setResumeProcessing(false),
+                                        },
+                                    )
+                                }
+                            >
+                                <RotateCcw /> Reanudar desde checkpoint
+                            </Button>
+                        )}
+                </div>
+            </CardContent>
+        </Card>
+    );
+}
+
+function ConflictAction({
+    projectUuid,
+    executionUuid,
+    conflict,
+    disabled,
+}: {
+    projectUuid: string;
+    executionUuid: string;
+    conflict: ConflictData;
+    disabled: boolean;
+}) {
+    const [key] = useState(() => crypto.randomUUID());
+    const decision = conflict.allowed_decisions[0] ?? '';
+    const form = useForm({
+        decision,
+        conflict_version: conflict.version,
+    });
+
+    return (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
+            <p className="font-medium">
+                {conflict.type === 'WARNING_ACCEPTANCE'
+                    ? 'Advertencia pendiente'
+                    : 'Intervención pendiente'}
+            </p>
+            <p className="text-muted-foreground mt-1 text-sm">
+                {conflict.message}
+            </p>
+            <Button
+                className="mt-3"
+                disabled={disabled || form.processing || decision === ''}
+                onClick={() =>
+                    form.post(
+                        `/projects/${projectUuid}/executions/${executionUuid}/conflicts/${conflict.id}/resolve`,
+                        {
+                            headers: { 'Idempotency-Key': key },
+                            preserveScroll: true,
+                        },
+                    )
+                }
+            >
+                {decision === 'ACCEPT'
+                    ? 'Aceptar advertencia y continuar'
+                    : 'Confirmar intervención y continuar'}
+            </Button>
+        </div>
+    );
 }
 
 ExecutionShow.layout = {

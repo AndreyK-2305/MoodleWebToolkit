@@ -2,6 +2,8 @@
 
 namespace App\Domain\Executions;
 
+use App\Models\Checkpoint;
+use App\Models\Conflict;
 use App\Models\Execution;
 use App\Models\ExecutionEvent;
 use App\Models\ExecutionStep;
@@ -11,11 +13,12 @@ class ExecutionPresenter
     /** @return array<string, mixed> */
     public function execution(Execution $execution): array
     {
-        $execution->loadMissing('steps');
+        $execution->loadMissing(['steps', 'conflicts', 'checkpoints', 'resumedFromExecution']);
 
         return [
             'uuid' => $execution->uuid,
             'attempt' => $execution->attempt,
+            'resumed_from_execution_uuid' => $execution->resumedFromExecution?->uuid,
             'status' => $execution->status->value,
             'progress' => $execution->progress,
             'started_at' => $execution->started_at?->toIso8601String(),
@@ -30,6 +33,31 @@ class ExecutionPresenter
                     'progress' => $step->progress,
                     'started_at' => $step->started_at?->toIso8601String(),
                     'finished_at' => $step->finished_at?->toIso8601String(),
+                ])
+                ->values()
+                ->all(),
+            'conflicts' => $execution->conflicts
+                ->map(fn (Conflict $conflict): array => [
+                    'id' => $conflict->getKey(),
+                    'key' => $conflict->key,
+                    'type' => $conflict->type,
+                    'status' => $conflict->status->value,
+                    'version' => $conflict->version,
+                    'message' => $conflict->details['message'] ?? null,
+                    'allowed_decisions' => is_array($conflict->details['allowed_decisions'] ?? null)
+                        ? array_values($conflict->details['allowed_decisions'])
+                        : [],
+                    'resolved_at' => $conflict->resolved_at?->toIso8601String(),
+                ])
+                ->values()
+                ->all(),
+            'checkpoints' => $execution->checkpoints
+                ->map(fn (Checkpoint $checkpoint): array => [
+                    'id' => $checkpoint->getKey(),
+                    'step_key' => $checkpoint->step_key,
+                    'type' => $checkpoint->type,
+                    'validated' => $checkpoint->validated,
+                    'created_at' => $checkpoint->created_at?->toIso8601String(),
                 ])
                 ->values()
                 ->all(),

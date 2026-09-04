@@ -35,11 +35,26 @@ class HandleInertiaRequests extends Middleware
      */
     public function share(Request $request): array
     {
+        $confirmedAt = $request->session()->get('auth.password_confirmed_at');
+
+        $timeout = (int) config('auth.password_timeout');
+        $expired = $request->user() !== null && (
+            ! is_numeric($confirmedAt)
+            || ((int) now()->timestamp - (int) $confirmedAt) >= $timeout
+        );
+
         return [
             ...parent::share($request),
             'name' => config('app.name'),
             'auth' => [
                 'user' => $request->user(),
+            ],
+            'actionConfirmation' => [
+                'required' => (bool) $request->session()->get('action_confirmation_required', false),
+                'expired' => $expired,
+                'confirmed_at' => is_numeric($confirmedAt) ? (int) $confirmedAt : null,
+                'expires_at' => is_numeric($confirmedAt) ? ((int) $confirmedAt) + $timeout : null,
+                'lifetime_minutes' => (int) ceil($timeout / 60),
             ],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
         ];

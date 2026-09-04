@@ -2,16 +2,28 @@
 
 namespace App\Models;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use LogicException;
 
+/**
+ * @property int $id
+ * @property int $execution_id
+ * @property string $step_key
+ * @property string $type
+ * @property string $adapter_key
+ * @property string $resume_token
+ * @property bool $validated
+ * @property array<string, mixed>|null $metadata
+ * @property CarbonImmutable|null $created_at
+ */
 class Checkpoint extends Model
 {
     public const UPDATED_AT = null;
 
-    protected $fillable = ['execution_id', 'step_key', 'type', 'resume_token', 'validated', 'metadata'];
+    protected $fillable = ['execution_id', 'step_key', 'type', 'adapter_key', 'resume_token', 'validated', 'metadata'];
 
     protected $hidden = ['resume_token'];
 
@@ -26,14 +38,18 @@ class Checkpoint extends Model
                 throw new LogicException('La validación de un checkpoint no se puede revocar.');
             }
 
+            if ($checkpoint->getRawOriginal('validated') === true && $checkpoint->isDirty()) {
+                throw new LogicException('Un checkpoint validado es inmutable.');
+            }
+
             if ($checkpoint->isDirty() && $checkpoint->resumedExecutions()->exists()) {
                 throw new LogicException('Un checkpoint ya referenciado es inmutable.');
             }
         });
 
         static::deleting(function (self $checkpoint): void {
-            if ($checkpoint->resumedExecutions()->exists()) {
-                throw new LogicException('Un checkpoint ya referenciado no se puede eliminar.');
+            if ($checkpoint->validated || $checkpoint->resumedExecutions()->exists()) {
+                throw new LogicException('Un checkpoint validado o ya referenciado no se puede eliminar.');
             }
         });
     }

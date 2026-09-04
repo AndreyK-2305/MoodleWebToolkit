@@ -4,6 +4,7 @@ namespace App\Domain\Executions;
 
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\EventSeverity;
+use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
 use App\Enums\ExecutionStepStatus;
 use App\Models\AuditLog;
@@ -48,6 +49,14 @@ class ExecutionFailureCloser
             }
 
             $execution = $command->execution;
+
+            if ($execution->status === ExecutionStatus::CANCELLING
+                && $command->command_type !== ExecutionCommandType::CANCEL
+            ) {
+                $this->leases->finish($command);
+
+                return true;
+            }
 
             if (! $execution->status->isActive()) {
                 return false;

@@ -19,7 +19,7 @@ final class ExecutionQueueConfiguration
         }
 
         throw new LogicException(sprintf(
-            'Configuración insegura: REDIS_QUEUE_RETRY_AFTER (%d s) debe ser mayor que el timeout del job 1D (%d s). Defina REDIS_QUEUE_RETRY_AFTER=%d o un valor superior.',
+            'Configuración insegura: REDIS_QUEUE_RETRY_AFTER (%d s) debe ser mayor que el timeout de la unidad asíncrona (%d s). Defina REDIS_QUEUE_RETRY_AFTER=%d o un valor superior.',
             $retryAfter,
             self::JOB_TIMEOUT_SECONDS,
             self::DEFAULT_REDIS_RETRY_AFTER_SECONDS,

@@ -2,10 +2,12 @@
 
 namespace Tests\Feature\Domain;
 
+use App\Domain\Executions\Contracts\ExecutionProvider;
 use App\Domain\Executions\ExecutionCommandLease;
 use App\Domain\Executions\ExecutionUnitState;
 use App\Domain\Executions\StartProjectExecution;
 use App\Domain\Projects\ProjectWizard;
+use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionStatus;
 use App\Enums\ExecutionStepStatus;
@@ -13,6 +15,7 @@ use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
 use App\Enums\UserRole;
 use App\Exceptions\ExecutionAlreadyActive;
+use App\Jobs\RunExecutionUnit;
 use App\Models\AuditLog;
 use App\Models\Execution;
 use App\Models\ExecutionCommand;
@@ -130,7 +133,7 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertSame([200, 201], collect($results)->pluck('http_status')->sort()->values()->all());
         $this->assertCount(1, collect($results)->pluck('body.execution_uuid')->unique());
         $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
-        $this->assertSame(1, DB::table('execution_commands')->count());
+        $this->assertSame(2, DB::table('execution_commands')->count());
     }
 
     public function test_two_concurrent_http_requests_with_different_keys_keep_one_active_execution(): void
@@ -146,7 +149,7 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['status'] === 'ok'));
         $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['http_status'] === 409));
         $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
-        $this->assertSame(1, DB::table('execution_commands')->count());
+        $this->assertSame(2, DB::table('execution_commands')->count());
     }
 
     public function test_two_reconcilers_close_one_abandoned_command_exactly_once(): void
@@ -192,13 +195,52 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertNull($command->fresh()->lease_owner);
         $this->assertSame(ProjectStatus::RUNNING, $project->fresh()->status);
         $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
-        $this->assertSame(25, $execution->fresh()->progress);
+        $this->assertSame(50, $execution->fresh()->progress);
         $this->assertSame(ExecutionStepStatus::SUCCESS, $execution->steps()->orderBy('position')->firstOrFail()->status);
-        $this->assertSame(3, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
-        $this->assertSame(1, $execution->events()->where('type', 'phase.completed')->count());
-        $this->assertSame(1, $execution->events()->where('type', 'iteration_1d.boundary')->count());
+        $this->assertSame(2, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
+        $this->assertSame(2, $execution->events()->where('type', 'phase.completed')->count());
+        $this->assertSame(1, $execution->events()->where('type', 'execution.command_queued')->count());
+        $this->assertSame(1, $execution->events()->where('type', 'iteration_1e.boundary')->count());
         $this->assertSame(0, $execution->events()->where('type', 'execution.abandoned')->count());
         $this->assertSame(0, ExecutionLog::query()->where('execution_id', $execution->getKey())->count());
+    }
+
+    public function test_cancellation_racing_a_continuation_prevents_late_work(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution, $command, $owner] = $this->claimedExecution($admin, expired: false);
+
+        $results = $this->runConcurrently([
+            ['finish-command', (int) $command->getKey(), null, $owner],
+            ['cancel-http', (int) $execution->getKey(), (int) $admin->getKey(), 'concurrent-cancel-0001'],
+        ]);
+
+        $this->assertSame('ok', $results[1]['status']);
+        $this->assertContains($results[0]['status'], ['ok', 'error']);
+        $cancel = $execution->commands()->where('command_type', 'CANCEL')->sole();
+
+        if ($execution->fresh()->status === ExecutionStatus::CANCELLING) {
+            (new RunExecutionUnit((int) $cancel->getKey()))->handle(
+                app(ExecutionProvider::class),
+                app(ToolAdapter::class),
+            );
+        }
+
+        $this->assertSame(ExecutionStatus::CANCELLED, $execution->fresh()->status);
+        $this->assertSame(ProjectStatus::CANCELLED, $project->fresh()->status);
+        $this->assertSame(0, $execution->commands()->whereNull('processed_at')->count());
+
+        $late = $execution->commands()->where('command_type', 'CONTINUE')->first();
+
+        if ($late !== null) {
+            (new RunExecutionUnit((int) $late->getKey()))->handle(
+                app(ExecutionProvider::class),
+                app(ToolAdapter::class),
+            );
+        }
+
+        $this->assertSame(ExecutionStatus::CANCELLED, $execution->fresh()->status);
+        $this->assertSame(1, $execution->events()->where('type', 'execution.cancelled')->count());
     }
 
     /**

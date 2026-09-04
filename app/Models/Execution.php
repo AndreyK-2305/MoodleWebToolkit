@@ -9,6 +9,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Str;
 use LogicException;
 
 /**
@@ -29,6 +30,7 @@ class Execution extends Model
     protected $fillable = [
         'project_id',
         'uuid',
+        'workspace_key',
         'attempt',
         'status',
         'progress',
@@ -43,8 +45,12 @@ class Execution extends Model
 
     protected static function booted(): void
     {
+        static::creating(function (self $execution): void {
+            $execution->workspace_key ??= (string) Str::uuid();
+        });
+
         static::updating(function (self $execution): void {
-            if ($execution->isDirty(['project_id', 'uuid', 'attempt'])) {
+            if ($execution->isDirty(['project_id', 'uuid', 'workspace_key', 'attempt'])) {
                 throw new LogicException('La identidad de una ejecución es inmutable.');
             }
 

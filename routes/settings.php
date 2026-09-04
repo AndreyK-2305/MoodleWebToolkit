@@ -16,7 +16,7 @@ Route::middleware(['auth', 'active'])->group(function () {
 
     Route::middleware(['verified', 'password.changed'])->group(function () {
         Route::get('settings/profile', [ProfileController::class, 'edit'])->name('profile.edit');
-        Route::patch('settings/profile', [ProfileController::class, 'update'])->name('profile.update');
+        Route::patch('settings/profile', [ProfileController::class, 'update'])->middleware('action.confirmed')->name('profile.update');
         Route::inertia('settings/appearance', 'settings/appearance')->name('appearance.edit');
     });
 });

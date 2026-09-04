@@ -139,6 +139,10 @@ class SimulatedPreflight
             $errors[] = 'Seleccione un escenario de simulación.';
         }
 
+        if (! in_array($options['processing_scenario'] ?? 'SUCCESS', ['SUCCESS', 'WARNING', 'INTERVENTION', 'FAILURE'], true)) {
+            $errors[] = 'Seleccione un caso especial de procesamiento válido.';
+        }
+
         switch ($project->type) {
             case ProjectType::COLLECT:
                 $this->requireOption($errors, $options, 'artifact_name', 'Indique el nombre del paquete estructurado.');

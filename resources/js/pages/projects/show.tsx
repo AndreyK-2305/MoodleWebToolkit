@@ -51,6 +51,7 @@ type Preflight = {
 };
 type ProjectOptions = {
     simulation_scenario?: string | null;
+    processing_scenario?: string | null;
     artifact_name?: string | null;
     category_strategy?: string | null;
     user_conflict_strategy?: string | null;
@@ -678,6 +679,7 @@ function OptionsStep({
     const options = project.options;
     const form = useForm({
         simulation_scenario: options.simulation_scenario ?? 'SUCCESS',
+        processing_scenario: options.processing_scenario ?? 'SUCCESS',
         artifact_name: options.artifact_name ?? '',
         category_strategy: options.category_strategy ?? 'PRESERVE',
         user_conflict_strategy: options.user_conflict_strategy ?? 'REVIEW',
@@ -735,6 +737,40 @@ function OptionsStep({
                             acceder a infraestructura real.
                         </p>
                         <InputError message={form.errors.simulation_scenario} />
+                    </div>
+
+                    <div className="grid gap-2">
+                        <Label htmlFor="processing-scenario">
+                            Caso especial durante el procesamiento
+                        </Label>
+                        <select
+                            id="processing-scenario"
+                            disabled={!project.can_edit}
+                            className="border-input bg-background h-9 max-w-xl rounded-md border px-3 text-sm disabled:opacity-60"
+                            value={form.data.processing_scenario}
+                            onChange={(event) =>
+                                form.setData(
+                                    'processing_scenario',
+                                    event.target.value,
+                                )
+                            }
+                        >
+                            <option value="SUCCESS">Sin incidencias</option>
+                            <option value="WARNING">
+                                Advertencia con aceptación
+                            </option>
+                            <option value="INTERVENTION">
+                                Intervención manual
+                            </option>
+                            <option value="FAILURE">
+                                Fallo con checkpoint
+                            </option>
+                        </select>
+                        <p className="text-muted-foreground text-xs">
+                            Controla de forma reproducible el motor 1E. La
+                            verificación y el cierre siguen fuera de alcance.
+                        </p>
+                        <InputError message={form.errors.processing_scenario} />
                     </div>
 
                     {project.type === 'COLLECT' && (

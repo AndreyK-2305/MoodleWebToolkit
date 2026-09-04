@@ -15,7 +15,7 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Creates the logical Execution only. Dispatching Laravel jobs belongs to 1D.
+ * Creates a logical Execution only; command services own durable dispatch.
  */
 class ProjectExecutionManager
 {

@@ -8,8 +8,12 @@ use App\Actions\Fortify\CreateNewUser;
 /* @end-chisel-registration */
 use App\Actions\Fortify\ResetUserPassword;
 use App\Models\User;
+use Illuminate\Auth\Events\Login;
+use Illuminate\Auth\SessionGuard;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
@@ -37,6 +41,22 @@ class FortifyServiceProvider extends ServiceProvider
         $this->configureActions();
         $this->configureViews();
         $this->configureRateLimiting();
+
+        Event::listen(Login::class, function (Login $event): void {
+            if (! request()->hasSession()) {
+                return;
+            }
+
+            $guard = Auth::guard($event->guard);
+
+            if ($guard instanceof SessionGuard && $guard->viaRemember()) {
+                request()->session()->forget('auth.password_confirmed_at');
+
+                return;
+            }
+
+            request()->session()->put('auth.password_confirmed_at', (int) now()->timestamp);
+        });
 
         Fortify::authenticateUsing(function (Request $request): ?User {
             $user = User::query()->where('email', User::normalizeEmail((string) $request->email))->first();
@@ -114,6 +134,10 @@ class FortifyServiceProvider extends ServiceProvider
             $throttleKey = Str::transliterate(Str::lower($request->input(Fortify::username())).'|'.$request->ip());
 
             return Limit::perMinute(5)->by($throttleKey);
+        });
+
+        RateLimiter::for('action-confirmation', function (Request $request) {
+            return Limit::perMinute(5)->by(($request->user()?->getAuthIdentifier() ?? $request->ip()).'|'.$request->ip());
         });
 
         /* @chisel-passkeys */
