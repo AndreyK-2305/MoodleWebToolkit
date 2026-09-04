@@ -142,8 +142,7 @@ que aparenten validez y permite repetir el mismo comando sin duplicados.
 
 `DownloadArtifact` vuelve a autorizar al actor, comprueba la relación exacta
 Project → Execution → Artifact, existencia, tamaño y SHA-256, y registra la
-descarga idempotente. Un archivo faltante devuelve 410; uno alterado devuelve
-409. Cambiar identificadores de la URL no cruza el ámbito de route model
+descarga idempotente. Un archivo faltante devuelve 410; uno alterado devuelve 409. Cambiar identificadores de la URL no cruza el ámbito de route model
 binding.
 
 El worker de Compose se ejecuta como `www-data`. Esto garantiza que los
@@ -223,12 +222,12 @@ pasó desde los dos roles autorizados.
 
 Los artefactos del recorrido final fueron:
 
-| Tipo | Tamaño | SHA-256 |
-| --- | ---: | --- |
-| `JSON_REPORT` | 1610 bytes | `c7077309dee6c0d343c421df41ad1d515284e919c4f0c782e18b0e07322c66d6` |
+| Tipo                  |     Tamaño | SHA-256                                                            |
+| --------------------- | ---------: | ------------------------------------------------------------------ |
+| `JSON_REPORT`         | 1610 bytes | `c7077309dee6c0d343c421df41ad1d515284e919c4f0c782e18b0e07322c66d6` |
 | `VERIFICATION_REPORT` | 1704 bytes | `ab82846701483116a23157c266e1edb96cbd9b169275731d15df1087759289bf` |
-| `LOG_EXPORT` | 5947 bytes | `b628916f2c0447471401f6a44c09fb4b95259fef87af8cefb1abcc28ce0706d7` |
-| `FINAL_SUMMARY` | 682 bytes | `d267c7f70e3cfc447fdbbd934de29457a55dc2399156acde99e7a1870e99c40e` |
+| `LOG_EXPORT`          | 5947 bytes | `b628916f2c0447471401f6a44c09fb4b95259fef87af8cefb1abcc28ce0706d7` |
+| `FINAL_SUMMARY`       |  682 bytes | `d267c7f70e3cfc447fdbbd934de29457a55dc2399156acde99e7a1870e99c40e` |
 
 ## Validación automatizada
 
