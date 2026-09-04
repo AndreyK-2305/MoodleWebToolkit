@@ -2,14 +2,20 @@
 
 namespace App\Domain\Executions;
 
+use App\Domain\Academic\AcademicPreview;
+use App\Models\AcademicProposal;
+use App\Models\Artifact;
 use App\Models\Checkpoint;
 use App\Models\Conflict;
 use App\Models\Execution;
 use App\Models\ExecutionEvent;
 use App\Models\ExecutionStep;
+use App\Models\Verification;
 
 class ExecutionPresenter
 {
+    public function __construct(private readonly AcademicPreview $preview) {}
+
     /** @return array<string, mixed> */
     public function execution(Execution $execution): array
     {
@@ -61,6 +67,62 @@ class ExecutionPresenter
                 ])
                 ->values()
                 ->all(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public function review(Execution $execution): array
+    {
+        $execution->loadMissing([
+            'academicSnapshot', 'academicProposals.proposer', 'verifications.requester',
+            'artifacts', 'finalizer', 'resumedFromExecution',
+        ]);
+
+        return [
+            'proposal_version' => $execution->proposal_version,
+            'fingerprint' => $execution->review_fingerprint,
+            'validated_proposal_version' => $execution->validated_proposal_version,
+            'validated_fingerprint' => $execution->validated_fingerprint,
+            'validation_current' => $execution->review_fingerprint !== null
+                && $execution->validated_fingerprint !== null
+                && $execution->validated_proposal_version === $execution->proposal_version
+                && hash_equals($execution->review_fingerprint, $execution->validated_fingerprint),
+            'tree' => $execution->academicSnapshot === null ? [] : $this->preview->hierarchicalState($execution),
+            'proposals' => $execution->academicProposals->map(fn (AcademicProposal $proposal): array => [
+                'id' => $proposal->getKey(),
+                'version' => $proposal->version,
+                'operation' => $proposal->operation,
+                'node_id' => $proposal->node_id,
+                'node_type' => $proposal->node_type,
+                'old_value' => $proposal->old_value,
+                'new_value' => $proposal->new_value,
+                'status' => $proposal->status,
+                'proposed_by' => $proposal->proposer?->name,
+                'created_at' => $proposal->created_at?->toIso8601String(),
+            ])->values()->all(),
+            'verifications' => $execution->verifications->sortByDesc('proposal_version')->map(fn (Verification $verification): array => [
+                'id' => $verification->getKey(),
+                'key' => $verification->key,
+                'proposal_version' => $verification->proposal_version,
+                'fingerprint' => $verification->fingerprint,
+                'status' => $verification->status->value,
+                'approved' => $verification->approved,
+                'summary' => $verification->summary,
+                'details' => $verification->details,
+                'checked_at' => $verification->checked_at?->toIso8601String(),
+            ])->values()->all(),
+            'artifacts' => $execution->artifacts->map(fn (Artifact $artifact): array => [
+                'id' => $artifact->getKey(),
+                'type' => $artifact->type,
+                'filename' => $artifact->filename,
+                'mime_type' => $artifact->mime_type,
+                'size' => $artifact->size,
+                'sha256' => $artifact->sha256,
+                'created_at' => $artifact->created_at?->toIso8601String(),
+            ])->values()->all(),
+            'completion_summary' => $execution->completion_summary,
+            'finalized_by' => $execution->finalizer?->name,
+            'read_only' => $execution->status->isTerminal(),
         ];
     }
 

@@ -125,4 +125,13 @@ class ExecutionCommandLease
         $command->lease_expires_at = null;
         $command->save();
     }
+
+    public function releaseForRetry(ExecutionCommand $command): void
+    {
+        $command->processing_started_at = null;
+        $command->lease_owner = null;
+        $command->lease_expires_at = null;
+        $command->dispatched_at = null;
+        $command->save();
+    }
 }

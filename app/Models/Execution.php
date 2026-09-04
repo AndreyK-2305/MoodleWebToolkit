@@ -9,6 +9,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Str;
 use LogicException;
 
@@ -19,9 +20,15 @@ use LogicException;
  * @property int $attempt
  * @property ExecutionStatus $status
  * @property int|null $progress
+ * @property int $proposal_version
+ * @property string|null $review_fingerprint
+ * @property int|null $validated_proposal_version
+ * @property string|null $validated_fingerprint
  * @property int $last_event_sequence
  * @property CarbonImmutable|null $started_at
  * @property CarbonImmutable|null $finished_at
+ * @property array<string, mixed>|null $completion_summary
+ * @property-read Project $project
  */
 class Execution extends Model
 {
@@ -34,13 +41,19 @@ class Execution extends Model
         'attempt',
         'status',
         'progress',
+        'proposal_version',
+        'review_fingerprint',
+        'validated_proposal_version',
+        'validated_fingerprint',
         'last_event_sequence',
         'created_by',
+        'finalized_by',
         'resumed_from_execution_id',
         'resume_checkpoint_id',
         'cancel_requested_at',
         'started_at',
         'finished_at',
+        'completion_summary',
     ];
 
     protected static function booted(): void
@@ -97,6 +110,12 @@ class Execution extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    /** @return BelongsTo<User, $this> */
+    public function finalizer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'finalized_by');
     }
 
     /** @return BelongsTo<Execution, $this> */
@@ -165,6 +184,18 @@ class Execution extends Model
         return $this->hasMany(Artifact::class);
     }
 
+    /** @return HasMany<AcademicProposal, $this> */
+    public function academicProposals(): HasMany
+    {
+        return $this->hasMany(AcademicProposal::class)->orderBy('version');
+    }
+
+    /** @return HasOne<AcademicSnapshot, $this> */
+    public function academicSnapshot(): HasOne
+    {
+        return $this->hasOne(AcademicSnapshot::class);
+    }
+
     /** @return HasMany<AuditLog, $this> */
     public function auditLogs(): HasMany
     {
@@ -176,10 +207,13 @@ class Execution extends Model
         return [
             'status' => ExecutionStatus::class,
             'progress' => 'integer',
+            'proposal_version' => 'integer',
+            'validated_proposal_version' => 'integer',
             'last_event_sequence' => 'integer',
             'cancel_requested_at' => 'immutable_datetime',
             'started_at' => 'immutable_datetime',
             'finished_at' => 'immutable_datetime',
+            'completion_summary' => 'array',
         ];
     }
 }

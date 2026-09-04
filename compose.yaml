@@ -61,6 +61,7 @@ services:
 
     queue-worker:
         <<: *laravel-service
+        user: www-data
         command: >-
             sh -lc "php artisan executions:assert-queue-safe &&
             exec php artisan queue:work redis

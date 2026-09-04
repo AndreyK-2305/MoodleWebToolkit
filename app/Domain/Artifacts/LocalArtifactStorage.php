@@ -6,6 +6,7 @@ use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -18,8 +19,27 @@ class LocalArtifactStorage implements ArtifactStorage
         $path = $this->safePath($path);
         $storage = $this->storage();
 
-        if (! $storage->put($path, $contents)) {
-            throw new RuntimeException('No se pudo guardar el artefacto local.');
+        $this->rejectSymbolicLinks($path);
+        $temporaryPath = $path.'.tmp-'.Str::uuid();
+
+        try {
+            if (! $storage->put($temporaryPath, $contents)) {
+                throw new RuntimeException('No se pudo preparar el artefacto local.');
+            }
+
+            $this->rejectSymbolicLinks($temporaryPath);
+
+            if ($storage->exists($path)) {
+                $storage->delete($path);
+            }
+
+            if (! $storage->move($temporaryPath, $path)) {
+                throw new RuntimeException('No se pudo promover atómicamente el artefacto local.');
+            }
+        } finally {
+            if ($storage->exists($temporaryPath)) {
+                $storage->delete($temporaryPath);
+            }
         }
 
         return new StoredArtifact(
@@ -32,7 +52,9 @@ class LocalArtifactStorage implements ArtifactStorage
 
     public function read(string $path): string
     {
-        $contents = $this->storage()->get($this->safePath($path));
+        $path = $this->safePath($path);
+        $this->rejectSymbolicLinks($path);
+        $contents = $this->storage()->get($path);
 
         if (! is_string($contents)) {
             throw new RuntimeException('No se pudo leer el artefacto local.');
@@ -43,12 +65,17 @@ class LocalArtifactStorage implements ArtifactStorage
 
     public function exists(string $path): bool
     {
-        return $this->storage()->exists($this->safePath($path));
+        $path = $this->safePath($path);
+        $this->rejectSymbolicLinks($path);
+
+        return $this->storage()->exists($path);
     }
 
     public function delete(string $path): void
     {
-        $this->storage()->delete($this->safePath($path));
+        $path = $this->safePath($path);
+        $this->rejectSymbolicLinks($path);
+        $this->storage()->delete($path);
     }
 
     private function storage(): FilesystemAdapter
@@ -60,10 +87,31 @@ class LocalArtifactStorage implements ArtifactStorage
     {
         $path = str_replace('\\', '/', trim($path));
 
-        if ($path === '' || str_starts_with($path, '/') || preg_match('#(^|/)\.\.(/|$)#', $path) === 1) {
+        if ($path === ''
+            || str_contains($path, "\0")
+            || str_starts_with($path, '/')
+            || preg_match('/^[A-Za-z]:\//', $path) === 1
+            || preg_match('#(^|/)\.\.(/|$)#', $path) === 1
+        ) {
             throw new InvalidArgumentException('La ruta del artefacto debe ser relativa y no puede escapar del almacenamiento.');
         }
 
-        return $path;
+        return preg_replace('#/+#', '/', $path) ?? $path;
+    }
+
+    private function rejectSymbolicLinks(string $path): void
+    {
+        $absolute = $this->storage()->path($path);
+        $root = rtrim($this->storage()->path(''), DIRECTORY_SEPARATOR);
+        $relative = ltrim(substr($absolute, strlen($root)), DIRECTORY_SEPARATOR);
+        $cursor = $root;
+
+        foreach (array_filter(explode(DIRECTORY_SEPARATOR, $relative)) as $segment) {
+            $cursor .= DIRECTORY_SEPARATOR.$segment;
+
+            if (is_link($cursor)) {
+                throw new InvalidArgumentException('No se permiten enlaces simbólicos en rutas de artefactos.');
+            }
+        }
     }
 }

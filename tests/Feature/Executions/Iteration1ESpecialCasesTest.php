@@ -35,12 +35,12 @@ class Iteration1ESpecialCasesTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_success_reaches_the_1e_boundary_without_starting_verification(): void
+    public function test_success_crosses_the_1e_boundary_by_queueing_1f_verification(): void
     {
         [$project, $execution] = $this->startAndRunProcessing('SUCCESS');
 
-        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
-        $this->assertSame(ProjectStatus::RUNNING, $project->fresh()->status);
+        $this->assertSame(ExecutionStatus::VERIFYING, $execution->fresh()->status);
+        $this->assertSame(ProjectStatus::VERIFYING, $project->fresh()->status);
         $this->assertSame(50, $execution->fresh()->progress);
         $this->assertSame([
             ExecutionStepStatus::SUCCESS,
@@ -48,8 +48,8 @@ class Iteration1ESpecialCasesTest extends TestCase
             ExecutionStepStatus::PENDING,
             ExecutionStepStatus::PENDING,
         ], $execution->steps()->orderBy('position')->pluck('status')->all());
-        $this->assertSame(1, $execution->events()->where('type', 'iteration_1e.boundary')->count());
-        $this->assertSame(0, $execution->commands()->whereNull('processed_at')->count());
+        $this->assertSame(1, $execution->events()->where('type', 'verification.queued')->count());
+        $this->assertSame(1, $execution->commands()->whereNull('processed_at')->count());
     }
 
     public function test_warning_waits_without_an_open_command_and_resolution_continues_same_execution(): void
@@ -77,7 +77,7 @@ class Iteration1ESpecialCasesTest extends TestCase
 
         $resumeCommand = $execution->commands()->where('command_type', ExecutionCommandType::RESOLVE_CONFLICT)->sole();
         $this->executeCommand($resumeCommand);
-        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertSame(ExecutionStatus::VERIFYING, $execution->fresh()->status);
         $this->assertSame(50, $execution->fresh()->progress);
         $this->assertSame(ExecutionStepStatus::SUCCESS, $execution->steps()->where('step_key', 'operation')->sole()->status);
         $this->assertDatabaseHas('audit_logs', [
@@ -115,7 +115,7 @@ class Iteration1ESpecialCasesTest extends TestCase
             ['Idempotency-Key' => 'manual-complete-0001'],
         )->assertConflict();
         $this->executeCommand($execution->commands()->where('command_type', ExecutionCommandType::RESOLVE_CONFLICT)->sole());
-        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertSame(ExecutionStatus::VERIFYING, $execution->fresh()->status);
     }
 
     public function test_resolving_one_incidence_does_not_continue_while_another_blocks(): void
@@ -152,8 +152,8 @@ class Iteration1ESpecialCasesTest extends TestCase
         $secondCommand = $execution->commands()->where('idempotency_key', 'second-blocker-0001')->sole();
         $this->assertNull($secondCommand->processed_at);
         $this->executeCommand($secondCommand);
-        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
-        $this->assertSame(1, $execution->events()->where('type', 'iteration_1e.boundary')->count());
+        $this->assertSame(ExecutionStatus::VERIFYING, $execution->fresh()->status);
+        $this->assertSame(1, $execution->events()->where('type', 'verification.queued')->count());
     }
 
     public function test_failure_emits_a_private_checkpoint_and_resume_creates_an_independent_attempt(): void
@@ -183,7 +183,7 @@ class Iteration1ESpecialCasesTest extends TestCase
         $this->assertSame(ExecutionStepStatus::REUSED, $resumed->steps()->where('step_key', 'prepare')->sole()->status);
 
         $this->executeCommand($resumed->commands()->where('command_type', ExecutionCommandType::RESUME)->sole());
-        $this->assertSame(ExecutionStatus::RUNNING, $resumed->fresh()->status);
+        $this->assertSame(ExecutionStatus::VERIFYING, $resumed->fresh()->status);
         $this->assertSame(50, $resumed->fresh()->progress);
         $this->assertSame(ExecutionStatus::FAILED, $failed->fresh()->status);
     }
