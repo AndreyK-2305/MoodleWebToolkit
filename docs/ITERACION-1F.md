@@ -126,8 +126,17 @@ misma Execution, versión y fingerprint exactos, ausencia de otros comandos
 pendientes y permisos actuales. Después persiste un comando `FINALIZE` y lo
 despacha tras el commit.
 
-`ProcessExecutionFinalization` genera primero los cuatro contenidos mediante
-`GenerateFinalArtifacts` y el contrato de streams de `ArtifactStorage`:
+La solicitud crea atómicamente el comando y su fila de
+`ExecutionFinalization`. `ProcessExecutionFinalization` ejecuta una sola unidad
+acotada por job y persiste antes de redispatchar la siguiente. Las etapas son
+`PREPARE`, `EXPORT_LOGS`, `EXPORT_EVENTS`, `GENERATE_REPORTS`,
+`VERIFY_STAGING`, `PROMOTE_ARTIFACTS`, `FINAL_SUMMARY`, `PROMOTE_SUMMARY`,
+`COMMIT` y `COMPLETED`. La fila conserva cursores de logs y eventos, estado
+SHA-256 reanudable, offset de verificación, temporales, artefactos verificados y
+promovidos, propietario y expiración del lease.
+
+`GenerateFinalArtifacts` y el contrato de streams de `ArtifactStorage`
+producen estos cuatro contenidos:
 
 1. `JSON_REPORT`;
 2. `VERIFICATION_REPORT`;
@@ -135,39 +144,62 @@ despacha tras el commit.
 4. `FINAL_SUMMARY`.
 
 `LocalArtifactStorage` sólo acepta claves relativas generadas por el servidor,
-rechaza rutas absolutas, traversal y enlaces simbólicos, escribe bloques y
-calcula tamaño y SHA-256 incrementalmente. Logs y eventos se recorren en orden
-con `lazyById(200)` y el JSON de exportación se emite por fragmentos; no se
-cargan sus colecciones completas. La verificación usa lecturas acotadas de 64
-KiB y la respuesta HTTP entrega un `StreamedResponse` después de completar la
-verificación de tamaño y SHA-256.
+rechaza rutas absolutas, traversal y enlaces simbólicos, y subdivide cualquier
+chunk del productor antes de cada `fwrite`: ninguna escritura física supera
+65.536 bytes, incluso con strings UTF-8 de varios cientos de KiB. Logs y eventos
+se consultan por lotes configurables de 200 filas y se anexan al JSON mediante
+un cursor confirmado. Si el proceso cae después de escribir y antes del commit,
+el reintento trunca los bytes no confirmados hasta el tamaño persistido y
+continúa sin duplicar registros.
 
-La exportación de logs aplica redacción estructurada y recursiva. Elimina por
-completo valores de `Authorization`, `Proxy-Authorization`, `Cookie` y
-`Set-Cookie`, sin depender de capitalización o espacios, además de credenciales
-incrustadas en URI y claves relacionadas con passwords, secretos, tokens,
-`APP_KEY`, claves privadas y `resume_token`.
+La verificación también es incremental: cada job consume como máximo 1 MiB y
+cada lectura se limita a 64 KiB; offset y estado SHA-256 quedan en PostgreSQL.
+Por eso ni la exportación, ni la verificación, ni la promoción dependen del
+tamaño total de un artefacto. Los límites operativos se exponen en
+`FINALIZATION_RECORDS_PER_JOB` y
+`FINALIZATION_VERIFICATION_BYTES_PER_JOB`.
+
+La exportación aplica redacción estructurada y recursiva a todos los artefactos
+JSON. Reconoce objetos y arreglos JSON completos aunque estén almacenados como
+string, fragmentos JSON, encabezados `Authorization`, `Proxy-Authorization`,
+`Cookie` y `Set-Cookie` sin depender de capitalización o espacios, credenciales
+incrustadas en URI y claves exactas relacionadas con passwords, secretos,
+tokens, `APP_KEY`, claves privadas y `resume_token`. La coincidencia de claves
+está acotada para no borrar valores inocentes como `tokenizer`, `secretary` o
+`monkey`.
 
 Cada reclamación escribe en staging privado por Execution, command y
-`lease_owner`. Sólo un lease vigente puede promover cada archivo; la promoción
-local usa creación atómica sin reemplazo y las rutas finales también pertenecen
-al propietario. Sólo después de comprobar los cuatro archivos promovidos, sus
-tamaños y checksums, una transacción crea los registros definitivos y pasa
-Project y Execution a `COMPLETED`. Un worker obsoleto sólo puede limpiar su
-propio staging y sus propias rutas finales, nunca las del ganador. Un fallo no
-crea registros que aparenten validez.
+`lease_owner`. Sólo el lease vigente puede avanzar cursores o promover; un
+propietario vencido es rechazado incluso si despierta tarde. La promoción local
+usa creación atómica sin reemplazo y se registra por artefacto, de modo que un
+reintento reconoce lo ya promovido. Sólo después de comprobar los cuatro
+archivos, sus tamaños y checksums, una transacción crea los registros
+definitivos y pasa Project y Execution a `COMPLETED`. Un fallo no crea registros
+que aparenten validez.
 
-La finalización define un único instante lógico al comenzar la generación
-aceptada. Se persiste de forma coherente en `Execution.finished_at`,
-`completion_summary`, el evento `execution.completed` y `FINAL_SUMMARY` como
-`completed_at`. `finalization_requested_at` conserva por separado la fecha del
-comando y `generated_at` identifica la generación, por lo que una solicitud
-demorada no se presenta como si hubiese terminado al solicitarse.
+La finalización define el instante oficial cuando todos los artefactos previos
+ya fueron generados, verificados y promovidos y se construye el resumen final.
+Ese `closure_ready_at` se persiste de forma coherente en
+`Execution.finished_at`, el step final, `completion_summary`, auditoría, el
+evento `execution.completed`, el estado reanudable y `FINAL_SUMMARY` como
+`completed_at`. `finalization_requested_at` conserva la fecha del comando y
+`finalization_started_at` el inicio real del procesamiento; ninguno se presenta
+como si fuese el cierre.
 
 `DownloadArtifact` vuelve a autorizar al actor, comprueba la relación exacta
 Project → Execution → Artifact, existencia, tamaño y SHA-256, y registra la
-descarga idempotente. Un archivo faltante devuelve 410; uno alterado devuelve 409. Cambiar identificadores de la URL no cruza el ámbito de route model
+descarga idempotente. Abre el archivo una sola vez, verifica ese mismo handle,
+lo rebobina y lo entrega al `StreamedResponse`; cualquier ruta de error o fin de
+respuesta lo cierra. Un archivo faltante devuelve 410; uno alterado devuelve 409. Cambiar identificadores de la URL no cruza el ámbito de route model
 binding.
+
+`FinalizationGarbageCollector` y el comando
+`artifacts:cleanup-finalization` eliminan staging antiguo y finales huérfanos de
+forma repetible. La antigüedad conservadora predeterminada es 86.400 segundos,
+configurable con `FINALIZATION_CLEANUP_MINIMUM_AGE_SECONDS` o
+`--minimum-age`. Siempre se protegen artefactos referenciados, temporales y
+finales persistidos por un cierre activo, el prefijo final activo y el staging
+del lease no vencido.
 
 El worker de Compose se ejecuta como `www-data`. Esto garantiza que los
 directorios privados creados por Flysystem sean legibles por PHP-FPM sin
@@ -207,6 +239,13 @@ La migración `2026_09_05_010000_add_idempotency_receipts.php` incorpora el
 registro durable de llaves aceptadas y hace backfill de comandos y descargas 1F
 ya existentes. PostgreSQL protege sus hashes, estados HTTP e inmutabilidad.
 
+La migración `2026_09_06_010000_add_resumable_finalizations.php` incorpora el
+estado durable de finalización, sus cursores, lease reflejado, manifiestos de
+temporales/artefactos, verificación SHA-256 reanudable y los instantes separados
+de inicio, preparación del cierre y cierre confirmado. Constraints de etapa,
+cursores y terminalidad, además del trigger de sólo lectura, preservan el
+contrato aun ante escrituras directas.
+
 El upgrade soporta filas 1E existentes y artefactos legacy. El rollback 1F → 1E
 es transaccional, retira primero comandos `PROPOSE` incompatibles, restaura el
 constraint de tipos y los triggers 1E, y permite reaplicar 1F. La pérdida de
@@ -240,6 +279,33 @@ cada causa y cuentan con regresiones que inspeccionan bytes reales, instrumentan
 el tamaño de chunks, simulan el relevo de lease sobre PostgreSQL, usan datos 1F
 antes del rollback, reutilizan la llave perdedora tras una nueva propuesta y
 controlan una demora de quince minutos antes del procesamiento.
+
+## Corrección final reanudable
+
+La segunda batería de regresión se ejecutó primero contra
+`b68e55b8d33e62ecbece4dfdc93a73a8e9f2f541`, sin modificar la base de la rama,
+y reprodujo seis defectos adicionales:
+
+1. secretos dentro de strings que contenían JSON completo o fragmentos JSON
+   todavía llegaban a `LOG_EXPORT`;
+2. un productor podía entregar 560.112 bytes y provocar un `fwrite` físico del
+   mismo tamaño, aunque el consumidor leyera después en bloques pequeños;
+3. el primer job de finalización hacía todo el trabajo y cambiaba `REVIEW` a
+   `COMPLETED`, sin cursores ni etapas durables;
+4. la descarga abría una vez para verificar y otra vez para responder, dejando
+   una ventana TOCTOU entre ambos handles;
+5. `completed_at` podía reflejar el inicio de generación y no el instante en que
+   el cierre quedaba íntegro;
+6. no existía una operación segura para retirar staging abandonado y finales
+   huérfanos.
+
+Las pruebas correctivas obligan a que el primer job sólo prepare el estado,
+fuerzan múltiples lotes y etapas, interrumpen un append después de escribir
+bytes sin commit, expiran y relevan el lease, despiertan al propietario viejo,
+comparan cada representación temporal y ejecutan el recolector dos veces. La
+implementación conserva los cursores confirmados, trunca el append parcial al
+reintentar, no duplica logs, eventos, artefactos ni el evento terminal, y sólo
+publica `COMPLETED` en la transacción final.
 
 ## Recorrido real de navegador
 
@@ -289,34 +355,47 @@ Los artefactos del recorrido final fueron:
 
 ## Validación automatizada
 
-La aceptación destructiva se ejecutó sólo en el proyecto Compose
-`moodle-toolkit-1f-validation`, sin puertos publicados y con volúmenes propios.
-La base de desarrollo no se eliminó ni se recreó.
+La aceptación destructiva se ejecutó sólo sobre PostgreSQL efímero y
+contenedores con prefijo `mt1f-`. La base de desarrollo existente no se eliminó
+ni se recreó.
 
 - `docker compose config --quiet`: aprobado.
-- Servicios aislados: diez contenedores levantados; los servicios con
-  healthcheck terminaron saludables.
-- PostgreSQL desde cero: 13 migraciones, incluida 1F.
-- Suite PHP completa: 215 pruebas, 1638 aserciones.
-- Batería específica 1F: 13 pruebas, 260 aserciones, incluidas las nuevas
-  regresiones de redacción, streaming, stale workers y timestamps.
-- Upgrade/rollback/reaplicación 1F después de uso real: 1 prueba, 41
+- Imagen final `moodle-toolkit-app:local`: reconstruida desde el árbol
+  correctivo con todas las dependencias fijadas.
+- Servicios aislados: PostgreSQL, PostgreSQL de pruebas, Redis, Mailpit, app,
+  queue-worker, scheduler, Reverb, Vite y Nginx respondieron a sus healthchecks.
+- PostgreSQL desde cero: 15 migraciones, incluida la nueva persistencia
+  reanudable 1F.
+- Suite PHP: los 221 casos fueron ejercitados localmente; todos quedaron verdes
+  al combinar la ejecución completa y las particiones exigentes descritas
+  abajo. La ejecución integrada definitiva corresponde al CI del SHA publicado.
+- Batería específica 1F y SHA-256 reanudable: 19 pruebas, 381 aserciones.
+- Upgrade/rollback/reaplicación 1F después de uso real: 1 prueba, 45
   aserciones.
 - Concurrencia PostgreSQL multiproceso y relevo de lease: 11 pruebas, 182
   aserciones.
+- Reverb y revocación real de WebSocket: 2 pruebas, 23 aserciones.
 - Casos heredados 1E: 11 pruebas, 98 aserciones.
 - Transiciones: 15 pruebas, 45 aserciones.
 - Vitest: 1 archivo, 5 pruebas.
-- Pint: 212 archivos.
-- Larastan/PHPStan: configuración completa, sin errores.
+- Pint: 218 archivos.
+- Larastan/PHPStan: configuración completa en modo secuencial, sin errores.
 - TypeScript: sin errores.
 - ESLint: sin warnings ni errores.
-- Vite Plus: 87 archivos formateados y 72 sin diagnósticos.
+- Vite Plus: 86 archivos formateados y 72 sin diagnósticos.
 - Build de producción: 2319 módulos transformados.
+- `git diff --check`: sin errores.
 - `BaseLine/`: 131 archivos, SHA-256 canónico
   `5a996439d8432e13abecbc4ebf57f12654d15e14afef8b1160fe55dcf82ae1d3`.
 - Escritura en `BaseLine/`: rechazada por filesystem read-only desde `app`,
   `queue-worker`, `scheduler`, `reverb`, `vite` y `nginx`.
+
+La VM Podman disponible localmente tiene 898 MiB y no tiene swap. Por ello los
+diez servicios se validaron en grupos y las seis conexiones PHP multiproceso se
+ejecutaron con Reverb detenido; mantener ambos grupos simultáneos provoca
+presión de memoria externa al repositorio. No se aumentó el timeout de 120
+segundos ni se relajaron asserts. GitHub Actions ejecuta el stack y la suite
+integrados sobre el SHA exacto de publicación.
 
 ## Decisiones y limitaciones
 
