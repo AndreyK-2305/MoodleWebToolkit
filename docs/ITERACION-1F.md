@@ -1,6 +1,7 @@
 # Iteración 1F — Verificación y cierre
 
-Fecha: 4 de septiembre de 2026.
+Fecha: 4 de septiembre de 2026. Iteración correctiva cerrada el 11 de
+septiembre de 2026.
 
 Rama: `codex/1f-verificacion-cierre`.
 
@@ -99,11 +100,16 @@ exactos que revisó.
 ## Idempotencia y concurrencia
 
 Proponer, validar, finalizar y registrar una descarga usan llaves de
-idempotencia en su ámbito. Validar y finalizar persisten `ExecutionCommand`,
-hash de solicitud y estado antes del despacho posterior al commit.
+idempotencia en su ámbito. `IdempotencyReceipt` conserva de forma append-only
+el actor, la acción, el recurso, el ámbito, la llave, el hash del payload y el
+resultado lógico. Validar y finalizar persisten además `ExecutionCommand`, hash
+de solicitud y estado antes del despacho posterior al commit.
 
 Una llave repetida con el mismo contenido devuelve el resultado ya existente;
-la misma llave con contenido distinto devuelve conflicto. Los locks mantienen
+la misma llave con contenido distinto devuelve conflicto. Si dos llaves
+distintas pierden una carrera por el mismo comando lógico, ambas quedan
+registradas contra el resultado ganador. Por ello una llave aceptada no puede
+reutilizarse silenciosamente contra una versión posterior. Los locks mantienen
 el orden Project, Execution, asignación y entidad específica. Con ellos se
 impiden validaciones simultáneas, propuestas durante `VERIFYING`, dos cierres,
 el cierre de una versión obsoleta y respuestas tardías sobre otra ejecución.
@@ -121,7 +127,7 @@ pendientes y permisos actuales. Después persiste un comando `FINALIZE` y lo
 despacha tras el commit.
 
 `ProcessExecutionFinalization` genera primero los cuatro contenidos mediante
-`GenerateFinalArtifacts` y el contrato `ArtifactStorage`:
+`GenerateFinalArtifacts` y el contrato de streams de `ArtifactStorage`:
 
 1. `JSON_REPORT`;
 2. `VERIFICATION_REPORT`;
@@ -129,16 +135,34 @@ despacha tras el commit.
 4. `FINAL_SUMMARY`.
 
 `LocalArtifactStorage` sólo acepta claves relativas generadas por el servidor,
-rechaza rutas absolutas, traversal y enlaces simbólicos, escribe a una clave
-temporal, promueve el archivo final y calcula tamaño y SHA-256 sobre los bytes
-definitivos. La exportación de logs redacta claves y valores relacionados con
-passwords, secretos, tokens, cookies, autorización, `APP_KEY`, claves privadas
-y `resume_token`.
+rechaza rutas absolutas, traversal y enlaces simbólicos, escribe bloques y
+calcula tamaño y SHA-256 incrementalmente. Logs y eventos se recorren en orden
+con `lazyById(200)` y el JSON de exportación se emite por fragmentos; no se
+cargan sus colecciones completas. La verificación usa lecturas acotadas de 64
+KiB y la respuesta HTTP entrega un `StreamedResponse` después de completar la
+verificación de tamaño y SHA-256.
 
-Sólo después de comprobar los cuatro archivos, sus tamaños y checksums, una
-transacción crea los registros definitivos y pasa Project y Execution a
-`COMPLETED`. Un fallo limpia temporales y archivos parciales, no crea registros
-que aparenten validez y permite repetir el mismo comando sin duplicados.
+La exportación de logs aplica redacción estructurada y recursiva. Elimina por
+completo valores de `Authorization`, `Proxy-Authorization`, `Cookie` y
+`Set-Cookie`, sin depender de capitalización o espacios, además de credenciales
+incrustadas en URI y claves relacionadas con passwords, secretos, tokens,
+`APP_KEY`, claves privadas y `resume_token`.
+
+Cada reclamación escribe en staging privado por Execution, command y
+`lease_owner`. Sólo un lease vigente puede promover cada archivo; la promoción
+local usa creación atómica sin reemplazo y las rutas finales también pertenecen
+al propietario. Sólo después de comprobar los cuatro archivos promovidos, sus
+tamaños y checksums, una transacción crea los registros definitivos y pasa
+Project y Execution a `COMPLETED`. Un worker obsoleto sólo puede limpiar su
+propio staging y sus propias rutas finales, nunca las del ganador. Un fallo no
+crea registros que aparenten validez.
+
+La finalización define un único instante lógico al comenzar la generación
+aceptada. Se persiste de forma coherente en `Execution.finished_at`,
+`completion_summary`, el evento `execution.completed` y `FINAL_SUMMARY` como
+`completed_at`. `finalization_requested_at` conserva por separado la fecha del
+comando y `generated_at` identifica la generación, por lo que una solicitud
+demorada no se presenta como si hubiese terminado al solicitarse.
 
 `DownloadArtifact` vuelve a autorizar al actor, comprueba la relación exacta
 Project → Execution → Artifact, existencia, tamaño y SHA-256, y registra la
@@ -179,9 +203,43 @@ incorpora:
 - triggers append-only y de pertenencia entre ejecuciones;
 - ampliación de los triggers de sólo lectura para `COMPLETED`.
 
-El upgrade soporta filas 1E existentes y artefactos legacy, hace rollback y se
-puede reaplicar. Los triggers se retiran sólo dentro del lock transaccional
-necesario para el backfill y se reinstalan antes de liberar el esquema.
+La migración `2026_09_05_010000_add_idempotency_receipts.php` incorpora el
+registro durable de llaves aceptadas y hace backfill de comandos y descargas 1F
+ya existentes. PostgreSQL protege sus hashes, estados HTTP e inmutabilidad.
+
+El upgrade soporta filas 1E existentes y artefactos legacy. El rollback 1F → 1E
+es transaccional, retira primero comandos `PROPOSE` incompatibles, restaura el
+constraint de tipos y los triggers 1E, y permite reaplicar 1F. La pérdida de
+propuestas, descargas y verificaciones creadas por 1F es deliberada: esas filas
+no tienen una representación íntegra en el esquema 1E. Las verificaciones 1E
+migradas originalmente se conservan.
+
+## Iteración correctiva
+
+Las regresiones se ejecutaron primero contra
+`c68a25a176a86d9f55c48a0878fff7c446689124` y reprodujeron los seis defectos:
+
+1. los valores Bearer, Basic, Proxy-Authorization, cookies y credenciales URI
+   permanecían en los bytes de `LOG_EXPORT`;
+2. el contrato sólo aceptaba strings completos y generación, verificación y
+   descarga materializaban el contenido completo;
+3. dos workers compartían rutas finales y el cleanup obsoleto podía borrar el
+   resultado posterior;
+4. un `PROPOSE` real hacía fallar el rollback al restaurar el constraint 1E;
+5. la llave distinta que perdía una carrera de validación no quedaba persistida
+   y podía reutilizarse con otra versión;
+6. `completed_at` copiaba la creación del comando `FINALIZE` en lugar del cierre
+   oficial.
+
+Las causas fueron, respectivamente, una redacción genérica insuficiente, un
+contrato de almacenamiento basado en strings, ausencia de propiedad privada de
+staging, restauración del constraint antes de depurar datos incompatibles,
+idempotencia ligada únicamente al comando ganador y reutilización semántica de
+`created_at`. Las correcciones descritas en las secciones anteriores cubren
+cada causa y cuentan con regresiones que inspeccionan bytes reales, instrumentan
+el tamaño de chunks, simulan el relevo de lease sobre PostgreSQL, usan datos 1F
+antes del rollback, reutilizan la llave perdedora tras una nueva propuesta y
+controlan una demora de quince minutos antes del procesamiento.
 
 ## Recorrido real de navegador
 
@@ -239,18 +297,21 @@ La base de desarrollo no se eliminó ni se recreó.
 - Servicios aislados: diez contenedores levantados; los servicios con
   healthcheck terminaron saludables.
 - PostgreSQL desde cero: 13 migraciones, incluida 1F.
-- Suite PHP completa: 209 pruebas, 1572 aserciones.
-- Batería específica 1F: 8 pruebas, 213 aserciones.
-- Upgrade/rollback/reaplicación 1F: 1 prueba, 37 aserciones.
-- Concurrencia PostgreSQL multiproceso: 10 pruebas, 167 aserciones.
+- Suite PHP completa: 215 pruebas, 1638 aserciones.
+- Batería específica 1F: 13 pruebas, 260 aserciones, incluidas las nuevas
+  regresiones de redacción, streaming, stale workers y timestamps.
+- Upgrade/rollback/reaplicación 1F después de uso real: 1 prueba, 41
+  aserciones.
+- Concurrencia PostgreSQL multiproceso y relevo de lease: 11 pruebas, 182
+  aserciones.
 - Casos heredados 1E: 11 pruebas, 98 aserciones.
 - Transiciones: 15 pruebas, 45 aserciones.
 - Vitest: 1 archivo, 5 pruebas.
-- Pint: 206 archivos.
-- Larastan/PHPStan: 165 rutas, sin errores.
+- Pint: 212 archivos.
+- Larastan/PHPStan: configuración completa, sin errores.
 - TypeScript: sin errores.
 - ESLint: sin warnings ni errores.
-- Vite Plus: 86 archivos formateados y 72 sin diagnósticos.
+- Vite Plus: 87 archivos formateados y 72 sin diagnósticos.
 - Build de producción: 2319 módulos transformados.
 - `BaseLine/`: 131 archivos, SHA-256 canónico
   `5a996439d8432e13abecbc4ebf57f12654d15e14afef8b1160fe55dcf82ae1d3`.
