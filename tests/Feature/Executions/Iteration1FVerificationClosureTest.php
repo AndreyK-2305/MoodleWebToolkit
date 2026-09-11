@@ -2,13 +2,19 @@
 
 namespace Tests\Feature\Executions;
 
+use App\Domain\Artifacts\ArtifactStreamVerifier;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
+use App\Domain\Artifacts\DownloadArtifact;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
 use App\Domain\Artifacts\GenerateFinalArtifacts;
 use App\Domain\Artifacts\LocalArtifactStorage;
+use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Artifacts\Streams\ArtifactReadStream;
 use App\Domain\Executions\Contracts\ExecutionProvider;
+use App\Domain\Executions\ExecutionCommandLease;
 use App\Domain\Executions\ExecutionFailureCloser;
+use App\Domain\Executions\ProcessExecutionFinalization;
+use App\Domain\Idempotency\IdempotencyRegistry;
 use App\Domain\Projects\ProjectAssignmentManager;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Tools\Contracts\ToolAdapter;
@@ -18,6 +24,8 @@ use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
 use App\Enums\UserRole;
 use App\Events\ExecutionEventBroadcast;
+use App\Exceptions\ArtifactIntegrityException;
+use App\Exceptions\ExecutionCommandLeaseLost;
 use App\Jobs\RunExecutionUnit;
 use App\Models\Execution;
 use App\Models\ExecutionCommand;
@@ -28,6 +36,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
 use InvalidArgumentException;
@@ -373,6 +382,11 @@ class Iteration1FVerificationClosureTest extends TestCase
             'refresh=xyz',
             'usuario',
             'password-secreto',
+            'json-authorization-secret',
+            'json-token-secret',
+            'json-cookie-secret',
+            'json-password-secret',
+            'fragment-secret',
         ];
         $execution->logs()->create([
             'stream' => 'SYSTEM',
@@ -384,10 +398,14 @@ class Iteration1FVerificationClosureTest extends TestCase
                 'Cookie: sid=abc; refresh=xyz',
                 'Set-Cookie: sid=abc; refresh=xyz; HttpOnly',
                 'https://usuario:password-secreto@moodle.test/course',
+                '{"Authorization":"Bearer json-authorization-secret"}',
+                '{"items":[{"token":"json-token-secret"},{"nested":{"Cookie":"json-cookie-secret","password":"json-password-secret"}}]}',
+                'prefijo {"token":"fragment-secret"} sufijo',
             ]),
             'context' => [
                 'Authorization' => 'Bearer context-secret',
                 'nested' => ['SeT-CoOkIe' => 'sid=context-cookie', 'visible' => 'conservar'],
+                'serialized' => '{"nested":{"PASSWORD":"serialized-context-secret"}}',
             ],
         ]);
 
@@ -395,12 +413,17 @@ class Iteration1FVerificationClosureTest extends TestCase
         $artifact = $execution->artifacts()->where('type', 'LOG_EXPORT')->sole();
         $contents = Storage::disk('local')->get($artifact->path);
 
-        foreach ([...$secrets, 'context-secret', 'context-cookie'] as $secret) {
-            $this->assertStringNotContainsString($secret, $contents);
+        foreach ($execution->artifacts as $generatedArtifact) {
+            $bytes = Storage::disk('local')->get($generatedArtifact->path);
+
+            foreach ([...$secrets, 'context-secret', 'context-cookie', 'serialized-context-secret'] as $secret) {
+                $this->assertStringNotContainsString($secret, $bytes);
+            }
         }
 
         $this->assertStringContainsString('[REDACTED]', $contents);
         $this->assertStringContainsString('conservar', $contents);
+        $this->assertStringContainsString('tokenizer', app(SensitiveValueRedactor::class)->redactString('tokenizer inocuo'));
         json_decode($contents, true, flags: JSON_THROW_ON_ERROR);
     }
 
@@ -437,6 +460,15 @@ class Iteration1FVerificationClosureTest extends TestCase
             DB::table('execution_logs')->insert($batch);
         }
 
+        $largeMessage = str_repeat('á', 140_000);
+        $largeContext = ['payload' => str_repeat('ñ', 140_000)];
+        $execution->logs()->create([
+            'stream' => 'SYSTEM',
+            'level' => 'INFO',
+            'message' => $largeMessage,
+            'context' => $largeContext,
+        ]);
+
         $writeCalls = 0;
         $maxWrite = 0;
         $readCalls = 0;
@@ -468,8 +500,203 @@ class Iteration1FVerificationClosureTest extends TestCase
 
         $this->assertSame($artifact->size, strlen($downloaded));
         $this->assertSame($artifact->sha256, hash('sha256', $downloaded));
+        $decoded = json_decode($downloaded, true, flags: JSON_THROW_ON_ERROR);
+        $last = $decoded['logs'][array_key_last($decoded['logs'])];
+        $this->assertSame($largeMessage, $last['message']);
+        $this->assertSame($largeContext, $last['context']);
         $this->assertGreaterThan(20, $readCalls);
         $this->assertLessThanOrEqual(65_536, $maxRead);
+    }
+
+    public function test_finalization_is_persisted_and_requires_multiple_bounded_jobs(): void
+    {
+        Storage::fake('local');
+        [$project, $execution, $operator] = $this->reviewedExecution();
+        $this->actingAs($operator)->postJson(
+            route('projects.executions.finalize', [$project->uuid, $execution->uuid]),
+            [],
+            ['Idempotency-Key' => 'finalize-multijob-reproduction'],
+        )->assertAccepted();
+        $command = $execution->commands()->where('command_type', ExecutionCommandType::FINALIZE)->sole();
+
+        $this->executeOnce($command);
+
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+        $this->assertTrue(Schema::hasTable('execution_finalizations'));
+        $this->assertDatabaseHas('execution_finalizations', [
+            'execution_command_id' => $command->getKey(),
+            'stage' => 'EXPORT_LOGS',
+        ]);
+        Queue::assertPushed(RunExecutionUnit::class, fn (RunExecutionUnit $job): bool => $job->commandId === $command->getKey());
+    }
+
+    public function test_download_verifies_and_streams_the_same_handle(): void
+    {
+        Storage::fake('local');
+        [$project, $execution, $operator] = $this->reviewedExecution();
+        $this->finalize($operator, $project, $execution);
+        $artifact = $execution->artifacts()->where('type', 'JSON_REPORT')->sole();
+        $contents = Storage::disk('local')->get($artifact->path);
+        $storage = new class($artifact->path, $contents) implements ArtifactStorage
+        {
+            public int $opens = 0;
+
+            public ?ArtifactReadStream $lastStream = null;
+
+            public function __construct(private readonly string $path, public string $contents) {}
+
+            public function writeStream(string $path, iterable $chunks): StoredArtifact
+            {
+                throw new RuntimeException('not used');
+            }
+
+            public function appendStream(string $path, iterable $chunks, int $expectedSize): int
+            {
+                throw new RuntimeException('not used');
+            }
+
+            public function readStream(string $path): ArtifactReadStream
+            {
+                $this->opens++;
+                $handle = fopen('php://temp', 'w+b');
+                fwrite($handle, $this->contents);
+                rewind($handle);
+
+                return $this->lastStream = new ArtifactReadStream($handle);
+            }
+
+            public function promote(string $stagingPath, string $finalPath, ?StoredArtifact $expected = null): StoredArtifact
+            {
+                throw new RuntimeException('not used');
+            }
+
+            public function exists(string $path): bool
+            {
+                return $path === $this->path;
+            }
+
+            public function delete(string $path): void {}
+        };
+        $download = new DownloadArtifact(
+            $storage,
+            new ArtifactStreamVerifier($storage),
+            app(IdempotencyRegistry::class),
+        );
+
+        $stream = $download->prepare($artifact, $operator, 'single-handle-download');
+
+        $this->assertSame(1, $storage->opens);
+        $this->assertSame($contents, $stream->read(strlen($contents)));
+        $this->assertFalse($stream->isClosed());
+        $stream->close();
+        $this->assertTrue($stream->isClosed());
+        $storage->contents .= 'alterado';
+
+        try {
+            $download->prepare($artifact, $operator, 'single-handle-tampered');
+            $this->fail('El contenido alterado debía bloquearse.');
+        } catch (ArtifactIntegrityException) {
+            $this->assertTrue($storage->lastStream?->isClosed());
+        }
+
+        $storage->contents = $contents;
+
+        try {
+            $download->prepare($artifact, User::factory()->make(), 'single-handle-audit-failure');
+            $this->fail('Una descarga abortada durante la auditoría debía fallar.');
+        } catch (\Throwable) {
+            $this->assertTrue($storage->lastStream?->isClosed());
+        }
+    }
+
+    public function test_multibatch_finalization_recovers_partial_append_and_rejects_a_stale_worker(): void
+    {
+        Storage::fake('local');
+        config([
+            'services.finalization.records_per_job' => 2,
+            'services.finalization.verification_bytes_per_job' => 65_536,
+        ]);
+        [$project, $execution, $operator] = $this->reviewedExecution();
+
+        foreach (range(1, 7) as $index) {
+            $execution->logs()->create([
+                'stream' => 'SYSTEM',
+                'level' => 'INFO',
+                'message' => "multilote-{$index}",
+                'context' => ['index' => $index],
+            ]);
+        }
+
+        $this->actingAs($operator)->postJson(
+            route('projects.executions.finalize', [$project->uuid, $execution->uuid]),
+            [],
+            ['Idempotency-Key' => 'finalize-multibatch-recovery'],
+        )->assertAccepted();
+        $command = $execution->commands()->where('command_type', ExecutionCommandType::FINALIZE)->sole();
+        $this->executeOnce($command);
+        $this->executeOnce($command->fresh());
+        $beforeFailure = DB::table('execution_finalizations')->where('execution_command_id', $command->getKey())->sole();
+        $throwOnce = true;
+        $storage = new LocalArtifactStorage(writeObserver: function () use (&$throwOnce): void {
+            if ($throwOnce) {
+                $throwOnce = false;
+                throw new RuntimeException('caída después de escribir un lote');
+            }
+        });
+        $this->app->instance(ArtifactStorage::class, $storage);
+
+        try {
+            $this->executeOnce($command->fresh());
+            $this->fail('El lote debía simular una caída después de su escritura física.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('caída después de escribir un lote', $exception->getMessage());
+            $this->assertTrue(app(ExecutionFailureCloser::class)->closeWorkerFailure((int) $command->getKey(), $exception));
+        }
+
+        $afterFailure = DB::table('execution_finalizations')->where('execution_command_id', $command->getKey())->sole();
+        $this->assertSame($beforeFailure->log_cursor, $afterFailure->log_cursor);
+        $persistedWork = json_decode($afterFailure->temporary_files, true, flags: JSON_THROW_ON_ERROR)[0];
+        $this->assertGreaterThan($persistedWork['size'], Storage::disk('local')->size($persistedWork['path']));
+
+        $leases = app(ExecutionCommandLease::class);
+        $stale = $leases->claim((int) $command->getKey());
+        $this->assertNotNull($stale);
+        $command->refresh()->update(['lease_expires_at' => now()->utc()->subSecond()]);
+        $this->assertTrue(app(ExecutionFailureCloser::class)->closeAbandoned((int) $command->getKey()));
+        $winner = $leases->claim((int) $command->getKey());
+        $this->assertNotNull($winner);
+
+        try {
+            app(ProcessExecutionFinalization::class)->process((int) $command->getKey(), $stale->owner);
+            $this->fail('La respuesta tardía del worker obsoleto debía rechazarse.');
+        } catch (ExecutionCommandLeaseLost) {
+            $this->assertTrue(true);
+        }
+
+        app(ProcessExecutionFinalization::class)->process((int) $command->getKey(), $winner->owner);
+        $units = 4;
+
+        while ($command->fresh()->processed_at === null && $units < 100) {
+            $this->executeOnce($command->fresh());
+            $units++;
+        }
+
+        $execution->refresh();
+        $this->assertSame(ExecutionStatus::COMPLETED, $execution->status);
+        $this->assertGreaterThan(10, $units);
+        $this->assertSame(4, $execution->artifacts()->count());
+        $this->assertSame(1, $execution->events()->where('type', 'execution.completed')->count());
+        $artifact = $execution->artifacts()->where('type', 'LOG_EXPORT')->sole();
+        $decoded = json_decode(Storage::disk('local')->get($artifact->path), true, flags: JSON_THROW_ON_ERROR);
+        $messages = collect($decoded['logs'])->pluck('message');
+
+        foreach (range(1, 7) as $index) {
+            $this->assertSame(1, $messages->filter(fn (string $message): bool => $message === "multilote-{$index}")->count());
+        }
+
+        $this->assertCount($execution->logs()->count(), $decoded['logs']);
+        $this->assertCount($execution->events()->count() - 1, $decoded['events']);
+        $this->assertSame($artifact->sha256, hash('sha256', Storage::disk('local')->get($artifact->path)));
     }
 
     public function test_stale_worker_cleanup_cannot_delete_files_written_by_a_later_worker(): void
@@ -513,16 +740,37 @@ class Iteration1FVerificationClosureTest extends TestCase
             $requestedAt = $command->created_at;
 
             Carbon::setTestNow('2026-09-10T10:15:00+00:00');
-            $processedAt = now()->utc()->toIso8601String();
+            $advanced = false;
+            $this->app->instance(ArtifactStorage::class, new LocalArtifactStorage(
+                writeObserver: function () use (&$advanced): void {
+                    if (! $advanced) {
+                        $advanced = true;
+                        Carbon::setTestNow('2026-09-10T10:16:00+00:00');
+                    }
+                },
+            ));
             $this->execute($command);
             $execution->refresh();
             $artifact = $execution->artifacts()->where('type', 'FINAL_SUMMARY')->sole();
             $summary = json_decode(Storage::disk('local')->get($artifact->path), true, flags: JSON_THROW_ON_ERROR);
 
             $this->assertSame($requestedAt->utc()->toIso8601String(), $summary['finalization_requested_at'] ?? null);
-            $this->assertSame($processedAt, $summary['generated_at'] ?? null);
+            $this->assertSame('2026-09-10T10:16:00+00:00', $summary['generated_at'] ?? null);
             $this->assertSame($execution->finished_at?->toIso8601String(), $summary['execution']['completed_at'] ?? null);
             $this->assertFalse($requestedAt->equalTo($execution->finished_at));
+            $finalization = DB::table('execution_finalizations')->where('execution_command_id', $command->getKey())->sole();
+            $this->assertTrue(Carbon::parse($finalization->finalization_started_at)->lessThan($execution->finished_at));
+            $this->assertSame('2026-09-10T10:16:00+00:00', $execution->finished_at?->toIso8601String());
+            $this->assertSame($execution->finished_at?->toIso8601String(), Carbon::parse($finalization->completed_at)->toIso8601String());
+            $this->assertSame($execution->finished_at?->toIso8601String(), $execution->steps()->where('step_key', 'finalization')->sole()->finished_at?->toIso8601String());
+            $this->assertSame($execution->finished_at?->toIso8601String(), $command->fresh()->processed_at?->toIso8601String());
+            $completedEvent = $execution->events()->where('type', 'execution.completed')->sole();
+            $this->assertSame($execution->finished_at?->toIso8601String(), $completedEvent->created_at->toIso8601String());
+            $this->assertSame($execution->finished_at?->toIso8601String(), $completedEvent->payload['completed_at'] ?? null);
+            $this->assertSame(
+                $execution->finished_at?->toIso8601String(),
+                $execution->auditLogs()->where('action', 'EXECUTION_COMPLETED')->sole()->payload['completed_at'] ?? null,
+            );
             $this->assertSame(
                 $execution->finished_at?->toIso8601String(),
                 $execution->completion_summary['completed_at'] ?? null,
@@ -557,6 +805,51 @@ class Iteration1FVerificationClosureTest extends TestCase
         $storage->put('unsafe-link/artifact.json', '{}');
     }
 
+    public function test_abandoned_finalization_cleanup_is_available_and_repeatable(): void
+    {
+        Storage::fake('local');
+        Storage::disk('local')->put('executions/orphan/.staging/1/worker/part.json', '{}');
+
+        $this->artisan('artifacts:cleanup-finalization', ['--minimum-age' => 0])->assertSuccessful();
+        $this->assertFalse(Storage::disk('local')->exists('executions/orphan/.staging/1/worker/part.json'));
+        $this->artisan('artifacts:cleanup-finalization', ['--minimum-age' => 0])->assertSuccessful();
+    }
+
+    public function test_cleanup_preserves_active_and_referenced_files_but_removes_expired_orphans(): void
+    {
+        Storage::fake('local');
+        [$completedProject, $completedExecution, $completedOperator] = $this->reviewedExecution();
+        $this->finalize($completedOperator, $completedProject, $completedExecution);
+        $referenced = $completedExecution->artifacts()->where('type', 'JSON_REPORT')->sole();
+        [$activeProject, $activeExecution, $activeOperator] = $this->reviewedExecution();
+        $this->actingAs($activeOperator)->postJson(
+            route('projects.executions.finalize', [$activeProject->uuid, $activeExecution->uuid]),
+            [],
+            ['Idempotency-Key' => 'finalize-cleanup-active'],
+        )->assertAccepted();
+        $activeCommand = $activeExecution->commands()->where('command_type', ExecutionCommandType::FINALIZE)->sole();
+        $this->executeOnce($activeCommand);
+        $state = DB::table('execution_finalizations')->where('execution_command_id', $activeCommand->getKey())->sole();
+        $activeWork = json_decode($state->temporary_files, true, flags: JSON_THROW_ON_ERROR)[0]['path'];
+        $activeLease = app(ExecutionCommandLease::class)->claim((int) $activeCommand->getKey());
+        $this->assertNotNull($activeLease);
+        $activeLeaseFile = $state->staging_prefix.'/'.$activeLease->owner.'/active.part';
+        $expiredPart = $state->staging_prefix.'/expired-owner/orphan.part';
+        $orphanFinal = "executions/{$activeExecution->workspace_key}/final/orphan/unreferenced.json";
+        Storage::disk('local')->put($expiredPart, 'expired');
+        Storage::disk('local')->put($activeLeaseFile, 'active');
+        Storage::disk('local')->put($orphanFinal, 'orphan');
+
+        $this->artisan('artifacts:cleanup-finalization', ['--minimum-age' => 0])->assertSuccessful();
+
+        $this->assertTrue(Storage::disk('local')->exists($referenced->path));
+        $this->assertTrue(Storage::disk('local')->exists($activeWork));
+        $this->assertTrue(Storage::disk('local')->exists($activeLeaseFile));
+        $this->assertFalse(Storage::disk('local')->exists($expiredPart));
+        $this->assertFalse(Storage::disk('local')->exists($orphanFinal));
+        $this->artisan('artifacts:cleanup-finalization', ['--minimum-age' => 0])->assertSuccessful();
+    }
+
     public function test_failed_artifact_generation_cleans_partial_files_and_retries_the_same_finalization(): void
     {
         Storage::fake('local');
@@ -575,11 +868,13 @@ class Iteration1FVerificationClosureTest extends TestCase
 
             private int $writes = 0;
 
+            public ?int $failAt = 2;
+
             public function writeStream(string $path, iterable $chunks): StoredArtifact
             {
                 $this->writes++;
 
-                if ($this->writes === 2) {
+                if ($this->failAt !== null && $this->writes === $this->failAt) {
                     throw new RuntimeException('fallo de almacenamiento simulado');
                 }
 
@@ -587,6 +882,14 @@ class Iteration1FVerificationClosureTest extends TestCase
                 $this->files[$path] = $contents;
 
                 return new StoredArtifact('local', $path, strlen($contents), hash('sha256', $contents));
+            }
+
+            public function appendStream(string $path, iterable $chunks, int $expectedSize): int
+            {
+                $contents = implode('', iterator_to_array($chunks, false));
+                $this->files[$path] = substr($this->files[$path] ?? '', 0, $expectedSize).$contents;
+
+                return strlen($this->files[$path]);
             }
 
             public function readStream(string $path): ArtifactReadStream
@@ -599,7 +902,7 @@ class Iteration1FVerificationClosureTest extends TestCase
                 return new ArtifactReadStream($handle);
             }
 
-            public function promote(string $stagingPath, string $finalPath): StoredArtifact
+            public function promote(string $stagingPath, string $finalPath, ?StoredArtifact $expected = null): StoredArtifact
             {
                 if (isset($this->files[$finalPath])) {
                     throw new RuntimeException('destino existente');
@@ -631,14 +934,20 @@ class Iteration1FVerificationClosureTest extends TestCase
             $this->assertTrue(app(ExecutionFailureCloser::class)->closeWorkerFailure((int) $command->getKey(), $exception));
         }
 
-        $this->assertSame([], $failingStorage->files);
+        $this->assertCount(1, $failingStorage->files);
+        $this->assertDatabaseHas('execution_finalizations', [
+            'execution_command_id' => $command->getKey(),
+            'stage' => 'GENERATE_REPORTS',
+        ]);
         $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
         $this->assertSame(ProjectStatus::REVIEW, $project->fresh()->status);
         $this->assertSame(0, $execution->artifacts()->count());
+        $this->assertNull($execution->fresh()->finished_at);
+        $this->assertNull(DB::table('execution_finalizations')->where('execution_command_id', $command->getKey())->value('completed_at'));
         $this->assertNull($command->fresh()->processing_started_at);
         $this->assertNull($command->fresh()->dispatched_at);
 
-        $this->app->instance(ArtifactStorage::class, new LocalArtifactStorage);
+        $failingStorage->failAt = null;
         $this->actingAs($operator)->postJson(
             route('projects.executions.finalize', [$project->uuid, $execution->uuid]),
             [],
@@ -751,6 +1060,23 @@ class Iteration1FVerificationClosureTest extends TestCase
     }
 
     private function execute(ExecutionCommand $command): void
+    {
+        $attempts = 0;
+
+        do {
+            $this->executeOnce($command);
+            $command->refresh();
+            $attempts++;
+        } while ($command->command_type === ExecutionCommandType::FINALIZE
+            && $command->processed_at === null
+            && $attempts < 100);
+
+        if ($attempts === 100 && $command->processed_at === null) {
+            $this->fail('La finalización reanudable no convergió dentro de 100 unidades.');
+        }
+    }
+
+    private function executeOnce(ExecutionCommand $command): void
     {
         (new RunExecutionUnit((int) $command->getKey()))->handle(app(ExecutionProvider::class), app(ToolAdapter::class));
     }

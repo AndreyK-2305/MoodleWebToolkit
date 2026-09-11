@@ -184,6 +184,12 @@ class Execution extends Model
         return $this->hasMany(Artifact::class);
     }
 
+    /** @return HasOne<ExecutionFinalization, $this> */
+    public function finalization(): HasOne
+    {
+        return $this->hasOne(ExecutionFinalization::class);
+    }
+
     /** @return HasMany<AcademicProposal, $this> */
     public function academicProposals(): HasMany
     {

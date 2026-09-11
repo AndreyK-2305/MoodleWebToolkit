@@ -2,6 +2,12 @@
 
 return [
 
+    'finalization' => [
+        'records_per_job' => (int) env('FINALIZATION_RECORDS_PER_JOB', 200),
+        'verification_bytes_per_job' => (int) env('FINALIZATION_VERIFICATION_BYTES_PER_JOB', 1_048_576),
+        'cleanup_minimum_age_seconds' => (int) env('FINALIZATION_CLEANUP_MINIMUM_AGE_SECONDS', 86_400),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Third Party Services

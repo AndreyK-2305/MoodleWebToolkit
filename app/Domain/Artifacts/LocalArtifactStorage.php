@@ -49,18 +49,18 @@ class LocalArtifactStorage implements ArtifactStorage
                 $length = strlen($chunk);
 
                 while ($offset < $length) {
-                    $written = fwrite($handle, substr($chunk, $offset));
+                    $slice = substr($chunk, $offset, ArtifactStorage::MAX_CHUNK_BYTES);
+                    $written = fwrite($handle, $slice);
 
                     if ($written === false || $written === 0) {
                         throw new RuntimeException('No se pudo escribir un bloque del artefacto local.');
                     }
 
+                    hash_update($hash, substr($slice, 0, $written));
+                    $size += $written;
+                    ($this->writeObserver)?->__invoke($written);
                     $offset += $written;
                 }
-
-                hash_update($hash, $chunk);
-                $size += $length;
-                ($this->writeObserver)?->__invoke($length);
             }
 
             if (! fflush($handle)) {
@@ -90,11 +90,79 @@ class LocalArtifactStorage implements ArtifactStorage
         return new StoredArtifact($this->disk, $path, $size, hash_final($hash));
     }
 
+    public function appendStream(string $path, iterable $chunks, int $expectedSize): int
+    {
+        if ($expectedSize < 0) {
+            throw new RuntimeException('El cursor del artefacto reanudable no puede ser negativo.');
+        }
+
+        $path = $this->safePath($path);
+        $this->rejectSymbolicLinks($path);
+        $absolute = $this->absolutePath($path);
+        $handle = fopen($absolute, 'c+b');
+
+        if ($handle === false) {
+            throw new RuntimeException('No se pudo abrir el artefacto reanudable.');
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new RuntimeException('No se pudo bloquear el artefacto reanudable.');
+            }
+
+            $stat = fstat($handle);
+            $currentSize = $stat['size'] ?? false;
+
+            if (! is_int($currentSize) || $currentSize < $expectedSize) {
+                throw new RuntimeException('El artefacto reanudable perdió bytes ya confirmados.');
+            }
+
+            if ($currentSize > $expectedSize && ! ftruncate($handle, $expectedSize)) {
+                throw new RuntimeException('No se pudo descartar una escritura no confirmada.');
+            }
+
+            if (fseek($handle, $expectedSize) !== 0) {
+                throw new RuntimeException('No se pudo reanudar el artefacto en su cursor persistido.');
+            }
+
+            $size = $expectedSize;
+
+            foreach ($chunks as $chunk) {
+                $offset = 0;
+                $length = strlen($chunk);
+
+                while ($offset < $length) {
+                    $slice = substr($chunk, $offset, ArtifactStorage::MAX_CHUNK_BYTES);
+                    $written = fwrite($handle, $slice);
+
+                    if ($written === false || $written === 0) {
+                        throw new RuntimeException('No se pudo anexar un bloque del artefacto local.');
+                    }
+
+                    $offset += $written;
+                    $size += $written;
+                    ($this->writeObserver)?->__invoke($written);
+                }
+            }
+
+            if (! fflush($handle)) {
+                throw new RuntimeException('No se pudo sincronizar el artefacto reanudable.');
+            }
+
+            return $size;
+        } finally {
+            if (is_resource($handle)) {
+                flock($handle, LOCK_UN);
+                fclose($handle);
+            }
+        }
+    }
+
     public function readStream(string $path): ArtifactReadStream
     {
         $path = $this->safePath($path);
         $this->rejectSymbolicLinks($path);
-        $handle = fopen($this->absolutePath($path), 'rb');
+        $handle = @fopen($this->absolutePath($path), 'rb');
 
         if ($handle === false) {
             throw new RuntimeException('No se pudo leer el artefacto local.');
@@ -103,7 +171,7 @@ class LocalArtifactStorage implements ArtifactStorage
         return new ArtifactReadStream($handle, $this->readObserver);
     }
 
-    public function promote(string $stagingPath, string $finalPath): StoredArtifact
+    public function promote(string $stagingPath, string $finalPath, ?StoredArtifact $expected = null): StoredArtifact
     {
         $stagingPath = $this->safePath($stagingPath);
         $finalPath = $this->safePath($finalPath);
@@ -124,14 +192,20 @@ class LocalArtifactStorage implements ArtifactStorage
         // link() is an atomic create-if-absent operation on the local filesystem.
         // It never removes or overwrites a winner's existing destination.
         if (! link($source, $target)) {
-            throw new RuntimeException('No se pudo promover el artefacto sin sobrescribir el destino.');
+            if (! is_file($target) || fileinode($source) !== fileinode($target)) {
+                throw new RuntimeException('No se pudo promover el artefacto sin sobrescribir el destino.');
+            }
         }
 
         $size = filesize($target);
-        $checksum = hash_file('sha256', $target);
 
-        if ($size === false || $checksum === false) {
-            @unlink($target);
+        if ($size === false || ($expected !== null && $size !== $expected->size)) {
+            throw new RuntimeException('No se pudo inspeccionar el artefacto promovido.');
+        }
+
+        $checksum = $expected === null ? hash_file('sha256', $target) : $expected->checksum;
+
+        if ($checksum === false) {
             throw new RuntimeException('No se pudo inspeccionar el artefacto promovido.');
         }
 
@@ -151,6 +225,36 @@ class LocalArtifactStorage implements ArtifactStorage
         $path = $this->safePath($path);
         $this->rejectSymbolicLinks($path);
         $this->storage()->delete($path);
+    }
+
+    /** @return list<string> */
+    public function files(string $prefix = 'executions'): array
+    {
+        return array_values($this->storage()->allFiles($this->safePath($prefix)));
+    }
+
+    public function lastModified(string $path): int
+    {
+        $path = $this->safePath($path);
+        $this->rejectSymbolicLinks($path);
+
+        return $this->storage()->lastModified($path);
+    }
+
+    public function pruneEmptyDirectories(string $prefix = 'executions'): void
+    {
+        $prefix = $this->safePath($prefix);
+        $directories = $this->storage()->allDirectories($prefix);
+        usort($directories, fn (string $left, string $right): int => substr_count($right, '/') <=> substr_count($left, '/'));
+
+        foreach ($directories as $directory) {
+            $absolute = $this->absolutePath($this->safePath($directory));
+            $entries = is_dir($absolute) ? scandir($absolute) : false;
+
+            if ($entries === ['.', '..']) {
+                rmdir($absolute);
+            }
+        }
     }
 
     public function put(string $path, string $contents): StoredArtifact

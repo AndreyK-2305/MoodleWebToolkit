@@ -5,6 +5,7 @@ namespace Tests\Feature\Domain;
 use App\Domain\Academic\ProposeAcademicChange;
 use App\Domain\Artifacts\ArtifactStreamVerifier;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
+use App\Domain\Artifacts\FinalizationGarbageCollector;
 use App\Domain\Artifacts\GenerateFinalArtifacts;
 use App\Domain\Executions\Contracts\ExecutionProvider;
 use App\Domain\Executions\ExecutionCommandLease;
@@ -360,7 +361,15 @@ class PostgreSqlConcurrencyTest extends TestCase
             $this->assertTrue(true);
         }
 
+        while ($command->fresh()->processed_at === null) {
+            (new RunExecutionUnit((int) $command->getKey()))->handle(
+                app(ExecutionProvider::class),
+                app(ToolAdapter::class),
+            );
+        }
+
         app(GenerateFinalArtifacts::class)->cleanup($stagingA);
+        app(FinalizationGarbageCollector::class)->collect(0);
         $execution->refresh();
         $this->assertSame(ExecutionStatus::COMPLETED, $execution->status);
         $this->assertSame(ProjectStatus::COMPLETED, $project->fresh()->status);

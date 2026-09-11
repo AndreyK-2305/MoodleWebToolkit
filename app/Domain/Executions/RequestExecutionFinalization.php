@@ -10,6 +10,7 @@ use App\Enums\ExecutionStatus;
 use App\Exceptions\IdempotencyKeyConflict;
 use App\Models\AuditLog;
 use App\Models\Execution;
+use App\Models\ExecutionFinalization;
 use App\Models\Project;
 use App\Models\ProjectAssignment;
 use App\Models\User;
@@ -110,6 +111,13 @@ class RequestExecutionFinalization
                 'payload_hash' => $payloadHash,
                 'payload' => $payload,
                 'created_by' => $actor->getKey(),
+            ]);
+            ExecutionFinalization::query()->create([
+                'execution_id' => $locked->getKey(),
+                'execution_command_id' => $command->getKey(),
+                'stage' => 'PREPARE',
+                'staging_prefix' => "executions/{$locked->workspace_key}/.staging/{$command->getKey()}",
+                'final_prefix' => "executions/{$locked->workspace_key}/final/{$command->getKey()}",
             ]);
             $this->idempotency->record(
                 (int) $locked->getKey(), $actorId, 'FINALIZE', 'execution', (int) $locked->getKey(),

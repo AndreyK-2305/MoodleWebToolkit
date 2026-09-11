@@ -4,7 +4,7 @@ namespace App\Domain\Artifacts;
 
 final class SensitiveValueRedactor
 {
-    private const SENSITIVE_KEY = '/password|passwd|secret|token|cookie|authorization|app[_-]?key|private[_-]?key|resume[_-]?token/i';
+    private const SENSITIVE_KEY = '/^(?:proxy[-_]?authorization|authorization|set[-_]?cookie|cookie|password|passwd|secret|(?:access|refresh|resume|api|auth)?[_-]?token|app[_-]?key|private[_-]?key)$/i';
 
     public function redact(mixed $value, ?string $key = null): mixed
     {
@@ -27,6 +27,19 @@ final class SensitiveValueRedactor
 
     public function redactString(string $value): string
     {
+        try {
+            $decoded = json_decode($value, true, flags: JSON_THROW_ON_ERROR);
+
+            if (is_array($decoded)) {
+                return json_encode(
+                    $this->redact($decoded),
+                    JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+                );
+            }
+        } catch (\JsonException) {
+            // Continue with conservative text and JSON-like fragment patterns.
+        }
+
         $value = preg_replace_callback(
             '/\b(Proxy-Authorization|Authorization|Set-Cookie|Cookie)\s*:\s*[^\r\n]*/iu',
             fn (array $match): string => $match[1].': [REDACTED]',
@@ -35,8 +48,14 @@ final class SensitiveValueRedactor
 
         $value = preg_replace('#(?<=://)[^/@\s]+(?::[^/@\s]*)?@#u', '[REDACTED]@', $value) ?? $value;
 
+        $value = preg_replace_callback(
+            '/(?<key>"(?:Proxy-Authorization|Authorization|Set-Cookie|Cookie|password|passwd|secret|(?:access|refresh|resume|api|auth)?[_-]?token|app[_-]?key|private[_-]?key)")\s*:\s*(?<value>"(?:\\\\.|[^"\\\\])*"|[^\s,;}]+)/iu',
+            fn (array $match): string => $match['key'].':"[REDACTED]"',
+            $value,
+        ) ?? $value;
+
         return preg_replace(
-            '/\b(password|passwd|secret|token|app[_-]?key|private[_-]?key|resume[_-]?token)\b\s*[:=]\s*[^\s,;]+/iu',
+            '/\b(password|passwd|secret|(?:access|refresh|resume|api|auth)?[_-]?token|app[_-]?key|private[_-]?key)\b\s*[:=]\s*[^\s,;]+/iu',
             '$1=[REDACTED]',
             $value,
         ) ?? $value;

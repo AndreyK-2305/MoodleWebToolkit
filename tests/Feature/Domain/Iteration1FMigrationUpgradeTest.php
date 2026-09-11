@@ -20,16 +20,25 @@ class Iteration1FMigrationUpgradeTest extends TestCase
             $this->runMigrationsBeforeIteration1F();
             $seed = $this->seedIteration1EData();
             $migration = require database_path('migrations/2026_09_04_010000_add_iteration_1f_verification_closure.php');
+            $receiptsMigration = require database_path('migrations/2026_09_05_010000_add_idempotency_receipts.php');
+            $resumableMigration = require database_path('migrations/2026_09_06_010000_add_resumable_finalizations.php');
             $migration->up();
+            $receiptsMigration->up();
+            $resumableMigration->up();
 
             $this->assertMigratedState($seed);
             $this->seedIteration1FUsage($seed);
+            $this->assertSame(1, DB::table('execution_finalizations')->where('stage', 'COMPLETED')->count());
+            $resumableMigration->down();
+            $receiptsMigration->down();
             $migration->down();
             $this->assertFalse(Schema::hasTable('academic_snapshots'));
             $this->assertFalse(Schema::hasTable('academic_proposals'));
             $this->assertFalse(Schema::hasTable('artifact_downloads'));
             $this->assertFalse(Schema::hasColumn('executions', 'proposal_version'));
             $this->assertFalse(Schema::hasColumn('verifications', 'fingerprint'));
+            $this->assertFalse(Schema::hasTable('execution_finalizations'));
+            $this->assertFalse(Schema::hasTable('idempotency_receipts'));
             $this->assertSame(0, DB::table('execution_commands')->where('command_type', 'PROPOSE')->count());
             $commandConstraint = DB::table('pg_constraint')
                 ->where('conname', 'execution_commands_type_check')
@@ -44,7 +53,10 @@ class Iteration1FMigrationUpgradeTest extends TestCase
                 ->count());
 
             $migration->up();
+            $receiptsMigration->up();
+            $resumableMigration->up();
             $this->assertMigratedState($seed);
+            $this->assertTrue(Schema::hasTable('execution_finalizations'));
         } finally {
             DB::statement('SET search_path TO public');
             DB::statement(sprintf('DROP SCHEMA IF EXISTS "%s" CASCADE', $schema));
@@ -132,6 +144,40 @@ class Iteration1FMigrationUpgradeTest extends TestCase
             'idempotency_key' => 'rollback-download-1f',
             'payload_hash' => hash('sha256', 'rollback-download-1f'),
             'downloaded_at' => $now,
+        ]);
+        $finalizeCommandId = DB::table('execution_commands')->insertGetId([
+            'execution_id' => $seed['execution_id'],
+            'step_key' => 'finalization',
+            'attempt' => 1,
+            'command_type' => 'FINALIZE',
+            'idempotency_key' => 'rollback-finalize-1f',
+            'idempotency_scope' => "execution:{$seed['execution_id']}:finalize",
+            'payload_hash' => hash('sha256', 'rollback-finalize-1f'),
+            'payload' => json_encode(['operation' => 'FINALIZE'], JSON_THROW_ON_ERROR),
+            'created_by' => $seed['user_id'],
+            'dispatch_attempts' => 1,
+            'processed_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        DB::table('execution_finalizations')->insert([
+            'execution_id' => $seed['execution_id'],
+            'execution_command_id' => $finalizeCommandId,
+            'stage' => 'COMPLETED',
+            'log_cursor' => 0,
+            'event_cursor' => 0,
+            'staging_prefix' => 'executions/upgrade/.staging/'.$finalizeCommandId,
+            'final_prefix' => 'executions/upgrade/final/'.$finalizeCommandId,
+            'temporary_files' => '[]',
+            'artifacts' => '[]',
+            'verified_types' => '[]',
+            'promoted_types' => '[]',
+            'verification_offset' => 0,
+            'finalization_started_at' => $now->copy()->subMinute(),
+            'closure_ready_at' => $now,
+            'completed_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
         ]);
         DB::table('executions')->where('id', $seed['execution_id'])->update([
             'status' => 'COMPLETED',
