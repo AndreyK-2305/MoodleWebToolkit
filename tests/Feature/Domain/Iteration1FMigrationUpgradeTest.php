@@ -23,12 +23,25 @@ class Iteration1FMigrationUpgradeTest extends TestCase
             $migration->up();
 
             $this->assertMigratedState($seed);
+            $this->seedIteration1FUsage($seed);
             $migration->down();
             $this->assertFalse(Schema::hasTable('academic_snapshots'));
             $this->assertFalse(Schema::hasTable('academic_proposals'));
             $this->assertFalse(Schema::hasTable('artifact_downloads'));
             $this->assertFalse(Schema::hasColumn('executions', 'proposal_version'));
             $this->assertFalse(Schema::hasColumn('verifications', 'fingerprint'));
+            $this->assertSame(0, DB::table('execution_commands')->where('command_type', 'PROPOSE')->count());
+            $commandConstraint = DB::table('pg_constraint')
+                ->where('conname', 'execution_commands_type_check')
+                ->whereRaw('connamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())')
+                ->value(DB::raw('pg_get_constraintdef(oid)'));
+            $this->assertIsString($commandConstraint);
+            $this->assertStringNotContainsString('PROPOSE', $commandConstraint);
+            $this->assertSame(1, DB::table('pg_trigger')
+                ->where('tgname', 'execution_commands_completed_project_read_only')
+                ->whereRaw('tgrelid = ?::regclass', ['execution_commands'])
+                ->where('tgenabled', '<>', 'D')
+                ->count());
 
             $migration->up();
             $this->assertMigratedState($seed);
@@ -36,6 +49,99 @@ class Iteration1FMigrationUpgradeTest extends TestCase
             DB::statement('SET search_path TO public');
             DB::statement(sprintf('DROP SCHEMA IF EXISTS "%s" CASCADE', $schema));
         }
+    }
+
+    /** @param array{user_id: int, execution_id: int, other_execution_id: int, verification_id: int, artifact_id: int} $seed */
+    private function seedIteration1FUsage(array $seed): void
+    {
+        $now = now();
+        $fingerprint0 = hash('sha256', 'iteration-1f-snapshot');
+        $fingerprint1 = hash('sha256', 'iteration-1f-proposal');
+        $projectId = (int) DB::table('executions')->where('id', $seed['execution_id'])->value('project_id');
+        DB::table('projects')->where('id', $projectId)->update(['status' => 'REVIEW', 'updated_at' => $now]);
+        DB::table('executions')->where('id', $seed['execution_id'])->update([
+            'status' => 'REVIEW',
+            'progress' => 75,
+            'proposal_version' => 1,
+            'review_fingerprint' => $fingerprint1,
+            'validated_proposal_version' => 1,
+            'validated_fingerprint' => $fingerprint1,
+            'updated_at' => $now,
+        ]);
+        DB::table('academic_snapshots')->insert([
+            'execution_id' => $seed['execution_id'],
+            'project_type' => 'COLLECT',
+            'schema_version' => 1,
+            'fingerprint' => $fingerprint0,
+            'tree' => json_encode([[
+                'id' => 'cat:root',
+                'type' => 'category',
+                'parent_id' => null,
+                'short_name' => null,
+                'name' => 'Raíz',
+            ]], JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+        ]);
+        DB::table('academic_proposals')->insert([
+            'execution_id' => $seed['execution_id'],
+            'version' => 1,
+            'operation' => 'RENAME_CATEGORY',
+            'node_id' => 'cat:root',
+            'node_type' => 'category',
+            'old_value' => json_encode(['name' => 'Raíz'], JSON_THROW_ON_ERROR),
+            'new_value' => json_encode(['name' => 'Raíz revisada'], JSON_THROW_ON_ERROR),
+            'base_fingerprint' => $fingerprint0,
+            'resulting_fingerprint' => $fingerprint1,
+            'status' => 'ACTIVE',
+            'proposed_by' => $seed['user_id'],
+            'created_at' => $now,
+        ]);
+        DB::table('execution_commands')->insert([
+            'execution_id' => $seed['execution_id'],
+            'step_key' => 'academic-review',
+            'attempt' => 1,
+            'command_type' => 'PROPOSE',
+            'idempotency_key' => 'rollback-proposal-1f',
+            'idempotency_scope' => "execution:{$seed['execution_id']}:proposal:1",
+            'payload_hash' => hash('sha256', 'rollback-proposal-1f'),
+            'payload' => json_encode(['operation' => 'RENAME_CATEGORY'], JSON_THROW_ON_ERROR),
+            'created_by' => $seed['user_id'],
+            'dispatch_attempts' => 0,
+            'processed_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        DB::table('verifications')->insert([
+            'execution_id' => $seed['execution_id'],
+            'key' => 'academic-review-v1',
+            'proposal_version' => 1,
+            'fingerprint' => $fingerprint1,
+            'status' => 'PASSED',
+            'approved' => true,
+            'requested_by' => $seed['user_id'],
+            'summary' => 'Validación 1F real',
+            'details' => json_encode(['overall_status' => 'APPROVED'], JSON_THROW_ON_ERROR),
+            'checked_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        DB::table('artifact_downloads')->insert([
+            'artifact_id' => $seed['artifact_id'],
+            'execution_id' => $seed['execution_id'],
+            'user_id' => $seed['user_id'],
+            'idempotency_key' => 'rollback-download-1f',
+            'payload_hash' => hash('sha256', 'rollback-download-1f'),
+            'downloaded_at' => $now,
+        ]);
+        DB::table('executions')->where('id', $seed['execution_id'])->update([
+            'status' => 'COMPLETED',
+            'progress' => 100,
+            'finalized_by' => $seed['user_id'],
+            'completion_summary' => json_encode(['result' => 'COMPLETED'], JSON_THROW_ON_ERROR),
+            'finished_at' => $now,
+            'updated_at' => $now,
+        ]);
+        DB::table('projects')->where('id', $projectId)->update(['status' => 'COMPLETED', 'updated_at' => $now]);
     }
 
     /** @param array{user_id: int, execution_id: int, other_execution_id: int, verification_id: int, artifact_id: int} $seed */

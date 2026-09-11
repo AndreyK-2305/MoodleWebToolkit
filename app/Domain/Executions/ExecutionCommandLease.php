@@ -85,6 +85,7 @@ class ExecutionCommandLease
         return $command;
     }
 
+    /** @phpstan-impure */
     public function isOwnedAndActive(ExecutionCommand $command, string $owner): bool
     {
         return $command->processed_at === null
@@ -111,6 +112,22 @@ class ExecutionCommandLease
             ->shiftTimezone((string) config('app.timezone'))
             ->addSeconds($this->durationSeconds())
             ->lessThanOrEqualTo(now());
+    }
+
+    public function renew(int $commandId, string $owner): bool
+    {
+        return DB::transaction(function () use ($commandId, $owner): bool {
+            $command = $this->lockCommand($commandId);
+
+            if ($command === null || ! $this->isOwnedAndActive($command, $owner)) {
+                return false;
+            }
+
+            $command->lease_expires_at = now()->utc()->addSeconds($this->durationSeconds());
+            $command->save();
+
+            return true;
+        }, attempts: 3);
     }
 
     public function legacyAbandonedBefore(): CarbonImmutable

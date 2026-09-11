@@ -3,6 +3,7 @@
 namespace App\Domain\Executions;
 
 use App\Domain\Executions\DTOs\StartExecutionResult;
+use App\Domain\Idempotency\IdempotencyRegistry;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -21,6 +22,7 @@ class RequestExecutionFinalization
     public function __construct(
         private readonly ExecutionEventRecorder $events,
         private readonly ExecutionCommandDispatcher $dispatcher,
+        private readonly IdempotencyRegistry $idempotency,
     ) {}
 
     public function request(Execution $execution, User $actor, string $idempotencyKey): StartExecutionResult
@@ -38,6 +40,14 @@ class RequestExecutionFinalization
                 'fingerprint' => $locked->review_fingerprint,
             ];
             $payloadHash = hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+            $actorId = (int) $actor->getKey();
+            $scope = "execution:{$locked->getKey()}:finalize";
+            $receipt = $this->idempotency->find((int) $locked->getKey(), $actorId, 'FINALIZE', $idempotencyKey, $payloadHash);
+
+            if ($receipt !== null) {
+                return new StartExecutionResult($locked, false);
+            }
+
             $existingKey = $locked->commands()->where('idempotency_key', $idempotencyKey)->lockForUpdate()->first();
 
             if ($existingKey !== null) {
@@ -47,12 +57,22 @@ class RequestExecutionFinalization
                     throw new IdempotencyKeyConflict;
                 }
 
+                $this->idempotency->record(
+                    (int) $locked->getKey(), $actorId, 'FINALIZE', 'execution', (int) $locked->getKey(),
+                    $scope, $idempotencyKey, $payloadHash, 'execution_command', (int) $existingKey->getKey(), 200,
+                );
+
                 return new StartExecutionResult($locked, false);
             }
 
             $existingFinalization = $locked->commands()->where('command_type', ExecutionCommandType::FINALIZE)->lockForUpdate()->first();
 
             if ($existingFinalization !== null) {
+                $this->idempotency->record(
+                    (int) $locked->getKey(), $actorId, 'FINALIZE', 'execution', (int) $locked->getKey(),
+                    $scope, $idempotencyKey, $payloadHash, 'execution_command', (int) $existingFinalization->getKey(), 200,
+                );
+
                 return new StartExecutionResult($locked, false);
             }
 
@@ -86,11 +106,15 @@ class RequestExecutionFinalization
                 'attempt' => 1,
                 'command_type' => ExecutionCommandType::FINALIZE,
                 'idempotency_key' => $idempotencyKey,
-                'idempotency_scope' => "execution:{$locked->getKey()}:finalize",
+                'idempotency_scope' => $scope,
                 'payload_hash' => $payloadHash,
                 'payload' => $payload,
                 'created_by' => $actor->getKey(),
             ]);
+            $this->idempotency->record(
+                (int) $locked->getKey(), $actorId, 'FINALIZE', 'execution', (int) $locked->getKey(),
+                $scope, $idempotencyKey, $payloadHash, 'execution_command', (int) $command->getKey(), 202,
+            );
             AuditLog::query()->create([
                 'actor_id' => $actor->getKey(),
                 'project_id' => $project->getKey(),

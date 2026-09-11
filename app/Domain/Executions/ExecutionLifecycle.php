@@ -8,6 +8,7 @@ use App\Models\Execution;
 use App\Models\Project;
 use App\Models\ProjectAssignment;
 use App\Models\User;
+use Carbon\CarbonInterface;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
 
@@ -43,12 +44,12 @@ class ExecutionLifecycle
      * Internal worker transition. HTTP entry points must use transition(), which
      * authorizes the actor; workers consume an already authorized command.
      */
-    public function transitionForWorker(Execution $execution, ExecutionStatus $target): Execution
+    public function transitionForWorker(Execution $execution, ExecutionStatus $target, ?CarbonInterface $terminalAt = null): Execution
     {
-        return DB::transaction(function () use ($execution, $target): Execution {
+        return DB::transaction(function () use ($execution, $target, $terminalAt): Execution {
             [$lockedProject, $lockedExecution] = $this->lockProjectAndExecution($execution);
 
-            return $this->applyTransition($lockedExecution, $lockedProject, $target);
+            return $this->applyTransition($lockedExecution, $lockedProject, $target, $terminalAt);
         }, attempts: 3);
     }
 
@@ -66,6 +67,7 @@ class ExecutionLifecycle
         Execution $lockedExecution,
         Project $lockedProject,
         ExecutionStatus $target,
+        ?CarbonInterface $terminalAt = null,
     ): Execution {
 
         if (! $lockedExecution->status->canTransitionTo($target)) {
@@ -91,7 +93,7 @@ class ExecutionLifecycle
         }
 
         if ($target->isTerminal()) {
-            $lockedExecution->finished_at = now();
+            $lockedExecution->finished_at = ($terminalAt ?? now())->toImmutable();
         }
 
         $lockedExecution->transitionTo($target);

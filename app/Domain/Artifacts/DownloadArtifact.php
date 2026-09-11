@@ -3,6 +3,9 @@
 namespace App\Domain\Artifacts;
 
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
+use App\Domain\Artifacts\DTOs\StoredArtifact;
+use App\Domain\Artifacts\Streams\ArtifactReadStream;
+use App\Domain\Idempotency\IdempotencyRegistry;
 use App\Exceptions\ArtifactIntegrityException;
 use App\Exceptions\IdempotencyKeyConflict;
 use App\Models\Artifact;
@@ -14,9 +17,13 @@ use Illuminate\Support\Facades\DB;
 
 class DownloadArtifact
 {
-    public function __construct(private readonly ArtifactStorage $storage) {}
+    public function __construct(
+        private readonly ArtifactStorage $storage,
+        private readonly ArtifactStreamVerifier $verifier,
+        private readonly IdempotencyRegistry $idempotency,
+    ) {}
 
-    public function contents(Artifact $artifact, User $actor, string $idempotencyKey): string
+    public function prepare(Artifact $artifact, User $actor, string $idempotencyKey): ArtifactReadStream
     {
         $artifact->loadMissing('execution.project');
         $execution = $artifact->execution;
@@ -30,17 +37,43 @@ class DownloadArtifact
             throw new ArtifactIntegrityException('El archivo solicitado ya no existe en el almacenamiento.');
         }
 
-        $contents = $this->storage->read($artifact->path);
-
-        if (strlen($contents) !== $artifact->size || ! hash_equals($artifact->sha256, hash('sha256', $contents))) {
-            throw new ArtifactIntegrityException('El archivo fue alterado y su descarga fue bloqueada.');
-        }
-
+        $stored = new StoredArtifact($artifact->disk, $artifact->path, $artifact->size, $artifact->sha256);
+        // Complete the bounded verification pass before a StreamedResponse can
+        // emit its first byte. Delivery uses a fresh stream afterwards.
+        $this->verifier->verify($stored);
         $payload = ['artifact_id' => $artifact->getKey(), 'execution_uuid' => $execution->uuid, 'sha256' => $artifact->sha256];
         $payloadHash = hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+        $this->registerDownload($artifact, $actor, $idempotencyKey, $payloadHash, $payload);
+
+        return $this->storage->readStream($artifact->path);
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function registerDownload(
+        Artifact $artifact,
+        User $actor,
+        string $idempotencyKey,
+        string $payloadHash,
+        array $payload,
+    ): void {
+        $execution = $artifact->execution;
 
         DB::transaction(function () use ($artifact, $execution, $actor, $idempotencyKey, $payloadHash, $payload): void {
             Execution::query()->lockForUpdate()->findOrFail((int) $execution->getKey());
+            $actorId = (int) $actor->getKey();
+            $scope = "execution:{$execution->getKey()}:artifact:{$artifact->getKey()}:download";
+            $receipt = $this->idempotency->find(
+                (int) $execution->getKey(),
+                $actorId,
+                'DOWNLOAD',
+                $idempotencyKey,
+                $payloadHash,
+            );
+
+            if ($receipt !== null) {
+                return;
+            }
+
             $existing = ArtifactDownload::query()
                 ->where('execution_id', $execution->getKey())
                 ->where('user_id', $actor->getKey())
@@ -53,6 +86,11 @@ class DownloadArtifact
                     throw new IdempotencyKeyConflict;
                 }
 
+                $this->idempotency->record(
+                    (int) $execution->getKey(), $actorId, 'DOWNLOAD', 'artifact', (int) $artifact->getKey(),
+                    $scope, $idempotencyKey, $payloadHash, 'artifact_download', (int) $existing->getKey(), 200,
+                );
+
                 return;
             }
 
@@ -63,6 +101,10 @@ class DownloadArtifact
                 'idempotency_key' => $idempotencyKey,
                 'payload_hash' => $payloadHash,
             ]);
+            $this->idempotency->record(
+                (int) $execution->getKey(), $actorId, 'DOWNLOAD', 'artifact', (int) $artifact->getKey(),
+                $scope, $idempotencyKey, $payloadHash, 'artifact_download', (int) $download->getKey(), 200,
+            );
             AuditLog::query()->create([
                 'actor_id' => $actor->getKey(),
                 'project_id' => $execution->project_id,
@@ -73,7 +115,5 @@ class DownloadArtifact
                 'payload' => $payload,
             ]);
         }, attempts: 3);
-
-        return $contents;
     }
 }

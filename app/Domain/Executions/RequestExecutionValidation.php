@@ -4,6 +4,7 @@ namespace App\Domain\Executions;
 
 use App\Domain\Academic\AcademicPreview;
 use App\Domain\Executions\DTOs\StartExecutionResult;
+use App\Domain\Idempotency\IdempotencyRegistry;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -26,6 +27,7 @@ class RequestExecutionValidation
         private readonly ExecutionLifecycle $lifecycle,
         private readonly ExecutionEventRecorder $events,
         private readonly ExecutionCommandDispatcher $dispatcher,
+        private readonly IdempotencyRegistry $idempotency,
     ) {}
 
     public function queueInitial(Execution $execution): ExecutionCommand
@@ -38,18 +40,29 @@ class RequestExecutionValidation
         $execution->save();
 
         $payload = $this->payload($execution, 0, $snapshot->fingerprint);
+        $payloadHash = $this->payloadHash($payload);
+        $idempotencyKey = "auto:{$execution->uuid}:verification:0";
+        $scope = "execution:{$execution->getKey()}:validate:0";
         $command = $execution->commands()->firstOrCreate(
-            ['idempotency_scope' => "execution:{$execution->getKey()}:validate:0"],
+            ['idempotency_scope' => $scope],
             [
                 'step_key' => 'verification',
                 'attempt' => 1,
                 'command_type' => ExecutionCommandType::VALIDATE,
-                'idempotency_key' => "auto:{$execution->uuid}:verification:0",
-                'payload_hash' => $this->payloadHash($payload),
+                'idempotency_key' => $idempotencyKey,
+                'payload_hash' => $payloadHash,
                 'payload' => $payload,
                 'created_by' => $execution->created_by,
             ],
         );
+        $actorId = (int) $execution->created_by;
+
+        if ($this->idempotency->find((int) $execution->getKey(), $actorId, 'VALIDATE', $idempotencyKey, $payloadHash) === null) {
+            $this->idempotency->record(
+                (int) $execution->getKey(), $actorId, 'VALIDATE', 'execution', (int) $execution->getKey(),
+                $scope, $idempotencyKey, $payloadHash, 'execution_command', (int) $command->getKey(), 202,
+            );
+        }
 
         $verifying = $this->lifecycle->transitionForWorker($execution, ExecutionStatus::VERIFYING);
         $this->events->recordNormalized($verifying, new NormalizedToolEvent(
@@ -79,6 +92,14 @@ class RequestExecutionValidation
 
             $payload = $this->payload($locked, $locked->proposal_version, $locked->review_fingerprint);
             $payloadHash = $this->payloadHash($payload);
+            $actorId = (int) $actor->getKey();
+            $scope = "execution:{$locked->getKey()}:validate:{$locked->proposal_version}";
+            $receipt = $this->idempotency->find((int) $locked->getKey(), $actorId, 'VALIDATE', $idempotencyKey, $payloadHash);
+
+            if ($receipt !== null) {
+                return new StartExecutionResult($locked, false);
+            }
+
             $existingKey = ExecutionCommand::query()
                 ->where('execution_id', $locked->getKey())
                 ->where('idempotency_key', $idempotencyKey)
@@ -92,6 +113,11 @@ class RequestExecutionValidation
                     throw new IdempotencyKeyConflict;
                 }
 
+                $this->idempotency->record(
+                    (int) $locked->getKey(), $actorId, 'VALIDATE', 'execution', (int) $locked->getKey(),
+                    $scope, $idempotencyKey, $payloadHash, 'execution_command', (int) $existingKey->getKey(), 200,
+                );
+
                 return new StartExecutionResult($locked, false);
             }
 
@@ -102,6 +128,11 @@ class RequestExecutionValidation
                 ->first();
 
             if ($existingVersion !== null) {
+                $this->idempotency->record(
+                    (int) $locked->getKey(), $actorId, 'VALIDATE', 'execution', (int) $locked->getKey(),
+                    $scope, $idempotencyKey, $payloadHash, 'execution_command', (int) $existingVersion->getKey(), 200,
+                );
+
                 return new StartExecutionResult($locked, false);
             }
 
@@ -118,11 +149,15 @@ class RequestExecutionValidation
                 'attempt' => $locked->proposal_version + 1,
                 'command_type' => ExecutionCommandType::VALIDATE,
                 'idempotency_key' => $idempotencyKey,
-                'idempotency_scope' => "execution:{$locked->getKey()}:validate:{$locked->proposal_version}",
+                'idempotency_scope' => $scope,
                 'payload_hash' => $payloadHash,
                 'payload' => $payload,
                 'created_by' => $actor->getKey(),
             ]);
+            $this->idempotency->record(
+                (int) $locked->getKey(), $actorId, 'VALIDATE', 'execution', (int) $locked->getKey(),
+                $scope, $idempotencyKey, $payloadHash, 'execution_command', (int) $command->getKey(), 202,
+            );
             $step = $locked->steps()->where('step_key', 'verification')->lockForUpdate()->firstOrFail();
             $step->status = ExecutionStepStatus::PENDING;
             $step->progress = null;

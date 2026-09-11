@@ -10,8 +10,7 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
-use Symfony\Component\HttpFoundation\HeaderUtils;
-use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ArtifactController extends Controller
 {
@@ -21,7 +20,7 @@ class ArtifactController extends Controller
         Execution $execution,
         Artifact $artifact,
         DownloadArtifact $download,
-    ): Response {
+    ): StreamedResponse {
         abort_unless($execution->project_id === $project->getKey() && $artifact->execution_id === $execution->getKey(), 404);
         Gate::authorize('view', $execution);
         $validated = $request->validate([
@@ -31,15 +30,22 @@ class ArtifactController extends Controller
         try {
             /** @var User $actor */
             $actor = $request->user();
-            $contents = $download->contents($artifact, $actor, (string) $validated['key']);
+            $stream = $download->prepare($artifact, $actor, (string) $validated['key']);
         } catch (ArtifactIntegrityException $exception) {
             abort(str_contains($exception->getMessage(), 'ya no existe') ? 410 : 409, $exception->getMessage());
         }
 
-        return response($contents, 200, [
+        return response()->streamDownload(function () use ($stream): void {
+            try {
+                while (! $stream->eof()) {
+                    echo $stream->read();
+                }
+            } finally {
+                $stream->close();
+            }
+        }, $artifact->filename, [
             'Content-Type' => $artifact->mime_type ?? 'application/octet-stream',
-            'Content-Length' => (string) strlen($contents),
-            'Content-Disposition' => HeaderUtils::makeDisposition(HeaderUtils::DISPOSITION_ATTACHMENT, $artifact->filename, 'artifact.bin'),
+            'Content-Length' => (string) $artifact->size,
             'X-Content-Type-Options' => 'nosniff',
             'Cache-Control' => 'private, no-store',
         ]);

@@ -7,6 +7,7 @@ use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
 use App\Models\Execution;
 use App\Models\User;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -17,22 +18,34 @@ class GenerateFinalArtifacts
     public function __construct(
         private readonly ArtifactStorage $storage,
         private readonly AcademicPreview $preview,
+        private readonly SensitiveValueRedactor $redactor,
     ) {}
 
-    /** @return list<array{type: string, filename: string, mime_type: string, stored: StoredArtifact, metadata: array<string, mixed>}> */
-    public function generate(Execution $execution, User $actor): array
-    {
-        $execution->loadMissing(['project', 'steps', 'verifications', 'academicProposals.proposer', 'logs', 'events']);
-        $generatedAt = $execution->commands()->where('command_type', 'FINALIZE')->firstOrFail()->created_at ?? now();
+    /**
+     * @return list<array{type: string, filename: string, mime_type: string, stored: StoredArtifact, final_path: string, metadata: array<string, mixed>}>
+     */
+    public function stage(
+        Execution $execution,
+        User $actor,
+        int $commandId,
+        string $leaseOwner,
+        CarbonInterface $requestedAt,
+        CarbonInterface $completionAt,
+        ?callable $heartbeat = null,
+    ): array {
+        $execution->loadMissing(['project', 'steps', 'verifications', 'academicProposals.proposer']);
         $baseName = Str::slug($execution->project->name) ?: 'proyecto';
-        $prefix = "executions/{$execution->workspace_key}";
+        $privateOwner = Str::slug($leaseOwner);
+        $stagingPrefix = "executions/{$execution->workspace_key}/.staging/{$commandId}/{$privateOwner}";
+        $finalPrefix = "executions/{$execution->workspace_key}/final/{$commandId}/{$privateOwner}";
         $latestVerification = $execution->verifications()->latest('proposal_version')->first();
+        $generatedAt = $completionAt->toImmutable();
         $specifications = [
             [
                 'type' => 'JSON_REPORT',
                 'filename' => "{$baseName}-informe.json",
                 'mime_type' => 'application/json',
-                'contents' => $this->json([
+                'chunks' => fn (): iterable => $this->jsonChunks([
                     'contract_version' => 1,
                     'project' => ['uuid' => $execution->project->uuid, 'name' => $execution->project->name, 'type' => $execution->project->type->value],
                     'execution' => ['uuid' => $execution->uuid, 'attempt' => $execution->attempt, 'proposal_version' => $execution->proposal_version],
@@ -45,7 +58,7 @@ class GenerateFinalArtifacts
                 'type' => 'VERIFICATION_REPORT',
                 'filename' => "{$baseName}-verificacion.json",
                 'mime_type' => 'application/json',
-                'contents' => $this->json([
+                'chunks' => fn (): iterable => $this->jsonChunks([
                     'contract_version' => 1,
                     'execution_uuid' => $execution->uuid,
                     'proposal_version' => $latestVerification?->proposal_version,
@@ -55,36 +68,20 @@ class GenerateFinalArtifacts
                     'summary' => $latestVerification?->summary,
                     'details' => $latestVerification?->details,
                     'checked_at' => $latestVerification?->checked_at?->toIso8601String(),
+                    'generated_at' => $generatedAt->toIso8601String(),
                 ]),
             ],
             [
                 'type' => 'LOG_EXPORT',
                 'filename' => "{$baseName}-logs.json",
                 'mime_type' => 'application/json',
-                'contents' => $this->json([
-                    'contract_version' => 1,
-                    'execution_uuid' => $execution->uuid,
-                    'logs' => $execution->logs->map(fn ($log): array => [
-                        'stream' => $log->stream->value,
-                        'level' => $log->level,
-                        'message' => $this->redactString($log->message),
-                        'context' => $this->redact($log->context),
-                        'logged_at' => $log->logged_at?->toIso8601String(),
-                    ])->values()->all(),
-                    'events' => $execution->events->map(fn ($event): array => [
-                        'sequence' => $event->sequence,
-                        'type' => $event->type,
-                        'severity' => $event->severity->value,
-                        'message' => $this->redactString((string) $event->message),
-                        'created_at' => $event->created_at->toIso8601String(),
-                    ])->values()->all(),
-                ]),
+                'chunks' => fn (): iterable => $this->logExportChunks($execution, $generatedAt, $heartbeat),
             ],
             [
                 'type' => 'FINAL_SUMMARY',
                 'filename' => "{$baseName}-resumen-final.json",
                 'mime_type' => 'application/json',
-                'contents' => $this->json([
+                'chunks' => fn (): iterable => $this->jsonChunks([
                     'contract_version' => 1,
                     'project' => ['uuid' => $execution->project->uuid, 'name' => $execution->project->name, 'type' => $execution->project->type->value],
                     'execution' => [
@@ -93,8 +90,10 @@ class GenerateFinalArtifacts
                         'final_status' => 'COMPLETED',
                         'progress' => 100,
                         'started_at' => $execution->started_at?->toIso8601String(),
-                        'completed_at' => $generatedAt->toIso8601String(),
+                        'completed_at' => $completionAt->toIso8601String(),
                     ],
+                    'finalization_requested_at' => $requestedAt->toIso8601String(),
+                    'generated_at' => $generatedAt->toIso8601String(),
                     'finalized_by' => ['id' => $actor->getKey(), 'name' => $actor->name],
                     'proposal_version' => $execution->proposal_version,
                     'proposal_count' => $execution->academicProposals->count(),
@@ -102,27 +101,34 @@ class GenerateFinalArtifacts
                 ]),
             ],
         ];
-        $stored = [];
+        $staged = [];
 
         try {
             foreach ($specifications as $specification) {
-                $extension = str_ends_with($specification['filename'], '.json') ? 'json' : 'txt';
-                $path = "{$prefix}/".strtolower(str_replace('_', '-', $specification['type'])).".{$extension}";
-                $result = $this->storage->put($path, $specification['contents']);
-                $stored[] = [
+                if ($heartbeat !== null) {
+                    $heartbeat();
+                }
+                $basename = strtolower(str_replace('_', '-', $specification['type'])).'.json';
+                $stored = $this->storage->writeStream("{$stagingPrefix}/{$basename}", ($specification['chunks'])());
+                $staged[] = [
                     'type' => $specification['type'],
                     'filename' => $specification['filename'],
                     'mime_type' => $specification['mime_type'],
-                    'stored' => $result,
-                    'metadata' => ['contract_version' => 1, 'proposal_version' => $execution->proposal_version],
+                    'stored' => $stored,
+                    'final_path' => "{$finalPrefix}/{$basename}",
+                    'metadata' => [
+                        'contract_version' => 1,
+                        'proposal_version' => $execution->proposal_version,
+                        'generated_at' => $generatedAt->toIso8601String(),
+                    ],
                 ];
             }
         } catch (Throwable $exception) {
-            $this->cleanup($stored);
+            $this->cleanup($staged);
             throw $exception;
         }
 
-        return $stored;
+        return $staged;
     }
 
     /** @param list<array{stored: StoredArtifact}> $artifacts */
@@ -134,42 +140,76 @@ class GenerateFinalArtifacts
                     $this->storage->delete($artifact['stored']->path);
                 }
             } catch (Throwable) {
-                // A failed cleanup must not hide the original generation error.
+                // Cleanup is best effort and restricted to this worker's private staging.
             }
         }
     }
 
-    /** @param array<string, mixed> $value */
-    private function json(array $value): string
+    /**
+     * @param  array<string, mixed>  $value
+     * @return iterable<string>
+     */
+    private function jsonChunks(array $value): iterable
     {
-        return json_encode($value, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)."\n";
+        yield json_encode($value, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)."\n";
     }
 
-    private function redact(mixed $value, ?string $key = null): mixed
+    /** @return iterable<string> */
+    private function logExportChunks(Execution $execution, CarbonInterface $generatedAt, ?callable $heartbeat): iterable
     {
-        if ($key !== null && preg_match('/password|passwd|secret|token|cookie|authorization|app[_-]?key|private[_-]?key|resume[_-]?token/i', $key) === 1) {
-            return '[REDACTED]';
-        }
+        yield '{"contract_version":1,"execution_uuid":'.json_encode($execution->uuid, JSON_THROW_ON_ERROR);
+        yield ',"generated_at":'.json_encode($generatedAt->toIso8601String(), JSON_THROW_ON_ERROR).',"logs":[';
+        $first = true;
 
-        if (is_array($value)) {
-            $redacted = [];
+        $processed = 0;
 
-            foreach ($value as $childKey => $childValue) {
-                $redacted[$childKey] = $this->redact($childValue, (string) $childKey);
+        foreach ($execution->logs()->orderBy('id')->lazyById(200) as $log) {
+            if (! $first) {
+                yield ',';
             }
 
-            return $redacted;
+            $first = false;
+            yield json_encode([
+                'stream' => $log->stream->value,
+                'level' => $log->level,
+                'message' => $this->redactor->redactString($log->message),
+                'context' => $this->redactor->redact($log->context),
+                'logged_at' => $log->logged_at?->toIso8601String(),
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+            if (++$processed % 200 === 0) {
+                if ($heartbeat !== null) {
+                    $heartbeat();
+                }
+            }
         }
 
-        return is_string($value) ? $this->redactString($value) : $value;
-    }
+        yield '],"events":[';
+        $first = true;
 
-    private function redactString(string $value): string
-    {
-        return preg_replace(
-            '/\b(password|passwd|secret|token|cookie|authorization|app[_-]?key|private[_-]?key|resume[_-]?token)\b\s*[:=]\s*[^\s,;]+/iu',
-            '$1=[REDACTED]',
-            $value,
-        ) ?? $value;
+        $processed = 0;
+
+        foreach ($execution->events()->orderBy('id')->lazyById(200) as $event) {
+            if (! $first) {
+                yield ',';
+            }
+
+            $first = false;
+            yield json_encode([
+                'sequence' => $event->sequence,
+                'type' => $event->type,
+                'severity' => $event->severity->value,
+                'message' => $this->redactor->redactString((string) $event->message),
+                'created_at' => $event->created_at->toIso8601String(),
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+            if (++$processed % 200 === 0) {
+                if ($heartbeat !== null) {
+                    $heartbeat();
+                }
+            }
+        }
+
+        yield "]}\n";
     }
 }

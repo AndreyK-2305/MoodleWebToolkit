@@ -2,7 +2,9 @@
 
 namespace App\Domain\Executions;
 
+use App\Domain\Artifacts\ArtifactStreamVerifier;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
+use App\Domain\Artifacts\DTOs\StoredArtifact;
 use App\Domain\Artifacts\GenerateFinalArtifacts;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
@@ -14,6 +16,7 @@ use App\Models\ExecutionStep;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
+use Throwable;
 
 class ProcessExecutionFinalization
 {
@@ -23,6 +26,7 @@ class ProcessExecutionFinalization
         private readonly ExecutionEventRecorder $events,
         private readonly GenerateFinalArtifacts $generator,
         private readonly ArtifactStorage $storage,
+        private readonly ArtifactStreamVerifier $verifier,
     ) {}
 
     public function process(int $commandId, string $owner): void
@@ -41,11 +45,31 @@ class ProcessExecutionFinalization
             return $locked;
         }, attempts: 3);
         $actor = User::query()->findOrFail($command->created_by);
-        $generated = $this->generator->generate($command->execution, $actor);
+        $completionAt = now()->utc()->toImmutable();
+        $requestedAt = ($command->created_at ?? $completionAt)->utc();
+        $heartbeat = function () use ($commandId, $owner): void {
+            if (! $this->leases->renew($commandId, $owner)) {
+                throw new ExecutionCommandLeaseLost;
+            }
+        };
+        $generated = $this->generator->stage(
+            $command->execution,
+            $actor,
+            $commandId,
+            $owner,
+            $requestedAt,
+            $completionAt,
+            $heartbeat,
+        );
+        $promoted = [];
         $committed = false;
 
         try {
-            DB::transaction(function () use ($commandId, $owner, $generated, $actor): void {
+            foreach ($generated as $item) {
+                $this->verifier->verify($item['stored']);
+            }
+
+            DB::transaction(function () use ($commandId, $owner, $generated, $actor, $completionAt, &$promoted): void {
                 $command = $this->leases->lockCommand($commandId);
 
                 if ($command === null
@@ -79,21 +103,37 @@ class ProcessExecutionFinalization
                     throw new RuntimeException('La ejecución ya contiene artefactos finales.');
                 }
 
-                foreach ($generated as $item) {
-                    $contents = $this->storage->read($item['stored']->path);
+                // Renew while holding the command lock. The four following atomic
+                // promotions are bounded and each rechecks ownership immediately
+                // before its irreversible create-if-absent operation.
+                $command->lease_expires_at = now()->utc()->addSeconds($this->leases->durationSeconds());
+                $command->save();
 
-                    if (strlen($contents) !== $item['stored']->size || ! hash_equals(hash('sha256', $contents), $item['stored']->checksum)) {
-                        throw new RuntimeException('Falló la verificación del artefacto antes del cierre.');
+                foreach ($generated as $item) {
+                    if (! $this->leases->isOwnedAndActive($command, $owner)) {
+                        throw new ExecutionCommandLeaseLost;
                     }
 
+                    $final = $this->storage->promote($item['stored']->path, $item['final_path']);
+
+                    if ($final->size !== $item['stored']->size || ! hash_equals($final->checksum, $item['stored']->checksum)) {
+                        throw new RuntimeException('La promoción modificó el contenido del artefacto.');
+                    }
+
+                    $this->verifier->verify($final);
+                    $promoted[] = $final;
+                }
+
+                foreach ($generated as $index => $item) {
+                    $final = $promoted[$index];
                     $execution->artifacts()->create([
                         'type' => $item['type'],
-                        'disk' => $item['stored']->disk,
-                        'path' => $item['stored']->path,
+                        'disk' => $final->disk,
+                        'path' => $final->path,
                         'filename' => $item['filename'],
                         'mime_type' => $item['mime_type'],
-                        'size' => $item['stored']->size,
-                        'sha256' => $item['stored']->checksum,
+                        'size' => $final->size,
+                        'sha256' => $final->checksum,
                         'metadata' => $item['metadata'],
                     ]);
                 }
@@ -109,8 +149,8 @@ class ProcessExecutionFinalization
                     ->firstOrFail();
                 $step->status = ExecutionStepStatus::SUCCESS;
                 $step->progress = 100;
-                $step->started_at ??= now();
-                $step->finished_at = now();
+                $step->started_at ??= $completionAt;
+                $step->finished_at = $completionAt;
                 $step->metadata = ['artifact_types' => GenerateFinalArtifacts::REQUIRED_TYPES];
                 $step->save();
                 $execution->progress = 100;
@@ -120,10 +160,17 @@ class ProcessExecutionFinalization
                     'proposal_version' => $execution->proposal_version,
                     'fingerprint' => $execution->review_fingerprint,
                     'artifact_count' => count(GenerateFinalArtifacts::REQUIRED_TYPES),
+                    'completed_at' => $completionAt->toIso8601String(),
                 ];
                 $execution->save();
                 $this->leases->finish($command);
 
+                $completionPayload = [
+                    'proposal_version' => $execution->proposal_version,
+                    'fingerprint' => $execution->review_fingerprint,
+                    'artifact_count' => 4,
+                    'completed_at' => $completionAt->toIso8601String(),
+                ];
                 AuditLog::query()->create([
                     'actor_id' => $actor->getKey(),
                     'project_id' => $execution->project_id,
@@ -131,21 +178,37 @@ class ProcessExecutionFinalization
                     'action' => 'EXECUTION_COMPLETED',
                     'auditable_type' => $execution->getMorphClass(),
                     'auditable_id' => $execution->getKey(),
-                    'payload' => ['proposal_version' => $execution->proposal_version, 'fingerprint' => $execution->review_fingerprint, 'artifact_count' => 4],
+                    'payload' => $completionPayload,
                 ]);
                 $this->events->recordNormalized($execution, new NormalizedToolEvent(
                     'execution.completed',
                     stepKey: 'finalization',
                     progress: 100,
                     message: 'La ejecución fue cerrada con sus cuatro artefactos verificados y quedó en modo de sólo lectura.',
-                    payload: ['proposal_version' => $execution->proposal_version, 'fingerprint' => $execution->review_fingerprint, 'artifact_count' => 4],
-                ));
-                $this->lifecycle->transitionForWorker($execution, ExecutionStatus::COMPLETED);
-            }, attempts: 3);
+                    payload: $completionPayload,
+                ), $completionAt);
+                $this->lifecycle->transitionForWorker($execution, ExecutionStatus::COMPLETED, $completionAt);
+            });
             $committed = true;
         } finally {
+            $this->generator->cleanup($generated);
+
             if (! $committed) {
-                $this->generator->cleanup($generated);
+                $this->cleanupPromoted($promoted);
+            }
+        }
+    }
+
+    /** @param list<StoredArtifact> $artifacts */
+    private function cleanupPromoted(array $artifacts): void
+    {
+        foreach ($artifacts as $artifact) {
+            try {
+                if ($this->storage->exists($artifact->path)) {
+                    $this->storage->delete($artifact->path);
+                }
+            } catch (Throwable) {
+                // These paths are private to this command and lease owner.
             }
         }
     }

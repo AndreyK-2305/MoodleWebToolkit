@@ -3,12 +3,16 @@
 namespace App\Domain\Artifacts\Contracts;
 
 use App\Domain\Artifacts\DTOs\StoredArtifact;
+use App\Domain\Artifacts\Streams\ArtifactReadStream;
 
 interface ArtifactStorage
 {
-    public function put(string $path, string $contents): StoredArtifact;
+    /** @param iterable<string> $chunks */
+    public function writeStream(string $path, iterable $chunks): StoredArtifact;
 
-    public function read(string $path): string;
+    public function readStream(string $path): ArtifactReadStream;
+
+    public function promote(string $stagingPath, string $finalPath): StoredArtifact;
 
     public function exists(string $path): bool;
 

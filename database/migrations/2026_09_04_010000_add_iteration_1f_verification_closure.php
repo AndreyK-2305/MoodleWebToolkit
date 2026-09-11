@@ -76,39 +76,64 @@ return new class extends Migration
 
     public function down(): void
     {
-        if (DB::getDriverName() === 'pgsql') {
-            DB::statement('DROP FUNCTION IF EXISTS reject_iteration_1f_result_change() CASCADE');
-            DB::statement('DROP FUNCTION IF EXISTS validate_artifact_download_execution() CASCADE');
-            DB::statement('DROP INDEX IF EXISTS artifacts_required_execution_type_unique');
-            DB::statement('ALTER TABLE executions DROP CONSTRAINT IF EXISTS executions_proposal_version_check');
-            DB::statement('ALTER TABLE executions DROP CONSTRAINT IF EXISTS executions_review_fingerprint_check');
-            DB::statement('ALTER TABLE executions DROP CONSTRAINT IF EXISTS executions_validated_fingerprint_check');
-            DB::statement('ALTER TABLE verifications DROP CONSTRAINT IF EXISTS verifications_proposal_version_check');
-            DB::statement('ALTER TABLE verifications DROP CONSTRAINT IF EXISTS verifications_fingerprint_check');
-            DB::statement('ALTER TABLE execution_commands DROP CONSTRAINT IF EXISTS execution_commands_type_check');
-            DB::statement("ALTER TABLE execution_commands ADD CONSTRAINT execution_commands_type_check CHECK (command_type IN ('START', 'CONTINUE', 'RESOLVE_CONFLICT', 'RESUME', 'CANCEL', 'VALIDATE', 'FINALIZE'))");
-        }
+        DB::transaction(function (): void {
+            if (DB::getDriverName() === 'pgsql') {
+                // A used 1F database may contain PROPOSE commands on a completed
+                // project. Temporarily remove only the 1E child guard needed to
+                // discard those incompatible rows before restoring its constraint.
+                DB::statement('DROP TRIGGER IF EXISTS execution_commands_completed_project_read_only ON execution_commands');
+                DB::statement('DROP TRIGGER IF EXISTS verifications_completed_project_read_only ON verifications');
+                DB::table('execution_commands')->where('command_type', 'PROPOSE')->delete();
+                DB::statement('DROP FUNCTION IF EXISTS reject_iteration_1f_result_change() CASCADE');
+                // Rows requested through 1F have no lossless 1E representation:
+                // proposal_version, fingerprint, approval and requester disappear.
+                // Migrated 1E rows keep requested_by NULL and are preserved.
+                DB::table('verifications')->whereNotNull('requested_by')->delete();
+                DB::statement('DROP FUNCTION IF EXISTS validate_artifact_download_execution() CASCADE');
+                DB::statement('DROP INDEX IF EXISTS artifacts_required_execution_type_unique');
+                DB::statement('ALTER TABLE executions DROP CONSTRAINT IF EXISTS executions_proposal_version_check');
+                DB::statement('ALTER TABLE executions DROP CONSTRAINT IF EXISTS executions_review_fingerprint_check');
+                DB::statement('ALTER TABLE executions DROP CONSTRAINT IF EXISTS executions_validated_fingerprint_check');
+                DB::statement('ALTER TABLE verifications DROP CONSTRAINT IF EXISTS verifications_proposal_version_check');
+                DB::statement('ALTER TABLE verifications DROP CONSTRAINT IF EXISTS verifications_fingerprint_check');
+                DB::statement('ALTER TABLE execution_commands DROP CONSTRAINT IF EXISTS execution_commands_type_check');
+                DB::statement("ALTER TABLE execution_commands ADD CONSTRAINT execution_commands_type_check CHECK (command_type IN ('START', 'CONTINUE', 'RESOLVE_CONFLICT', 'RESUME', 'CANCEL', 'VALIDATE', 'FINALIZE'))");
+            }
 
-        Schema::dropIfExists('artifact_downloads');
-        Schema::dropIfExists('academic_proposals');
-        Schema::dropIfExists('academic_snapshots');
+            Schema::dropIfExists('artifact_downloads');
+            Schema::dropIfExists('academic_proposals');
+            Schema::dropIfExists('academic_snapshots');
 
-        Schema::table('verifications', function (Blueprint $table) {
-            $table->dropUnique('verifications_execution_version_unique');
-            $table->dropConstrainedForeignId('requested_by');
-            $table->dropColumn(['proposal_version', 'fingerprint', 'approved']);
-            $table->unique(['execution_id', 'key']);
-        });
+            Schema::table('verifications', function (Blueprint $table) {
+                $table->dropUnique('verifications_execution_version_unique');
+                $table->dropConstrainedForeignId('requested_by');
+                $table->dropColumn(['proposal_version', 'fingerprint', 'approved']);
+                $table->unique(['execution_id', 'key']);
+            });
 
-        Schema::table('executions', function (Blueprint $table) {
-            $table->dropConstrainedForeignId('finalized_by');
-            $table->dropColumn([
-                'proposal_version',
-                'review_fingerprint',
-                'validated_proposal_version',
-                'validated_fingerprint',
-                'completion_summary',
-            ]);
+            Schema::table('executions', function (Blueprint $table) {
+                $table->dropConstrainedForeignId('finalized_by');
+                $table->dropColumn([
+                    'proposal_version',
+                    'review_fingerprint',
+                    'validated_proposal_version',
+                    'validated_fingerprint',
+                    'completion_summary',
+                ]);
+            });
+
+            if (DB::getDriverName() === 'pgsql') {
+                DB::statement(<<<'SQL'
+                    CREATE TRIGGER execution_commands_completed_project_read_only
+                        BEFORE INSERT OR UPDATE OR DELETE ON execution_commands
+                        FOR EACH ROW EXECUTE FUNCTION reject_completed_project_child_change()
+                    SQL);
+                DB::statement(<<<'SQL'
+                    CREATE TRIGGER verifications_completed_project_read_only
+                        BEFORE INSERT OR UPDATE OR DELETE ON verifications
+                        FOR EACH ROW EXECUTE FUNCTION reject_completed_project_child_change()
+                    SQL);
+            }
         });
     }
 

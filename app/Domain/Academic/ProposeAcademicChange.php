@@ -4,6 +4,7 @@ namespace App\Domain\Academic;
 
 use App\Domain\Academic\DTOs\AcademicProposalResult;
 use App\Domain\Executions\ExecutionEventRecorder;
+use App\Domain\Idempotency\IdempotencyRegistry;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -26,6 +27,7 @@ class ProposeAcademicChange
     public function __construct(
         private readonly AcademicPreview $preview,
         private readonly ExecutionEventRecorder $events,
+        private readonly IdempotencyRegistry $idempotency,
     ) {}
 
     /** @param array{operation: string, node_id: string, value: string, expected_version: int, base_fingerprint: string} $input */
@@ -45,6 +47,19 @@ class ProposeAcademicChange
                 'base_fingerprint' => $input['base_fingerprint'],
             ];
             $payloadHash = hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+            $actorId = (int) $actor->getKey();
+            $scope = "execution:{$locked->getKey()}:proposal:".($locked->proposal_version + 1);
+            $receipt = $this->idempotency->find((int) $locked->getKey(), $actorId, 'PROPOSE', $idempotencyKey, $payloadHash);
+
+            if ($receipt !== null) {
+                $command = $locked->commands()->findOrFail($receipt->result_id);
+
+                return new AcademicProposalResult(
+                    $locked->academicProposals()->where('version', $command->attempt)->firstOrFail(),
+                    false,
+                );
+            }
+
             $existing = $locked->commands()->where('idempotency_key', $idempotencyKey)->lockForUpdate()->first();
 
             if ($existing !== null) {
@@ -53,6 +68,11 @@ class ProposeAcademicChange
                 ) {
                     throw new IdempotencyKeyConflict;
                 }
+
+                $this->idempotency->record(
+                    (int) $locked->getKey(), $actorId, 'PROPOSE', 'execution', (int) $locked->getKey(),
+                    $scope, $idempotencyKey, $payloadHash, 'execution_command', (int) $existing->getKey(), 200,
+                );
 
                 return new AcademicProposalResult(
                     $locked->academicProposals()->where('version', $existing->attempt)->firstOrFail(),
@@ -123,6 +143,11 @@ class ProposeAcademicChange
                 'created_by' => $actor->getKey(),
                 'processed_at' => now(),
             ]);
+            $this->idempotency->record(
+                (int) $locked->getKey(), $actorId, 'PROPOSE', 'execution', (int) $locked->getKey(),
+                "execution:{$locked->getKey()}:proposal:{$nextVersion}", $idempotencyKey, $payloadHash,
+                'execution_command', (int) $command->getKey(), 201,
+            );
 
             $locked->proposal_version = $nextVersion;
             $locked->review_fingerprint = $fingerprint;
