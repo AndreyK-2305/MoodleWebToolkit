@@ -2,15 +2,19 @@
 
 Plataforma de administración para el kit de consolidación de instancias Moodle.
 El repositorio contiene las iteraciones **1A (Bootstrap)**, **1B (Dominio)**,
-**1C (Wizard persistente)** y **1D (Motor asíncrono simulado)** del Plan Maestro.
-Incluye el inicio idempotente por HTTP, Redis Queue, un worker acotado, eventos
-persistentes y actualización en tiempo real mediante canales privados de Reverb.
+**1C (Wizard persistente)**, **1D (Motor asíncrono simulado)**, **1E
+(Ejecución supervisada)** y **1F (Verificación y cierre)** del Plan Maestro.
+Incluye el inicio idempotente por HTTP, Redis Queue, workers acotados, eventos
+persistentes, artefactos finales verificables y actualización en tiempo real
+mediante canales privados de Reverb.
 
 La implementación y los resultados de validación están documentados en
 [`docs/ITERACION-1A.md`](docs/ITERACION-1A.md) y
 [`docs/ITERACION-1B.md`](docs/ITERACION-1B.md),
-[`docs/ITERACION-1C.md`](docs/ITERACION-1C.md) y
-[`docs/ITERACION-1D.md`](docs/ITERACION-1D.md).
+[`docs/ITERACION-1C.md`](docs/ITERACION-1C.md),
+[`docs/ITERACION-1D.md`](docs/ITERACION-1D.md),
+[`docs/ITERACION-1E.md`](docs/ITERACION-1E.md) y
+[`docs/ITERACION-1F.md`](docs/ITERACION-1F.md).
 
 ## Stack disponible
 
@@ -42,6 +46,26 @@ mayor que 120; la aplicación rechazará el arranque con un mensaje accionable s
 el valor es incompatible. El `queue-worker` ejecuta esta comprobación antes de
 consumir trabajos. Tras cambiarla en una instalación con configuración cacheada,
 ejecute `php artisan config:clear` antes de reiniciar los servicios.
+
+El cierre 1F avanza mediante jobs reanudables que procesan, por defecto, como
+máximo 200 registros, 1 MiB serializado y 105 segundos por unidad, con un
+margen de 15 segundos frente al timeout invariable de 120 segundos. Un mensaje
+o contexto extraordinario se limita explícitamente a 1 MiB después de censurar
+secretos y conserva marcador, tamaño, SHA-256 y referencia al registro original.
+Los límites pueden ajustarse con `FINALIZATION_RECORDS_PER_JOB`,
+`FINALIZATION_BYTES_PER_JOB`, `FINALIZATION_TIME_BUDGET_SECONDS`,
+`FINALIZATION_MAX_RECORD_BYTES` y
+`FINALIZATION_VERIFICATION_BYTES_PER_JOB`. El staging abandonado y los finales
+huérfanos se eliminan de forma conservadora con:
+
+```powershell
+docker compose exec app php artisan artifacts:cleanup-finalization
+```
+
+La antigüedad mínima predeterminada es 24 horas y se configura con
+`FINALIZATION_CLEANUP_MINIMUM_AGE_SECONDS`; para una ejecución puntual se puede
+usar `--minimum-age=<segundos>`. El recolector nunca elimina rutas referenciadas
+por `artifacts` ni archivos protegidos por una finalización activa.
 
 La imagen instala las dependencias fijadas por `composer.lock` y
 `package-lock.json`. Si `.env` no existe, el contenedor `app` copia

@@ -35,6 +35,7 @@ class ExecutionEventController extends Controller
 
         return response()->json([
             'execution' => $presenter->execution($execution),
+            'review' => $presenter->review($execution),
             'events' => $events->map(fn (ExecutionEvent $event): array => $presenter->event($event))->values(),
             'has_more' => $events->count() === 200
                 && (int) $events->last()?->sequence < $execution->last_event_sequence,

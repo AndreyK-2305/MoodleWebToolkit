@@ -9,6 +9,7 @@ enum ExecutionCommandType: string
     case RESOLVE_CONFLICT = 'RESOLVE_CONFLICT';
     case RESUME = 'RESUME';
     case CANCEL = 'CANCEL';
+    case PROPOSE = 'PROPOSE';
     case VALIDATE = 'VALIDATE';
     case FINALIZE = 'FINALIZE';
 }

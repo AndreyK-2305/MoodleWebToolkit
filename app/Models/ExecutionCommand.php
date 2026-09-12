@@ -6,9 +6,12 @@ use App\Enums\ExecutionCommandType;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * @property ExecutionCommandType $command_type
+ * @property array<string, mixed>|null $payload
+ * @property CarbonImmutable|null $created_at
  * @property CarbonImmutable|null $processing_started_at
  * @property string|null $lease_owner
  * @property CarbonImmutable|null $lease_expires_at
@@ -44,6 +47,12 @@ class ExecutionCommand extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    /** @return HasOne<ExecutionFinalization, $this> */
+    public function finalization(): HasOne
+    {
+        return $this->hasOne(ExecutionFinalization::class);
     }
 
     protected function casts(): array

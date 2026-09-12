@@ -20,6 +20,8 @@ class FakeExecutionProvider implements ExecutionProvider
     public function __construct(
         private readonly ExecutionCommandLease $leases,
         private readonly ExecutionUnitState $state,
+        private readonly ProcessSimulatedVerification $verification,
+        private readonly ProcessExecutionFinalization $finalization,
     ) {}
 
     public function execute(ExecutionCommand $command, ToolAdapter $adapter): void
@@ -33,6 +35,18 @@ class FakeExecutionProvider implements ExecutionProvider
         try {
             if ($claimed->command->command_type === ExecutionCommandType::CANCEL) {
                 $this->state->cancel((int) $claimed->command->getKey(), $claimed->owner);
+
+                return;
+            }
+
+            if ($claimed->command->command_type === ExecutionCommandType::VALIDATE) {
+                $this->verification->process((int) $claimed->command->getKey(), $claimed->owner);
+
+                return;
+            }
+
+            if ($claimed->command->command_type === ExecutionCommandType::FINALIZE) {
+                $this->finalization->process((int) $claimed->command->getKey(), $claimed->owner);
 
                 return;
             }

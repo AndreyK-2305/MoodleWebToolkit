@@ -21,8 +21,27 @@ class ExecutionCommandDispatcher
         }
 
         try {
+            DB::transaction(function () use ($command): void {
+                $locked = ExecutionCommand::query()->lockForUpdate()->findOrFail((int) $command->getKey());
+
+                if ($locked->processed_at !== null) {
+                    return;
+                }
+
+                $locked->dispatched_at = now();
+                $locked->dispatch_attempts = ((int) $locked->dispatch_attempts) + 1;
+                $locked->save();
+            });
             Bus::dispatch((new RunExecutionUnit((int) $command->getKey()))->onQueue('executions'));
         } catch (Throwable $exception) {
+            DB::transaction(function () use ($command): void {
+                $locked = ExecutionCommand::query()->lockForUpdate()->find((int) $command->getKey());
+
+                if ($locked !== null && $locked->processed_at === null) {
+                    $locked->dispatched_at = null;
+                    $locked->save();
+                }
+            });
             ExecutionLog::query()->create([
                 'execution_id' => $command->execution_id,
                 'stream' => 'SYSTEM',
@@ -33,12 +52,5 @@ class ExecutionCommandDispatcher
 
             throw new ExecutionDispatchFailed($command->execution->uuid);
         }
-
-        DB::transaction(function () use ($command): void {
-            $locked = ExecutionCommand::query()->lockForUpdate()->findOrFail((int) $command->getKey());
-            $locked->dispatched_at = now();
-            $locked->dispatch_attempts = ((int) $locked->dispatch_attempts) + 1;
-            $locked->save();
-        });
     }
 }

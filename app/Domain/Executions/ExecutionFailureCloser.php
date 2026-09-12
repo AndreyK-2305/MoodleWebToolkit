@@ -50,6 +50,21 @@ class ExecutionFailureCloser
 
             $execution = $command->execution;
 
+            if ($command->command_type === ExecutionCommandType::FINALIZE
+                && $execution->status === ExecutionStatus::REVIEW
+            ) {
+                $this->leases->releaseForRetry($command);
+                ExecutionLog::query()->create([
+                    'execution_id' => $execution->getKey(),
+                    'stream' => 'SYSTEM',
+                    'level' => 'ERROR',
+                    'message' => 'La generación de artefactos no terminó; el cierre permanece en REVIEW y puede reintentarse idempotentemente.',
+                    'context' => ['reason' => $reason, 'exception_type' => $exception === null ? null : $exception::class],
+                ]);
+
+                return true;
+            }
+
             if ($execution->status === ExecutionStatus::CANCELLING
                 && $command->command_type !== ExecutionCommandType::CANCEL
             ) {

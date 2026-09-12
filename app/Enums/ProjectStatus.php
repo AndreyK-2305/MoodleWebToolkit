@@ -56,7 +56,7 @@ enum ProjectStatus: string
             self::WAITING_USER_ACTION => [self::RUNNING, self::CANCELLING, self::FAILED],
             self::CANCELLING => [self::CANCELLED, self::FAILED],
             self::CANCELLED, self::FAILED => [self::QUEUED],
-            self::VERIFYING => [self::REVIEW, self::FAILED],
+            self::VERIFYING => [self::REVIEW, self::CANCELLING, self::FAILED],
             self::REVIEW => [self::VERIFYING, self::COMPLETED],
             self::COMPLETED => [],
         }, true);

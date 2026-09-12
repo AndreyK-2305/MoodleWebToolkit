@@ -2,9 +2,17 @@
 
 namespace Tests\Feature\Domain;
 
+use App\Domain\Academic\ProposeAcademicChange;
+use App\Domain\Artifacts\ArtifactStreamVerifier;
+use App\Domain\Artifacts\DTOs\StoredArtifact;
+use App\Domain\Artifacts\FinalizationGarbageCollector;
+use App\Domain\Artifacts\GenerateFinalArtifacts;
 use App\Domain\Executions\Contracts\ExecutionProvider;
 use App\Domain\Executions\ExecutionCommandLease;
+use App\Domain\Executions\ExecutionFailureCloser;
 use App\Domain\Executions\ExecutionUnitState;
+use App\Domain\Executions\ProcessExecutionFinalization;
+use App\Domain\Executions\RequestExecutionFinalization;
 use App\Domain\Executions\StartProjectExecution;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Tools\Contracts\ToolAdapter;
@@ -15,6 +23,7 @@ use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
 use App\Enums\UserRole;
 use App\Exceptions\ExecutionAlreadyActive;
+use App\Exceptions\ExecutionCommandLeaseLost;
 use App\Jobs\RunExecutionUnit;
 use App\Models\AuditLog;
 use App\Models\Execution;
@@ -25,6 +34,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use JsonException;
 use Symfony\Component\Process\Process;
@@ -133,7 +143,7 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertSame([200, 201], collect($results)->pluck('http_status')->sort()->values()->all());
         $this->assertCount(1, collect($results)->pluck('body.execution_uuid')->unique());
         $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
-        $this->assertSame(2, DB::table('execution_commands')->count());
+        $this->assertSame(3, DB::table('execution_commands')->count());
     }
 
     public function test_two_concurrent_http_requests_with_different_keys_keep_one_active_execution(): void
@@ -149,7 +159,7 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['status'] === 'ok'));
         $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['http_status'] === 409));
         $this->assertSame(1, Execution::query()->where('project_id', $project->getKey())->count());
-        $this->assertSame(2, DB::table('execution_commands')->count());
+        $this->assertSame(3, DB::table('execution_commands')->count());
     }
 
     public function test_two_reconcilers_close_one_abandoned_command_exactly_once(): void
@@ -193,14 +203,14 @@ class PostgreSqlConcurrencyTest extends TestCase
         $this->assertTrue($results[1]['completed']);
         $this->assertNotNull($command->fresh()->processed_at);
         $this->assertNull($command->fresh()->lease_owner);
-        $this->assertSame(ProjectStatus::RUNNING, $project->fresh()->status);
-        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
-        $this->assertSame(50, $execution->fresh()->progress);
+        $this->assertSame(ProjectStatus::REVIEW, $project->fresh()->status);
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+        $this->assertSame(75, $execution->fresh()->progress);
         $this->assertSame(ExecutionStepStatus::SUCCESS, $execution->steps()->orderBy('position')->firstOrFail()->status);
-        $this->assertSame(2, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
+        $this->assertSame(1, $execution->steps()->where('status', ExecutionStepStatus::PENDING)->count());
         $this->assertSame(2, $execution->events()->where('type', 'phase.completed')->count());
         $this->assertSame(1, $execution->events()->where('type', 'execution.command_queued')->count());
-        $this->assertSame(1, $execution->events()->where('type', 'iteration_1e.boundary')->count());
+        $this->assertSame(1, $execution->events()->where('type', 'verification.completed')->count());
         $this->assertSame(0, $execution->events()->where('type', 'execution.abandoned')->count());
         $this->assertSame(0, ExecutionLog::query()->where('execution_id', $execution->getKey())->count());
     }
@@ -241,6 +251,164 @@ class PostgreSqlConcurrencyTest extends TestCase
 
         $this->assertSame(ExecutionStatus::CANCELLED, $execution->fresh()->status);
         $this->assertSame(1, $execution->events()->where('type', 'execution.cancelled')->count());
+    }
+
+    public function test_two_validation_requests_create_one_validation_effect(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution] = $this->reviewedCollectionExecution($admin);
+        app(ProposeAcademicChange::class)->propose($execution, $admin, [
+            'operation' => 'RENAME_CATEGORY',
+            'node_id' => 'cat:collection-academic',
+            'value' => 'Oferta concurrente',
+            'expected_version' => 0,
+            'base_fingerprint' => (string) $execution->review_fingerprint,
+        ], 'concurrent-proposal-seed');
+
+        $results = $this->runConcurrently([
+            ['validate-http', (int) $execution->getKey(), (int) $admin->getKey(), 'concurrent-validate-a'],
+            ['validate-http', (int) $execution->getKey(), (int) $admin->getKey(), 'concurrent-validate-b'],
+        ]);
+
+        $this->assertSame([], array_values(array_filter($results, fn (array $result): bool => $result['status'] !== 'ok')));
+        $this->assertEqualsCanonicalizing([200, 202], collect($results)->pluck('http_status')->all());
+        $this->assertSame(1, $execution->verifications()->where('proposal_version', 1)->count());
+        $this->assertSame(1, $execution->commands()->where('command_type', 'VALIDATE')->where('attempt', 2)->count());
+        $this->assertSame(2, DB::table('idempotency_receipts')
+            ->where('execution_id', $execution->getKey())
+            ->where('action', 'VALIDATE')
+            ->whereIn('idempotency_key', ['concurrent-validate-a', 'concurrent-validate-b'])
+            ->count());
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+        $this->assertSame(ProjectStatus::REVIEW, $project->fresh()->status);
+
+        $losingIndex = collect($results)->search(fn (array $result): bool => $result['http_status'] === 200);
+        $this->assertIsInt($losingIndex);
+        $losingKey = $losingIndex === 0 ? 'concurrent-validate-a' : 'concurrent-validate-b';
+        $execution->refresh();
+        app(ProposeAcademicChange::class)->propose($execution, $admin, [
+            'operation' => 'RENAME_CATEGORY',
+            'node_id' => 'cat:collection-archive',
+            'value' => 'Archivo posterior',
+            'expected_version' => 1,
+            'base_fingerprint' => (string) $execution->review_fingerprint,
+        ], 'concurrent-proposal-next-version');
+
+        $this->actingAs($admin)->postJson(
+            route('projects.executions.validate', [$project->uuid, $execution->uuid]),
+            [],
+            ['Idempotency-Key' => $losingKey],
+        )->assertConflict();
+    }
+
+    public function test_two_finalization_requests_create_one_atomic_closure(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution] = $this->reviewedCollectionExecution($admin);
+
+        try {
+            $results = $this->runConcurrently([
+                ['finalize-http', (int) $execution->getKey(), (int) $admin->getKey(), 'concurrent-finalize-a'],
+                ['finalize-http', (int) $execution->getKey(), (int) $admin->getKey(), 'concurrent-finalize-b'],
+            ]);
+
+            $this->assertSame([], array_values(array_filter($results, fn (array $result): bool => $result['status'] !== 'ok')));
+            $this->assertEqualsCanonicalizing([200, 202], collect($results)->pluck('http_status')->all());
+            $this->assertSame(ExecutionStatus::COMPLETED, $execution->fresh()->status);
+            $this->assertSame(ProjectStatus::COMPLETED, $project->fresh()->status);
+            $this->assertSame(1, $execution->commands()->where('command_type', 'FINALIZE')->count());
+            $this->assertSame(2, DB::table('idempotency_receipts')
+                ->where('execution_id', $execution->getKey())
+                ->where('action', 'FINALIZE')
+                ->whereIn('idempotency_key', ['concurrent-finalize-a', 'concurrent-finalize-b'])
+                ->count());
+            $this->assertSame(1, $execution->events()->where('type', 'execution.completed')->count());
+            $this->assertSame(4, $execution->artifacts()->count());
+        } finally {
+            Storage::disk('local')->deleteDirectory("executions/{$execution->workspace_key}");
+        }
+    }
+
+    public function test_expired_finalization_worker_cannot_remove_the_later_winners_artifacts(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [$project, $execution] = $this->reviewedCollectionExecution($admin);
+        app(RequestExecutionFinalization::class)->request($execution, $admin, 'stale-finalization-request');
+        $command = $execution->commands()->where('command_type', 'FINALIZE')->sole();
+        $leases = app(ExecutionCommandLease::class);
+        $workerA = $leases->claim((int) $command->getKey());
+        $this->assertNotNull($workerA);
+        $completionAt = now()->utc()->toImmutable();
+        $stagingA = app(GenerateFinalArtifacts::class)->stage(
+            $execution,
+            $admin,
+            (int) $command->getKey(),
+            $workerA->owner,
+            $command->created_at,
+            $completionAt,
+        );
+
+        $command->update(['lease_expires_at' => now()->utc()->subSecond()]);
+        $this->assertTrue(app(ExecutionFailureCloser::class)->closeAbandoned((int) $command->getKey()));
+        $workerB = $leases->claim((int) $command->getKey());
+        $this->assertNotNull($workerB);
+        app(ProcessExecutionFinalization::class)->process((int) $command->getKey(), $workerB->owner);
+
+        try {
+            app(ProcessExecutionFinalization::class)->process((int) $command->getKey(), $workerA->owner);
+            $this->fail('El worker A debía perder definitivamente su lease.');
+        } catch (ExecutionCommandLeaseLost) {
+            $this->assertTrue(true);
+        }
+
+        while ($command->fresh()->processed_at === null) {
+            (new RunExecutionUnit((int) $command->getKey()))->handle(
+                app(ExecutionProvider::class),
+                app(ToolAdapter::class),
+            );
+        }
+
+        app(GenerateFinalArtifacts::class)->cleanup($stagingA);
+        app(FinalizationGarbageCollector::class)->collect(0);
+        $execution->refresh();
+        $this->assertSame(ExecutionStatus::COMPLETED, $execution->status);
+        $this->assertSame(ProjectStatus::COMPLETED, $project->fresh()->status);
+        $this->assertSame(4, $execution->artifacts()->count());
+        $this->assertSame(1, $execution->events()->where('type', 'execution.completed')->count());
+        $this->assertCount(4, Storage::disk('local')->allFiles("executions/{$execution->workspace_key}"));
+
+        foreach ($execution->artifacts as $artifact) {
+            $stored = new StoredArtifact($artifact->disk, $artifact->path, $artifact->size, $artifact->sha256);
+            app(ArtifactStreamVerifier::class)->verify($stored);
+        }
+
+        Storage::disk('local')->deleteDirectory("executions/{$execution->workspace_key}");
+    }
+
+    public function test_concurrent_proposals_conflict_on_the_locked_version(): void
+    {
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        [, $execution] = $this->reviewedCollectionExecution($admin);
+        $base = [
+            'operation' => 'RENAME_CATEGORY',
+            'expected_version' => 0,
+            'base_fingerprint' => $execution->review_fingerprint,
+        ];
+        $results = $this->runConcurrently([
+            ['proposal-http', (int) $execution->getKey(), (int) $admin->getKey(), json_encode([
+                'idempotency_key' => 'concurrent-proposal-a',
+                'payload' => [...$base, 'node_id' => 'cat:collection-academic', 'value' => 'Nombre A'],
+            ], JSON_THROW_ON_ERROR)],
+            ['proposal-http', (int) $execution->getKey(), (int) $admin->getKey(), json_encode([
+                'idempotency_key' => 'concurrent-proposal-b',
+                'payload' => [...$base, 'node_id' => 'cat:collection-archive', 'value' => 'Nombre B'],
+            ], JSON_THROW_ON_ERROR)],
+        ]);
+
+        $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['http_status'] === 201));
+        $this->assertCount(1, array_filter($results, fn (array $result): bool => $result['http_status'] === 422));
+        $this->assertSame(1, $execution->academicProposals()->count());
+        $this->assertSame(1, $execution->fresh()->proposal_version);
     }
 
     /**
@@ -342,6 +510,41 @@ class PostgreSqlConcurrencyTest extends TestCase
         $wizard->confirm($project, $admin, $configuration->version, []);
 
         return $project->fresh(['configuration', 'moodleInstances.server']);
+    }
+
+    /** @return array{Project, Execution} */
+    private function reviewedCollectionExecution(User $admin): array
+    {
+        Queue::fake();
+        $project = $this->readyCollectionProject($admin);
+        $result = app(StartProjectExecution::class)->start(
+            $project,
+            $admin,
+            'concurrent-review-'.Str::uuid(),
+            $project->configuration->version,
+        );
+        $execution = $result->execution;
+
+        foreach ([
+            $execution->commands()->where('command_type', 'START')->sole(),
+            null,
+            null,
+        ] as $index => $command) {
+            if ($index === 1) {
+                $command = $execution->commands()->where('command_type', 'CONTINUE')->sole();
+            } elseif ($index === 2) {
+                $command = $execution->commands()->where('command_type', 'VALIDATE')->sole();
+            }
+
+            (new RunExecutionUnit((int) $command->getKey()))->handle(
+                app(ExecutionProvider::class),
+                app(ToolAdapter::class),
+            );
+        }
+
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+
+        return [$project, $execution->fresh()];
     }
 
     /** @return array{Project, Execution, ExecutionCommand, string} */

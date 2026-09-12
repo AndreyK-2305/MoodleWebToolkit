@@ -32,6 +32,7 @@ class ExecutionEvent extends Model
         'progress',
         'message',
         'payload',
+        'created_at',
     ];
 
     /** @return BelongsTo<Execution, $this> */

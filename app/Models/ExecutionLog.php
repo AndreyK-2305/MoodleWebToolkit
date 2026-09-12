@@ -3,9 +3,17 @@
 namespace App\Models;
 
 use App\Enums\LogStream;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property LogStream $stream
+ * @property string $level
+ * @property string $message
+ * @property array<string, mixed>|null $context
+ * @property CarbonImmutable|null $logged_at
+ */
 class ExecutionLog extends Model
 {
     public const UPDATED_AT = null;

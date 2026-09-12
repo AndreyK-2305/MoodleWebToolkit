@@ -5,8 +5,10 @@ namespace App\Domain\Executions;
 use App\Domain\Executions\DTOs\ClaimedExecutionCommand;
 use App\Models\Execution;
 use App\Models\ExecutionCommand;
+use App\Models\ExecutionFinalization;
 use App\Models\Project;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use LogicException;
@@ -42,6 +44,12 @@ class ExecutionCommandLease
             $command->lease_owner = $owner;
             $command->lease_expires_at = $startedAt->addSeconds($this->durationSeconds());
             $command->save();
+            ExecutionFinalization::query()
+                ->where('execution_command_id', $command->getKey())
+                ->update([
+                    'lease_owner' => $owner,
+                    'lease_expires_at' => $command->lease_expires_at,
+                ]);
 
             return new ClaimedExecutionCommand($command, $owner);
         }, attempts: 3);
@@ -85,6 +93,7 @@ class ExecutionCommandLease
         return $command;
     }
 
+    /** @phpstan-impure */
     public function isOwnedAndActive(ExecutionCommand $command, string $owner): bool
     {
         return $command->processed_at === null
@@ -113,16 +122,62 @@ class ExecutionCommandLease
             ->lessThanOrEqualTo(now());
     }
 
+    public function renew(int $commandId, string $owner): bool
+    {
+        return DB::transaction(function () use ($commandId, $owner): bool {
+            $command = $this->lockCommand($commandId);
+
+            if ($command === null || ! $this->isOwnedAndActive($command, $owner)) {
+                return false;
+            }
+
+            $command->lease_expires_at = now()->utc()->addSeconds($this->durationSeconds());
+            $command->save();
+            ExecutionFinalization::query()
+                ->where('execution_command_id', $command->getKey())
+                ->update(['lease_expires_at' => $command->lease_expires_at]);
+
+            return true;
+        }, attempts: 3);
+    }
+
     public function legacyAbandonedBefore(): CarbonImmutable
     {
         return now()->toImmutable()->subSeconds($this->durationSeconds());
     }
 
-    public function finish(ExecutionCommand $command): void
+    public function finish(ExecutionCommand $command, ?CarbonInterface $finishedAt = null): void
     {
-        $command->processed_at = now()->utc();
+        $command->processed_at = CarbonImmutable::instance($finishedAt ?? now())->utc();
         $command->lease_owner = null;
         $command->lease_expires_at = null;
         $command->save();
+        ExecutionFinalization::query()
+            ->where('execution_command_id', $command->getKey())
+            ->update(['lease_owner' => null, 'lease_expires_at' => null]);
+    }
+
+    public function releaseForContinuation(ExecutionCommand $command): void
+    {
+        $command->processing_started_at = null;
+        $command->lease_owner = null;
+        $command->lease_expires_at = null;
+        $command->dispatched_at = null;
+        $command->save();
+        ExecutionFinalization::query()
+            ->where('execution_command_id', $command->getKey())
+            ->update(['lease_owner' => null, 'lease_expires_at' => null]);
+    }
+
+    public function releaseForRetry(ExecutionCommand $command): void
+    {
+        $command->processing_started_at = null;
+        $command->lease_owner = null;
+        $command->lease_expires_at = null;
+        $command->dispatched_at = null;
+        $command->save();
+        ExecutionFinalization::query()
+            ->where('execution_command_id', $command->getKey())
+            ->update(['lease_owner' => null, 'lease_expires_at' => null]);
     }
 }

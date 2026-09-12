@@ -25,6 +25,7 @@ class ExecutionUnitState
         private readonly ExecutionLifecycle $lifecycle,
         private readonly ExecutionEventRecorder $events,
         private readonly ExecutionCommandDispatcher $dispatcher,
+        private readonly RequestExecutionValidation $validation,
     ) {}
 
     public function begin(int $commandId, string $owner): Execution
@@ -152,12 +153,7 @@ class ExecutionUnitState
                         message: 'La siguiente unidad se persistió antes de enviarse a Redis.',
                     ));
                 } else {
-                    $this->events->recordNormalized($execution, new NormalizedToolEvent(
-                        'iteration_1e.boundary',
-                        progress: 50,
-                        message: 'Procesamiento simulado terminado; verificación pendiente de 1F.',
-                        payload: ['remaining_units' => ['verification', 'finalization']],
-                    ));
+                    $this->validation->queueInitial($execution);
                 }
             }
 

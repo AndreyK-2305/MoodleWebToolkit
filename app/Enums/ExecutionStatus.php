@@ -37,7 +37,7 @@ enum ExecutionStatus: string
             self::RUNNING => [self::WAITING_USER_ACTION, self::CANCELLING, self::FAILED, self::VERIFYING],
             self::WAITING_USER_ACTION => [self::RUNNING, self::CANCELLING, self::FAILED],
             self::CANCELLING => [self::CANCELLED, self::FAILED],
-            self::VERIFYING => [self::REVIEW, self::FAILED],
+            self::VERIFYING => [self::REVIEW, self::CANCELLING, self::FAILED],
             self::REVIEW => [self::VERIFYING, self::COMPLETED],
             self::CANCELLED, self::FAILED, self::COMPLETED => [],
         }, true);

@@ -767,8 +767,9 @@ function OptionsStep({
                             </option>
                         </select>
                         <p className="text-muted-foreground text-xs">
-                            Controla de forma reproducible el motor 1E. La
-                            verificación y el cierre siguen fuera de alcance.
+                            Controla de forma reproducible el motor simulado. La
+                            verificación, revisión y el cierre se procesan en la
+                            misma ejecución.
                         </p>
                         <InputError message={form.errors.processing_scenario} />
                     </div>
