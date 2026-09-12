@@ -128,12 +128,16 @@ despacha tras el commit.
 
 La solicitud crea atómicamente el comando y su fila de
 `ExecutionFinalization`. `ProcessExecutionFinalization` ejecuta una sola unidad
-acotada por job y persiste antes de redispatchar la siguiente. Las etapas son
-`PREPARE`, `EXPORT_LOGS`, `EXPORT_EVENTS`, `GENERATE_REPORTS`,
-`VERIFY_STAGING`, `PROMOTE_ARTIFACTS`, `FINAL_SUMMARY`, `PROMOTE_SUMMARY`,
-`COMMIT` y `COMPLETED`. La fila conserva cursores de logs y eventos, estado
-SHA-256 reanudable, offset de verificación, temporales, artefactos verificados y
-promovidos, propietario y expiración del lease.
+acotada por job y persiste antes de redispatchar la siguiente. El flujo vigente
+usa `PREPARE`, `EXPORT_LOGS`, `EXPORT_EVENTS`, `GENERATE_REPORTS`,
+`VERIFY_STAGING`, `PROMOTE_ARTIFACTS`, `FINAL_SUMMARY` y `COMPLETED`.
+`FINAL_SUMMARY` es la unidad final pequeña que genera, verifica y promueve el
+resumen, y confirma toda la transición lógica en la misma transacción. Los
+estados legacy `PROMOTE_SUMMARY` y `COMMIT` se conservan en el constraint para
+reanudar despliegues interrumpidos, pero se normalizan a `FINAL_SUMMARY` y no
+publican su timestamp previo. La fila conserva cursores de logs y eventos,
+estado SHA-256 reanudable, offset de verificación, temporales, artefactos
+verificados y promovidos, propietario y expiración del lease.
 
 `GenerateFinalArtifacts` y el contrato de streams de `ArtifactStorage`
 producen estos cuatro contenidos:
@@ -147,26 +151,37 @@ producen estos cuatro contenidos:
 rechaza rutas absolutas, traversal y enlaces simbólicos, y subdivide cualquier
 chunk del productor antes de cada `fwrite`: ninguna escritura física supera
 65.536 bytes, incluso con strings UTF-8 de varios cientos de KiB. Logs y eventos
-se consultan por lotes configurables de 200 filas y se anexan al JSON mediante
-un cursor confirmado. Si el proceso cae después de escribir y antes del commit,
-el reintento trunca los bytes no confirmados hasta el tamaño persistido y
-continúa sin duplicar registros.
+se consultan de uno en uno y cada job se detiene por el primero de tres límites:
+registros, bytes serializados o presupuesto temporal. El cursor se confirma
+antes del redispatch. Un único registro que exceda el presupuesto normal avanza
+para evitar inanición; si su mensaje o contexto supera el máximo individual, se
+censura completo antes de recortarlo y el export conserva un marcador explícito,
+identidad del registro, tamaño y SHA-256 del original. Si el proceso cae después
+de escribir y antes del commit, el reintento trunca los bytes no confirmados
+hasta el tamaño persistido y continúa sin duplicar registros.
 
 La verificación también es incremental: cada job consume como máximo 1 MiB y
 cada lectura se limita a 64 KiB; offset y estado SHA-256 quedan en PostgreSQL.
 Por eso ni la exportación, ni la verificación, ni la promoción dependen del
-tamaño total de un artefacto. Los límites operativos se exponen en
-`FINALIZATION_RECORDS_PER_JOB` y
-`FINALIZATION_VERIFICATION_BYTES_PER_JOB`.
+tamaño total de un artefacto. `GENERATE_REPORTS` crea como máximo un reporte no
+trivial por job. Los límites operativos se exponen en
+`FINALIZATION_RECORDS_PER_JOB`, `FINALIZATION_BYTES_PER_JOB`,
+`FINALIZATION_TIME_BUDGET_SECONDS`, `FINALIZATION_MAX_RECORD_BYTES` y
+`FINALIZATION_VERIFICATION_BYTES_PER_JOB`. El presupuesto temporal se acota a
+105 segundos por defecto y nunca puede superar 105, preservando 15 segundos de
+margen frente al timeout de 120 segundos.
 
 La exportación aplica redacción estructurada y recursiva a todos los artefactos
 JSON. Reconoce objetos y arreglos JSON completos aunque estén almacenados como
 string, fragmentos JSON, encabezados `Authorization`, `Proxy-Authorization`,
 `Cookie` y `Set-Cookie` sin depender de capitalización o espacios, credenciales
-incrustadas en URI y claves exactas relacionadas con passwords, secretos,
-tokens, `APP_KEY`, claves privadas y `resume_token`. La coincidencia de claves
-está acotada para no borrar valores inocentes como `tokenizer`, `secretary` o
-`monkey`.
+incrustadas en URI, parámetros query y pares `clave=valor`. El catálogo exacto
+normaliza mayúsculas, minúsculas, guiones, guiones bajos y camelCase para cubrir
+passwords, `client_secret`, `api_key`, tokens OAuth/access/refresh/resume,
+`aws_secret_access_key`, `secret_access_key`, passwords de base de datos o
+conexión, `APP_KEY` y claves privadas. La coincidencia sigue acotada para no
+borrar valores inocentes como `tokenizer`, `secretary`, `monkey` o
+`password_policy`.
 
 Cada reclamación escribe en staging privado por Execution, command y
 `lease_owner`. Sólo el lease vigente puede avanzar cursores o promover; un
@@ -177,14 +192,17 @@ archivos, sus tamaños y checksums, una transacción crea los registros
 definitivos y pasa Project y Execution a `COMPLETED`. Un fallo no crea registros
 que aparenten validez.
 
-La finalización define el instante oficial cuando todos los artefactos previos
-ya fueron generados, verificados y promovidos y se construye el resumen final.
-Ese `closure_ready_at` se persiste de forma coherente en
-`Execution.finished_at`, el step final, `completion_summary`, auditoría, el
-evento `execution.completed`, el estado reanudable y `FINAL_SUMMARY` como
-`completed_at`. `finalization_requested_at` conserva la fecha del comando y
-`finalization_started_at` el inicio real del procesamiento; ninguno se presenta
-como si fuese el cierre.
+La finalización determina el instante oficial dentro de la unidad que realmente
+transiciona a `COMPLETED`, después de cualquier espera entre jobs y después de
+que los tres artefactos previos estén verificados y promovidos. Esa misma unidad
+genera, verifica y promueve `FINAL_SUMMARY` y confirma en una transacción única
+`Execution.finished_at`, `ExecutionFinalization.completed_at`, el step final,
+`completion_summary`, auditoría, evento `execution.completed`,
+`ExecutionCommand.processed_at` y la transición del proyecto. Un fallo previo al
+commit no publica timestamp ni filas terminales; el reintento usa rutas privadas
+por lease, por lo que un resumen huérfano no bloquea el cierre posterior.
+`finalization_requested_at` conserva la fecha del comando y
+`finalization_started_at` el inicio real del procesamiento.
 
 `DownloadArtifact` vuelve a autorizar al actor, comprueba la relación exacta
 Project → Execution → Artifact, existencia, tamaño y SHA-256, y registra la
@@ -245,6 +263,15 @@ temporales/artefactos, verificación SHA-256 reanudable y los instantes separado
 de inicio, preparación del cierre y cierre confirmado. Constraints de etapa,
 cursores y terminalidad, además del trigger de sólo lectura, preservan el
 contrato aun ante escrituras directas.
+
+La migración correctiva
+`2026_09_07_010000_enforce_execution_finalization_command_scope.php` agrega la
+unicidad padre `(id, execution_id)` y la FK compuesta
+`(execution_command_id, execution_id)`, con cascade, hacia
+`execution_commands`. PostgreSQL rechaza así que una finalización de la
+Execution A apunte al comando de la Execution B. Su aplicación incremental
+conserva filas 1F válidas; el rollback retira primero la FK y luego la unicidad
+auxiliar, y la reaplicación restablece ambas.
 
 El upgrade soporta filas 1E existentes y artefactos legacy. El rollback 1F → 1E
 es transaccional, retira primero comandos `PROPOSE` incompatibles, restaura el
@@ -307,6 +334,34 @@ implementación conserva los cursores confirmados, trunca el append parcial al
 reintentar, no duplica logs, eventos, artefactos ni el evento terminal, y sólo
 publica `COMPLETED` en la transacción final.
 
+## Última corrección de cierre
+
+La batería nueva se ejecutó primero contra
+`e9fda50655a7fbc3a476745ae9dd65fad3e6a2eb`. Los vectores SHA-256 conocidos ya
+coincidían con PHP, pero se reprodujeron cinco hallazgos: un estado SHA
+manipulado era aceptado; claves sensibles adicionales sobrevivían en los bytes;
+un job ignoraba el presupuesto serializado y generaba dos reportes; el resumen,
+su promoción y el commit ocupaban tres jobs y adelantaban `completed_at`; y
+PostgreSQL aceptaba cruzar una finalización con el comando de otra Execution.
+
+La corrección valida forma, rangos y congruencia bloque/buffer del estado SHA;
+amplía el catálogo exacto de censura; procesa un registro por consulta y limita
+por cantidad, bytes y tiempo; genera un reporte no trivial por unidad; añade la
+FK compuesta correctiva; y concentra resumen, promoción y cierre lógico en una
+única unidad final. La regresión temporal fija solicitud 10:00, inicio 10:15,
+generación previa 10:16 y cierre 10:30: todos los consumidores terminales usan
+10:30. Otra regresión falla después de promover el resumen a las 10:30 y reanuda
+a las 10:45 con otro lease, sin timestamp falso, artefactos, eventos o auditorías
+duplicados ni conflicto con el final huérfano.
+
+Los límites artificialmente pequeños fuerzan múltiples jobs de logs y eventos,
+corte por bytes antes que por cantidad y corte temporal después de garantizar
+un registro. El caso extraordinario conserva JSON válido, marcador de truncado,
+tamaño, SHA-256 y referencia, después de censurar el contenido completo. La
+batería SHA cubre vacío, `abc`, el vector largo estándar, fronteras de 55, 56,
+63, 64 y 65 bytes, binario, UTF-8, offsets variados, actualizaciones de un byte
+y múltiples llamadas inmutables a `finish()`.
+
 ## Recorrido real de navegador
 
 El recorrido se hizo contra la aplicación de Docker Compose con PostgreSQL,
@@ -361,24 +416,24 @@ ni se recreó.
 
 - `docker compose config --quiet`: aprobado.
 - Imagen final `moodle-toolkit-app:local`: reconstruida desde el árbol
-  correctivo con todas las dependencias fijadas.
+  correctivo con todas las dependencias fijadas (`973686e95a6e`).
 - Servicios aislados: PostgreSQL, PostgreSQL de pruebas, Redis, Mailpit, app,
   queue-worker, scheduler, Reverb, Vite y Nginx respondieron a sus healthchecks.
-- PostgreSQL desde cero: 15 migraciones, incluida la nueva persistencia
-  reanudable 1F.
-- Suite PHP: los 221 casos fueron ejercitados localmente; todos quedaron verdes
-  al combinar la ejecución completa y las particiones exigentes descritas
-  abajo. La ejecución integrada definitiva corresponde al CI del SHA publicado.
-- Batería específica 1F y SHA-256 reanudable: 19 pruebas, 381 aserciones.
-- Upgrade/rollback/reaplicación 1F después de uso real: 1 prueba, 45
-  aserciones.
+- PostgreSQL desde cero: 16 migraciones, incluidas la persistencia reanudable 1F
+  y la FK compuesta correctiva.
+- Suite PHP: 227 pruebas y 2111 aserciones, todas verdes al combinar la suite
+  completa con la partición de Reverb exigida por la memoria local. La ejecución
+  integrada definitiva corresponde al CI del SHA publicado.
+- Batería específica de cierre 1F, migraciones correctivas y SHA-256
+  reanudable: 26 pruebas, 774 aserciones; incluye upgrade, rollback,
+  reaplicación y conservación de datos reales 1F.
 - Concurrencia PostgreSQL multiproceso y relevo de lease: 11 pruebas, 182
   aserciones.
 - Reverb y revocación real de WebSocket: 2 pruebas, 23 aserciones.
 - Casos heredados 1E: 11 pruebas, 98 aserciones.
 - Transiciones: 15 pruebas, 45 aserciones.
 - Vitest: 1 archivo, 5 pruebas.
-- Pint: 218 archivos.
+- Pint: 220 archivos.
 - Larastan/PHPStan: configuración completa en modo secuencial, sin errores.
 - TypeScript: sin errores.
 - ESLint: sin warnings ni errores.

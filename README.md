@@ -47,9 +47,14 @@ el valor es incompatible. El `queue-worker` ejecuta esta comprobación antes de
 consumir trabajos. Tras cambiarla en una instalación con configuración cacheada,
 ejecute `php artisan config:clear` antes de reiniciar los servicios.
 
-El cierre 1F avanza mediante jobs reanudables que procesan, por defecto, 200
-registros o 1 MiB de verificación por unidad. Los límites pueden ajustarse con
-`FINALIZATION_RECORDS_PER_JOB` y
+El cierre 1F avanza mediante jobs reanudables que procesan, por defecto, como
+máximo 200 registros, 1 MiB serializado y 105 segundos por unidad, con un
+margen de 15 segundos frente al timeout invariable de 120 segundos. Un mensaje
+o contexto extraordinario se limita explícitamente a 1 MiB después de censurar
+secretos y conserva marcador, tamaño, SHA-256 y referencia al registro original.
+Los límites pueden ajustarse con `FINALIZATION_RECORDS_PER_JOB`,
+`FINALIZATION_BYTES_PER_JOB`, `FINALIZATION_TIME_BUDGET_SECONDS`,
+`FINALIZATION_MAX_RECORD_BYTES` y
 `FINALIZATION_VERIFICATION_BYTES_PER_JOB`. El staging abandonado y los finales
 huérfanos se eliminan de forma conservadora con:
 
