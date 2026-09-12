@@ -157,28 +157,80 @@ class GenerateFinalArtifacts
 
     /**
      * @param  array<string, mixed>  $work
-     * @return array{work: array<string, mixed>, cursor: int, count: int, done: bool}
+     * @return array{work: array<string, mixed>, cursor: int, count: int, bytes: int, done: bool}
      */
-    public function appendLogBatch(Execution $execution, array $work, int $cursor, int $limit): array
-    {
-        $rows = $execution->logs()->where('id', '>', $cursor)->orderBy('id')->limit($limit + 1)->get();
-        $batch = $rows->take($limit);
+    public function appendLogBatch(
+        Execution $execution,
+        array $work,
+        int $cursor,
+        int $limit,
+        int $byteBudget,
+        int $maxRecordBytes,
+        ?callable $shouldStop = null,
+    ): array {
         $chunks = [];
         $recordCount = (int) ($work['record_count'] ?? 0);
+        $processed = 0;
+        $bytes = 0;
 
-        foreach ($batch as $log) {
-            $chunks[] = ($recordCount > 0 ? ',' : '').json_encode([
+        while ($processed < $limit) {
+            if ($processed > 0 && $shouldStop !== null && $shouldStop()) {
+                break;
+            }
+
+            $log = $execution->logs()->where('id', '>', $cursor)->orderBy('id')->first();
+
+            if ($log === null) {
+                break;
+            }
+
+            [$message, $messageTruncation] = $this->boundedText(
+                $this->redactor->redactString($log->message),
+                $log->message,
+                $maxRecordBytes,
+                'execution_log',
+                (int) $log->getKey(),
+            );
+            [$context, $contextTruncation] = $this->boundedContext(
+                $this->redactor->redact($log->context),
+                $log->context,
+                $maxRecordBytes,
+                (int) $log->getKey(),
+            );
+            $payload = [
                 'stream' => $log->stream->value,
                 'level' => $log->level,
-                'message' => $this->redactor->redactString($log->message),
-                'context' => $this->redactor->redact($log->context),
+                'message' => $message,
+                'context' => $context,
                 'logged_at' => $log->logged_at?->toIso8601String(),
-            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            ];
+            $truncation = array_filter([
+                'message' => $messageTruncation,
+                'context' => $contextTruncation,
+            ]);
+
+            if ($truncation !== []) {
+                $payload['truncation'] = $truncation;
+            }
+
+            $chunk = ($recordCount > 0 ? ',' : '').json_encode(
+                $payload,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+            );
+            $chunkBytes = strlen($chunk);
+
+            if ($processed > 0 && $bytes + $chunkBytes > $byteBudget) {
+                break;
+            }
+
+            $chunks[] = $chunk;
+            $bytes += $chunkBytes;
             $recordCount++;
+            $processed++;
             $cursor = (int) $log->getKey();
         }
 
-        $done = $rows->count() <= $limit;
+        $done = ! $execution->logs()->where('id', '>', $cursor)->exists();
 
         if ($done) {
             $chunks[] = '],"events":[';
@@ -187,33 +239,76 @@ class GenerateFinalArtifacts
         $work = $this->appendToWork($work, $chunks);
         $work['record_count'] = $recordCount;
 
-        return ['work' => $work, 'cursor' => $cursor, 'count' => $batch->count(), 'done' => $done];
+        return ['work' => $work, 'cursor' => $cursor, 'count' => $processed, 'bytes' => $bytes, 'done' => $done];
     }
 
     /**
      * @param  array<string, mixed>  $work
-     * @return array{work: array<string, mixed>, cursor: int, count: int, done: bool}
+     * @return array{work: array<string, mixed>, cursor: int, count: int, bytes: int, done: bool}
      */
-    public function appendEventBatch(Execution $execution, array $work, int $cursor, int $limit): array
-    {
-        $rows = $execution->events()->where('id', '>', $cursor)->orderBy('id')->limit($limit + 1)->get();
-        $batch = $rows->take($limit);
+    public function appendEventBatch(
+        Execution $execution,
+        array $work,
+        int $cursor,
+        int $limit,
+        int $byteBudget,
+        int $maxRecordBytes,
+        ?callable $shouldStop = null,
+    ): array {
         $chunks = [];
         $eventCount = (int) ($work['event_count'] ?? 0);
+        $processed = 0;
+        $bytes = 0;
 
-        foreach ($batch as $event) {
-            $chunks[] = ($eventCount > 0 ? ',' : '').json_encode([
+        while ($processed < $limit) {
+            if ($processed > 0 && $shouldStop !== null && $shouldStop()) {
+                break;
+            }
+
+            $event = $execution->events()->where('id', '>', $cursor)->orderBy('id')->first();
+
+            if ($event === null) {
+                break;
+            }
+
+            $originalMessage = (string) $event->message;
+            [$message, $messageTruncation] = $this->boundedText(
+                $this->redactor->redactString($originalMessage),
+                $originalMessage,
+                $maxRecordBytes,
+                'execution_event',
+                (int) $event->getKey(),
+            );
+            $payload = [
                 'sequence' => $event->sequence,
                 'type' => $event->type,
                 'severity' => $event->severity->value,
-                'message' => $this->redactor->redactString((string) $event->message),
+                'message' => $message,
                 'created_at' => $event->created_at->toIso8601String(),
-            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            ];
+
+            if ($messageTruncation !== null) {
+                $payload['truncation'] = ['message' => $messageTruncation];
+            }
+
+            $chunk = ($eventCount > 0 ? ',' : '').json_encode(
+                $payload,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+            );
+            $chunkBytes = strlen($chunk);
+
+            if ($processed > 0 && $bytes + $chunkBytes > $byteBudget) {
+                break;
+            }
+
+            $chunks[] = $chunk;
+            $bytes += $chunkBytes;
             $eventCount++;
+            $processed++;
             $cursor = (int) $event->getKey();
         }
 
-        $done = $rows->count() <= $limit;
+        $done = ! $execution->events()->where('id', '>', $cursor)->exists();
 
         if ($done) {
             $chunks[] = "]}\n";
@@ -226,21 +321,20 @@ class GenerateFinalArtifacts
             $work['checksum'] = ResumableSha256::resume($work['sha_state'])->finish();
         }
 
-        return ['work' => $work, 'cursor' => $cursor, 'count' => $batch->count(), 'done' => $done];
+        return ['work' => $work, 'cursor' => $cursor, 'count' => $processed, 'bytes' => $bytes, 'done' => $done];
     }
 
     /**
-     * @param  array<string, mixed>  $logWork
-     * @return list<array<string, mixed>>
+     * @param  list<string>  $existingTypes
+     * @return array<string, mixed>|null
      */
-    public function stageRemainingReports(
+    public function stageNextReport(
         Execution $execution,
-        User $actor,
         int $commandId,
         string $owner,
         CarbonInterface $generatedAt,
-        array $logWork,
-    ): array {
+        array $existingTypes,
+    ): ?array {
         $execution->loadMissing(['project', 'verifications']);
         $baseName = Str::slug($execution->project->name) ?: 'proyecto';
         $ownerPrefix = "executions/{$execution->workspace_key}/.staging/{$commandId}/".Str::slug($owner);
@@ -276,28 +370,38 @@ class GenerateFinalArtifacts
                 ],
             ],
         ];
-        $artifacts = [];
-
-        try {
-            foreach ($specifications as $specification) {
-                $basename = strtolower(str_replace('_', '-', $specification['type'])).'.json';
-                $stored = $this->storage->writeStream("{$ownerPrefix}/{$basename}", $this->jsonChunks($specification['value']));
-                $artifacts[] = $this->descriptor(
-                    $specification['type'],
-                    $specification['filename'],
-                    $stored,
-                    "{$finalPrefix}/{$basename}",
-                    $execution,
-                    $generatedAt,
-                );
+        foreach ($specifications as $specification) {
+            if (in_array($specification['type'], $existingTypes, true)) {
+                continue;
             }
-        } catch (Throwable $exception) {
-            $this->cleanup($artifacts);
-            throw $exception;
+
+            $basename = strtolower(str_replace('_', '-', $specification['type'])).'.json';
+            $stored = $this->storage->writeStream("{$ownerPrefix}/{$basename}", $this->jsonChunks($specification['value']));
+
+            return $this->descriptor(
+                $specification['type'],
+                $specification['filename'],
+                $stored,
+                "{$finalPrefix}/{$basename}",
+                $execution,
+                $generatedAt,
+            );
         }
 
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $logWork
+     * @return array<string, mixed>
+     */
+    public function logDescriptor(Execution $execution, array $logWork, CarbonInterface $generatedAt, int $commandId): array
+    {
+        $baseName = Str::slug($execution->project->name) ?: 'proyecto';
+        $finalPrefix = "executions/{$execution->workspace_key}/final/{$commandId}";
         $logStored = new StoredArtifact('local', (string) $logWork['path'], (int) $logWork['size'], (string) $logWork['checksum']);
-        $artifacts[] = $this->descriptor(
+
+        return $this->descriptor(
             'LOG_EXPORT',
             "{$baseName}-logs.json",
             $logStored,
@@ -305,8 +409,6 @@ class GenerateFinalArtifacts
             $execution,
             $generatedAt,
         );
-
-        return $artifacts;
     }
 
     /** @return array<string, mixed> */
@@ -348,7 +450,7 @@ class GenerateFinalArtifacts
             'FINAL_SUMMARY',
             "{$baseName}-resumen-final.json",
             $stored,
-            "executions/{$execution->workspace_key}/final/{$commandId}/{$basename}",
+            "executions/{$execution->workspace_key}/final/{$commandId}/".Str::slug($owner)."/{$basename}",
             $execution,
             $completionAt,
         );
@@ -406,6 +508,68 @@ class GenerateFinalArtifacts
         $work['sha_state'] = $hash->state();
 
         return $work;
+    }
+
+    /** @return array{string, array<string, mixed>|null} */
+    private function boundedText(
+        string $redacted,
+        string $original,
+        int $maximumBytes,
+        string $sourceType,
+        int $sourceId,
+    ): array {
+        if (strlen($redacted) <= $maximumBytes) {
+            return [$redacted, null];
+        }
+
+        $preview = $this->utf8Prefix($redacted, $maximumBytes);
+
+        return [
+            $preview,
+            [
+                'truncated' => true,
+                'source_type' => $sourceType,
+                'source_id' => $sourceId,
+                'original_bytes' => strlen($original),
+                'original_sha256' => hash('sha256', $original),
+                'redacted_bytes' => strlen($redacted),
+                'exported_bytes' => strlen($preview),
+            ],
+        ];
+    }
+
+    /** @return array{mixed, array<string, mixed>|null} */
+    private function boundedContext(mixed $redacted, mixed $original, int $maximumBytes, int $sourceId): array
+    {
+        $redactedJson = json_encode($redacted, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        if (strlen($redactedJson) <= $maximumBytes) {
+            return [$redacted, null];
+        }
+
+        $originalJson = json_encode($original, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $preview = $this->utf8Prefix($redactedJson, $maximumBytes);
+
+        return [
+            [
+                'truncated' => true,
+                'redacted_preview' => $preview,
+            ],
+            [
+                'truncated' => true,
+                'source_type' => 'execution_log_context',
+                'source_id' => $sourceId,
+                'original_bytes' => strlen($originalJson),
+                'original_sha256' => hash('sha256', $originalJson),
+                'redacted_bytes' => strlen($redactedJson),
+                'exported_bytes' => strlen($preview),
+            ],
+        ];
+    }
+
+    private function utf8Prefix(string $value, int $maximumBytes): string
+    {
+        return mb_strcut($value, 0, $maximumBytes, 'UTF-8');
     }
 
     /**

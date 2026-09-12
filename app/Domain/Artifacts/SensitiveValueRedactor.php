@@ -4,11 +4,35 @@ namespace App\Domain\Artifacts;
 
 final class SensitiveValueRedactor
 {
-    private const SENSITIVE_KEY = '/^(?:proxy[-_]?authorization|authorization|set[-_]?cookie|cookie|password|passwd|secret|(?:access|refresh|resume|api|auth)?[_-]?token|app[_-]?key|private[_-]?key)$/i';
+    /** @var list<string> */
+    private const SENSITIVE_KEYS = [
+        'authorization',
+        'proxyauthorization',
+        'setcookie',
+        'cookie',
+        'password',
+        'passwd',
+        'secret',
+        'token',
+        'authtoken',
+        'accesstoken',
+        'refreshtoken',
+        'resumetoken',
+        'oauthtoken',
+        'clientsecret',
+        'apikey',
+        'awssecretaccesskey',
+        'secretaccesskey',
+        'databasepassword',
+        'dbpassword',
+        'connectionpassword',
+        'appkey',
+        'privatekey',
+    ];
 
     public function redact(mixed $value, ?string $key = null): mixed
     {
-        if ($key !== null && preg_match(self::SENSITIVE_KEY, $key) === 1) {
+        if ($key !== null && $this->isSensitiveKey($key)) {
             return '[REDACTED]';
         }
 
@@ -49,15 +73,34 @@ final class SensitiveValueRedactor
         $value = preg_replace('#(?<=://)[^/@\s]+(?::[^/@\s]*)?@#u', '[REDACTED]@', $value) ?? $value;
 
         $value = preg_replace_callback(
-            '/(?<key>"(?:Proxy-Authorization|Authorization|Set-Cookie|Cookie|password|passwd|secret|(?:access|refresh|resume|api|auth)?[_-]?token|app[_-]?key|private[_-]?key)")\s*:\s*(?<value>"(?:\\\\.|[^"\\\\])*"|[^\s,;}]+)/iu',
-            fn (array $match): string => $match['key'].':"[REDACTED]"',
+            '/(?<quoted>"(?<key>[A-Za-z][A-Za-z0-9_-]*)")\s*:\s*(?<value>"(?:\\\\.|[^"\\\\])*"|(?![\[{])[^\s,;}]+)/u',
+            fn (array $match): string => $this->isSensitiveKey($match['key'])
+                ? $match['quoted'].':"[REDACTED]"'
+                : $match[0],
             $value,
         ) ?? $value;
 
-        return preg_replace(
-            '/\b(password|passwd|secret|(?:access|refresh|resume|api|auth)?[_-]?token|app[_-]?key|private[_-]?key)\b\s*[:=]\s*[^\s,;]+/iu',
-            '$1=[REDACTED]',
+        $value = preg_replace_callback(
+            '/(?<![A-Za-z0-9_-])(?<key>[A-Za-z][A-Za-z0-9_-]*)\s*=\s*(?<value>"(?:\\\\.|[^"\\\\])*"|[^\s&,;}]+)/u',
+            fn (array $match): string => $this->isSensitiveKey($match['key'])
+                ? $match['key'].'=[REDACTED]'
+                : $match[0],
             $value,
         ) ?? $value;
+
+        return preg_replace_callback(
+            '/(?<![A-Za-z0-9_-])(?<key>[A-Za-z][A-Za-z0-9_-]*)\s*:\s*(?!\/\/)(?<value>"(?:\\\\.|[^"\\\\])*"|(?![\[{])[^\s&,;}]+)/u',
+            fn (array $match): string => $this->isSensitiveKey($match['key'])
+                ? $match['key'].':[REDACTED]'
+                : $match[0],
+            $value,
+        ) ?? $value;
+    }
+
+    private function isSensitiveKey(string $key): bool
+    {
+        $normalized = strtolower(preg_replace('/[^A-Za-z0-9]+/', '', $key) ?? $key);
+
+        return in_array($normalized, self::SENSITIVE_KEYS, true);
     }
 }

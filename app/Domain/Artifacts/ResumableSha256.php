@@ -31,16 +31,44 @@ final class ResumableSha256
         return new self;
     }
 
-    /** @param array{hash: list<int>, buffer: string, length: int} $state */
+    /** @param array<string, mixed> $state */
     public static function resume(array $state): self
     {
-        $buffer = base64_decode($state['buffer'], true);
+        $encodedBuffer = $state['buffer'] ?? null;
+        $hash = $state['hash'] ?? null;
+        $length = $state['length'] ?? null;
 
-        if ($buffer === false || count($state['hash']) !== 8 || $state['length'] < strlen($buffer)) {
+        if (! is_string($encodedBuffer)
+            || ! is_array($hash)
+            || ! array_is_list($hash)
+            || count($hash) !== 8
+            || ! is_int($length)
+            || $length < 0
+        ) {
             throw new InvalidArgumentException('El estado SHA-256 reanudable no es válido.');
         }
 
-        return new self($state['hash'], $buffer, $state['length']);
+        $validatedHash = [];
+
+        foreach ($hash as $word) {
+            if (! is_int($word) || $word < 0 || $word > 0xFFFFFFFF) {
+                throw new InvalidArgumentException('El estado SHA-256 reanudable no es válido.');
+            }
+
+            $validatedHash[] = $word;
+        }
+
+        $buffer = base64_decode($encodedBuffer, true);
+
+        if ($buffer === false
+            || strlen($buffer) >= 64
+            || $length < strlen($buffer)
+            || $length % 64 !== strlen($buffer)
+        ) {
+            throw new InvalidArgumentException('El estado SHA-256 reanudable no es válido.');
+        }
+
+        return new self($validatedHash, $buffer, $length);
     }
 
     public function update(string $bytes): void

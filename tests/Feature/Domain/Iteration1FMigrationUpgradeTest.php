@@ -10,6 +10,36 @@ use Tests\TestCase;
 
 class Iteration1FMigrationUpgradeTest extends TestCase
 {
+    public function test_execution_finalization_enforces_command_execution_identity_and_cascade(): void
+    {
+        $schema = 'iteration_1f_scope_'.Str::lower(Str::random(12));
+        DB::statement(sprintf('CREATE SCHEMA "%s"', $schema));
+        DB::statement(sprintf('SET search_path TO "%s"', $schema));
+
+        try {
+            $this->runAllMigrations();
+            $seed = $this->seedIteration1EData();
+            $now = now();
+            $commandA = $this->insertFinalizationCommand($seed['execution_id'], $seed['user_id'], 'scope-a');
+            $commandB = $this->insertFinalizationCommand($seed['other_execution_id'], $seed['user_id'], 'scope-b');
+
+            try {
+                $this->insertFinalizationState($seed['execution_id'], $commandB, $now);
+                $this->fail('La finalización no debe aceptar un comando perteneciente a otra Execution.');
+            } catch (QueryException $exception) {
+                $this->assertSame('23503', $exception->getCode());
+            }
+
+            $this->insertFinalizationState($seed['execution_id'], $commandA, $now);
+            $this->assertSame(1, DB::table('execution_finalizations')->where('execution_command_id', $commandA)->count());
+            DB::table('execution_commands')->where('id', $commandA)->delete();
+            $this->assertSame(0, DB::table('execution_finalizations')->where('execution_command_id', $commandA)->count());
+        } finally {
+            DB::statement('SET search_path TO public');
+            DB::statement(sprintf('DROP SCHEMA IF EXISTS "%s" CASCADE', $schema));
+        }
+    }
+
     public function test_iteration_1f_upgrades_rolls_back_and_reapplies_the_1e_schema(): void
     {
         $schema = 'iteration_1f_upgrade_'.Str::lower(Str::random(12));
@@ -22,13 +52,20 @@ class Iteration1FMigrationUpgradeTest extends TestCase
             $migration = require database_path('migrations/2026_09_04_010000_add_iteration_1f_verification_closure.php');
             $receiptsMigration = require database_path('migrations/2026_09_05_010000_add_idempotency_receipts.php');
             $resumableMigration = require database_path('migrations/2026_09_06_010000_add_resumable_finalizations.php');
+            $scopeMigration = require database_path('migrations/2026_09_07_010000_enforce_execution_finalization_command_scope.php');
             $migration->up();
             $receiptsMigration->up();
             $resumableMigration->up();
 
             $this->assertMigratedState($seed);
             $this->seedIteration1FUsage($seed);
+            $scopeMigration->up();
             $this->assertSame(1, DB::table('execution_finalizations')->where('stage', 'COMPLETED')->count());
+            $this->assertSame(1, DB::table('pg_constraint')
+                ->where('conname', 'execution_finalizations_command_execution_foreign')
+                ->whereRaw('connamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())')
+                ->count());
+            $scopeMigration->down();
             $resumableMigration->down();
             $receiptsMigration->down();
             $migration->down();
@@ -55,6 +92,7 @@ class Iteration1FMigrationUpgradeTest extends TestCase
             $migration->up();
             $receiptsMigration->up();
             $resumableMigration->up();
+            $scopeMigration->up();
             $this->assertMigratedState($seed);
             $this->assertTrue(Schema::hasTable('execution_finalizations'));
         } finally {
@@ -259,6 +297,48 @@ class Iteration1FMigrationUpgradeTest extends TestCase
             $migration = require $file;
             $migration->up();
         }
+    }
+
+    private function runAllMigrations(): void
+    {
+        $files = glob(database_path('migrations/*.php')) ?: [];
+        sort($files);
+
+        foreach ($files as $file) {
+            $migration = require $file;
+            $migration->up();
+        }
+    }
+
+    private function insertFinalizationCommand(int $executionId, int $userId, string $key): int
+    {
+        return (int) DB::table('execution_commands')->insertGetId([
+            'execution_id' => $executionId,
+            'step_key' => 'finalization',
+            'attempt' => 1,
+            'command_type' => 'FINALIZE',
+            'idempotency_key' => $key,
+            'idempotency_scope' => "execution:{$executionId}:finalize:{$key}",
+            'payload_hash' => hash('sha256', $key),
+            'payload' => json_encode(['operation' => 'FINALIZE'], JSON_THROW_ON_ERROR),
+            'created_by' => $userId,
+            'dispatch_attempts' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function insertFinalizationState(int $executionId, int $commandId, mixed $now): void
+    {
+        DB::table('execution_finalizations')->insert([
+            'execution_id' => $executionId,
+            'execution_command_id' => $commandId,
+            'stage' => 'PREPARE',
+            'staging_prefix' => "executions/scope/.staging/{$commandId}",
+            'final_prefix' => "executions/scope/final/{$commandId}",
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
     }
 
     /** @return array{user_id: int, execution_id: int, other_execution_id: int, verification_id: int, artifact_id: int} */

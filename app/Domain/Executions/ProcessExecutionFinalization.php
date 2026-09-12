@@ -18,13 +18,19 @@ use App\Models\ExecutionCommand;
 use App\Models\ExecutionFinalization;
 use App\Models\ExecutionStep;
 use App\Models\User;
-use Carbon\CarbonInterface;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 class ProcessExecutionFinalization
 {
     public const DEFAULT_RECORDS_PER_JOB = 200;
+
+    public const DEFAULT_BYTES_PER_JOB = 1_048_576;
+
+    public const DEFAULT_TIME_BUDGET_SECONDS = 105;
+
+    public const DEFAULT_MAX_RECORD_BYTES = 1_048_576;
 
     public const DEFAULT_VERIFICATION_BYTES_PER_JOB = 1_048_576;
 
@@ -36,10 +42,13 @@ class ProcessExecutionFinalization
         private readonly GenerateFinalArtifacts $generator,
         private readonly ArtifactStorage $storage,
         private readonly ArtifactStreamVerifier $verifier,
+        private readonly FinalizationJobBudget $budget,
     ) {}
 
     public function process(int $commandId, string $owner): void
     {
+        $this->budget->start($this->timeBudgetSeconds());
+
         $continue = DB::transaction(function () use ($commandId, $owner): bool {
             $command = $this->leases->lockCommand($commandId);
 
@@ -77,12 +86,11 @@ class ProcessExecutionFinalization
                 'PREPARE' => $this->prepare($state, $execution, $commandId, $owner),
                 'EXPORT_LOGS' => $this->exportLogs($state, $execution),
                 'EXPORT_EVENTS' => $this->exportEvents($state, $execution),
-                'GENERATE_REPORTS' => $this->generateReports($state, $execution, $actor, $commandId, $owner),
+                'GENERATE_REPORTS' => $this->generateReports($state, $execution, $commandId, $owner),
                 'VERIFY_STAGING' => $this->verifyStaging($state),
                 'PROMOTE_ARTIFACTS' => $this->promoteNext($state),
-                'FINAL_SUMMARY' => $this->generateFinalSummary($state, $execution, $actor, $commandId, $owner, $command->created_at ?? now()),
-                'PROMOTE_SUMMARY' => $this->promoteNext($state),
-                'COMMIT' => $this->commit($state, $command, $actor),
+                'FINAL_SUMMARY' => $this->finalize($state, $command, $actor, $owner),
+                'PROMOTE_SUMMARY', 'COMMIT' => $this->resetLegacyFinalUnit($state),
                 'COMPLETED' => null,
                 default => throw new RuntimeException('La etapa persistida de finalización no es reconocida.'),
             };
@@ -129,6 +137,9 @@ class ProcessExecutionFinalization
             $this->logWork($state),
             $state->log_cursor,
             $this->recordsPerJob(),
+            $this->bytesPerJob(),
+            $this->maxRecordBytes(),
+            fn (): bool => $this->budget->exhausted(),
         );
         $state->temporary_files = [$result['work']];
         $state->log_cursor = $result['cursor'];
@@ -147,6 +158,9 @@ class ProcessExecutionFinalization
             $this->logWork($state),
             $state->event_cursor,
             $this->recordsPerJob(),
+            $this->bytesPerJob(),
+            $this->maxRecordBytes(),
+            fn (): bool => $this->budget->exhausted(),
         );
         $state->temporary_files = [$result['work']];
         $state->event_cursor = $result['cursor'];
@@ -161,23 +175,40 @@ class ProcessExecutionFinalization
     private function generateReports(
         ExecutionFinalization $state,
         Execution $execution,
-        User $actor,
         int $commandId,
         string $owner,
     ): void {
-        $artifacts = $this->generator->stageRemainingReports(
+        $artifacts = $state->artifacts;
+        $generatedAt = now()->utc()->toImmutable();
+        $report = $this->generator->stageNextReport(
             $execution,
-            $actor,
             $commandId,
             $owner,
-            $state->finalization_started_at ?? now()->utc(),
-            $this->logWork($state),
+            $generatedAt,
+            array_column($artifacts, 'type'),
         );
+
+        if ($report !== null) {
+            $artifacts[] = $report;
+            $temporary = $state->temporary_files;
+            $temporary[] = $report['stored'];
+            $state->artifacts = $artifacts;
+            $state->temporary_files = $temporary;
+            $state->save();
+
+            return;
+        }
+
+        if (! in_array('LOG_EXPORT', array_column($artifacts, 'type'), true)) {
+            $artifacts[] = $this->generator->logDescriptor(
+                $execution,
+                $this->logWork($state),
+                $generatedAt,
+                $commandId,
+            );
+        }
+
         $state->artifacts = $artifacts;
-        $state->temporary_files = array_map(
-            fn (array $artifact): array => $artifact['stored'],
-            $artifacts,
-        );
         $state->stage = 'VERIFY_STAGING';
         $state->save();
     }
@@ -209,8 +240,13 @@ class ProcessExecutionFinalization
 
         try {
             $stream->seek($state->verification_offset);
+            $readAny = false;
 
             while ($remaining > 0 && $state->verification_offset < $stored->size) {
+                if ($readAny && $this->budget->exhausted()) {
+                    break;
+                }
+
                 $chunk = $stream->read($remaining);
 
                 if ($chunk === '') {
@@ -221,6 +257,7 @@ class ProcessExecutionFinalization
                 $bytes = strlen($chunk);
                 $state->verification_offset += $bytes;
                 $remaining -= $bytes;
+                $readAny = true;
             }
         } finally {
             $stream->close();
@@ -261,7 +298,7 @@ class ProcessExecutionFinalization
         }
 
         if ($descriptorIndex === null) {
-            $state->stage = count($artifacts) === count(GenerateFinalArtifacts::REQUIRED_TYPES) ? 'COMMIT' : 'FINAL_SUMMARY';
+            $state->stage = 'FINAL_SUMMARY';
             $state->save();
 
             return;
@@ -287,53 +324,70 @@ class ProcessExecutionFinalization
         $state->promoted_types = array_values(array_unique($promoted));
 
         if (count($state->promoted_types) === count($artifacts)) {
-            $state->stage = count($artifacts) === count(GenerateFinalArtifacts::REQUIRED_TYPES) ? 'COMMIT' : 'FINAL_SUMMARY';
+            $state->stage = 'FINAL_SUMMARY';
         }
 
         $state->save();
     }
 
-    private function generateFinalSummary(
+    private function finalize(
         ExecutionFinalization $state,
-        Execution $execution,
+        ExecutionCommand $command,
         User $actor,
-        int $commandId,
         string $owner,
-        CarbonInterface $requestedAt,
     ): void {
+        $execution = $command->execution;
         $completionAt = now()->utc()->toImmutable();
         $execution->setRelation('finalization', $state);
         $summary = $this->generator->stageFinalSummary(
             $execution,
             $actor,
-            $commandId,
+            (int) $command->getKey(),
             $owner,
-            $requestedAt->utc(),
+            ($command->created_at ?? $completionAt)->utc(),
             $completionAt,
         );
-        $this->verifier->verify($this->generator->stored($summary));
+        $expected = $this->generator->stored($summary);
+        $this->verifier->verify($expected);
+        $promoted = $this->storage->promote($expected->path, $summary['final_path'], $expected);
+
+        if ($promoted->size !== $expected->size || ! hash_equals($promoted->checksum, $expected->checksum)) {
+            throw new RuntimeException('La promoción modificó el resumen final.');
+        }
+
+        if (! $this->leases->isOwnedAndActive($command, $owner)) {
+            throw new ExecutionCommandLeaseLost;
+        }
+
+        $summary['final'] = [
+            'disk' => $promoted->disk,
+            'path' => $promoted->path,
+            'size' => $promoted->size,
+            'checksum' => $promoted->checksum,
+        ];
         $artifacts = $state->artifacts;
         $artifacts[] = $summary;
-        $verified = $state->verified_types;
-        $verified[] = 'FINAL_SUMMARY';
         $temporary = $state->temporary_files;
         $temporary[] = $summary['stored'];
         $state->artifacts = $artifacts;
-        $state->verified_types = array_values(array_unique($verified));
+        $state->verified_types = GenerateFinalArtifacts::REQUIRED_TYPES;
+        $state->promoted_types = GenerateFinalArtifacts::REQUIRED_TYPES;
         $state->temporary_files = $temporary;
         $state->closure_ready_at = $completionAt;
-        $state->stage = 'PROMOTE_SUMMARY';
-        $state->save();
+
+        $this->commit($state, $command, $actor, $completionAt);
     }
 
-    private function commit(ExecutionFinalization $state, ExecutionCommand $command, User $actor): void
-    {
+    private function commit(
+        ExecutionFinalization $state,
+        ExecutionCommand $command,
+        User $actor,
+        CarbonImmutable $completionAt,
+    ): void {
         $execution = $command->execution;
-        $completionAt = $state->closure_ready_at;
         $artifacts = $state->artifacts;
 
-        if ($completionAt === null
-            || count($artifacts) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
+        if (count($artifacts) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
             || count($state->verified_types) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
             || count($state->promoted_types) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
             || $execution->artifacts()->exists()
@@ -408,6 +462,29 @@ class ProcessExecutionFinalization
         $this->lifecycle->transitionForWorker($execution, ExecutionStatus::COMPLETED, $completionAt);
     }
 
+    private function resetLegacyFinalUnit(ExecutionFinalization $state): void
+    {
+        $state->artifacts = array_values(array_filter(
+            $state->artifacts,
+            fn (array $artifact): bool => ($artifact['type'] ?? null) !== 'FINAL_SUMMARY',
+        ));
+        $state->temporary_files = array_values(array_filter(
+            $state->temporary_files,
+            fn (array $file): bool => ($file['type'] ?? null) !== 'FINAL_SUMMARY',
+        ));
+        $state->verified_types = array_values(array_filter(
+            $state->verified_types,
+            fn (string $type): bool => $type !== 'FINAL_SUMMARY',
+        ));
+        $state->promoted_types = array_values(array_filter(
+            $state->promoted_types,
+            fn (string $type): bool => $type !== 'FINAL_SUMMARY',
+        ));
+        $state->closure_ready_at = null;
+        $state->stage = 'FINAL_SUMMARY';
+        $state->save();
+    }
+
     /** @param array<string, mixed> $payload */
     private function assertStillFinalizable(array $payload, Execution $execution, int $commandId): void
     {
@@ -442,6 +519,33 @@ class ProcessExecutionFinalization
     private function recordsPerJob(): int
     {
         return max(1, min(1_000, (int) config('services.finalization.records_per_job', self::DEFAULT_RECORDS_PER_JOB)));
+    }
+
+    private function bytesPerJob(): int
+    {
+        return max(
+            256,
+            min(67_108_864, (int) config('services.finalization.bytes_per_job', self::DEFAULT_BYTES_PER_JOB)),
+        );
+    }
+
+    private function maxRecordBytes(): int
+    {
+        return max(
+            256,
+            min(16_777_216, (int) config('services.finalization.max_record_bytes', self::DEFAULT_MAX_RECORD_BYTES)),
+        );
+    }
+
+    private function timeBudgetSeconds(): int
+    {
+        return max(
+            1,
+            min(
+                ExecutionQueueConfiguration::JOB_TIMEOUT_SECONDS - 15,
+                (int) config('services.finalization.time_budget_seconds', self::DEFAULT_TIME_BUDGET_SECONDS),
+            ),
+        );
     }
 
     private function verificationBytesPerJob(): int
