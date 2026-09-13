@@ -127,14 +127,14 @@ for (const kind of ['assignment', 'role', 'inactive']) {
             { maxRedirects: 0 },
         );
         expect([302, 403]).toContain(response.status());
-        expect([302, 403]).toContain(
+        expect(
             (
                 await request(
                     page,
                     `${executionPath(project.uuid, execution)}/cancel`,
                 )
             ).status(),
-        );
+        ).toBe(kind === 'inactive' ? 401 : 403);
         await expect(page.getByText(marker, { exact: true })).toHaveCount(0);
         expect(snapshot(project.uuid).execution.status).toBe(
             'WAITING_USER_ACTION',

@@ -7,8 +7,15 @@ export function control<T = Record<string, unknown>>(
     input: Record<string, unknown> = {},
 ): T {
     const output = execFileSync(
-        'php',
-        ['tests/Support/quality-control.php', action],
+        'runuser',
+        [
+            '-u',
+            'www-data',
+            '--',
+            'php',
+            'tests/Support/quality-control.php',
+            action,
+        ],
         {
             input: JSON.stringify(input),
             encoding: 'utf8',
@@ -114,15 +121,14 @@ export async function login(
     password: string,
     user = 'admin',
     remember = false,
+    expected = user === 'temporary' ? /\/settings\/security$/ : /\/dashboard$/,
 ) {
     await page.goto('/login');
     await page.getByLabel('Correo electrónico').fill(`${user}@quality.test`);
     await page.locator('#password').fill(password);
     if (remember) await page.getByLabel('Recordarme').check();
     await page.getByRole('button', { name: 'Ingresar' }).click();
-    await expect(page).toHaveURL(
-        user === 'temporary' ? /\/settings\/security$/ : /\/dashboard$/,
-    );
+    await expect(page).toHaveURL(expected);
 }
 export async function request(
     page: Page,
@@ -175,6 +181,9 @@ export async function wizard(
     await expect(page).toHaveURL(/\/projects\/[a-f0-9-]+$/);
     const uuid = page.url().split('/').at(-1)!;
     await page.reload();
+    // Creating the project has already saved basics and advances to instances.
+    await expect(page.locator('#server-host-0')).toBeVisible();
+    await page.getByRole('button', { name: 'Atrás', exact: true }).click();
     await expect(page.locator('#wizard-name')).toHaveValue(`E2E ${type}`);
     await page.getByRole('button', { name: 'Guardar y continuar' }).click();
     const count = type === 'COLLECT' ? 1 : type === 'CONSOLIDATE' ? 3 : 2;
@@ -195,6 +204,9 @@ export async function wizard(
     if (type === 'COLLECT')
         await page.locator('#artifact-name').fill('paquete-e2e');
     await page.getByRole('button', { name: 'Guardar y continuar' }).click();
+    await expect(
+        page.getByRole('button', { name: 'Ejecutar preflight', exact: true }),
+    ).toBeVisible();
     await page.reload();
     await page
         .getByRole('button', { name: 'Ejecutar preflight', exact: true })

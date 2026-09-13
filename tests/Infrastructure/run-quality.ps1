@@ -47,17 +47,17 @@ try {
     }
     $services | Select-Object Service, State, Health | ConvertTo-Json | Set-Content quality-results/health.json
     Write-Host 'Instalación limpia: diez servicios saludables; dependencias incorporadas en imágenes, sin montajes del código local.'
-    Invoke-QualityCompose exec -T app php artisan migrate:fresh --force --no-interaction
+    Invoke-QualityCompose exec -T --user www-data app php artisan migrate:fresh --force --no-interaction
     Invoke-QualityCompose exec -T app composer lint:check
     Invoke-QualityCompose exec -T app composer types:check
     # Apply PHPUnit's environment before Artisan boots: container server variables
     # otherwise retain E2E database values in the parent but not its child workers.
     [xml] $phpunit = Get-Content -LiteralPath phpunit.xml -Raw
-    $testArguments = @('exec', '-T')
+    $testArguments = @('exec', '-T', '--user', 'www-data')
     foreach ($variable in $phpunit.phpunit.php.env) {
         $testArguments += @('-e', "$($variable.name)=$($variable.value)")
     }
-    $testArguments += @('app', 'php', 'artisan', 'test', '--display-warnings', '--log-junit', '/tmp/phpunit.xml')
+    $testArguments += @('app', 'php', 'artisan', 'test', '--display-warnings', '--cache-directory', '/tmp/phpunit-cache', '--log-junit', '/tmp/phpunit.xml')
     try {
         Invoke-QualityCompose -Arguments $testArguments
     } finally {

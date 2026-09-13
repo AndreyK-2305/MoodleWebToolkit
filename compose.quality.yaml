@@ -102,6 +102,7 @@ services:
                 condition: service_healthy
     scheduler:
         <<: *app
+        user: www-data
         command: [php, artisan, schedule:work, --no-interaction]
         healthcheck:
             test: [CMD-SHELL, "grep -aq 'schedule:work' /proc/1/cmdline"]
@@ -110,6 +111,7 @@ services:
             retries: 30
     reverb:
         <<: *app
+        user: www-data
         restart: unless-stopped
         command: [php, artisan, reverb:start, --host=0.0.0.0, --port=8080]
         healthcheck:

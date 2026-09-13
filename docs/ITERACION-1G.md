@@ -19,7 +19,7 @@ El script genera un proyecto exclusivo `mt1g-*` y rechaza prefijos con recursos 
 
 Los diez servicios son PostgreSQL de navegador, PostgreSQL de PHPUnit, Redis, aplicación, worker, scheduler, Reverb, Vite, Mailpit y Nginx. Playwright se ejecuta en un contenedor adicional al terminar las puertas. Comparte la red de Nginx para acceder a HTTP y WebSocket mediante localhost.
 
-Puertas: ambos Compose, instalación limpia, diez healthchecks, migraciones, Pint, PHPStan, PHPUnit sobre PostgreSQL, Vitest, formato/lint, TypeScript de aplicación y E2E, build, integridad y seis montajes de BaseLine solo lectura, `git diff --check` y Playwright. La CI ejecuta el mismo script. Los informes quedan en `quality-results/`; trazas, capturas y vídeos se conservan solo cuando falla un caso. La CI retiene la evidencia de fallo durante tres días.
+Puertas: ambos Compose, instalación limpia, diez healthchecks, migraciones, Pint, PHPStan, PHPUnit sobre PostgreSQL, Vitest, formato/lint, TypeScript de aplicación y E2E, build, integridad y seis montajes de BaseLine solo lectura, `git diff --check` y Playwright. La CI ejecuta el mismo script sobre el SHA de la rama. Los informes quedan en `quality-results/`; trazas, capturas y vídeos se conservan solo cuando falla un caso. La CI retiene la evidencia de fallo durante tres días. Un ciclo fallido se detiene tras cinco fallos de navegador para facilitar el diagnóstico; aprobar requiere los 42 casos, sin reintentos automáticos.
 
 ## Cobertura de navegador
 
@@ -38,6 +38,8 @@ Los escenarios usan usuarios y contraseñas sintéticos generados para cada prue
 
 El coordinador de pruebas inicia procesos independientes que ejecutan `queue:work` contra Redis real. Permite observar estados intermedios y avanzar el reloj de Carbon por proceso; no sustituye los jobs ni sus servicios de dominio. La simulación de más de 24 horas verifica persistencia y expiración lógica, no constituye una prueba de carga de 24 horas reales.
 
+El caso prolongado elimina la cola Redis y recupera los mismos comandos desde PostgreSQL antes de continuar. El caso dedicado a Reverb desactiva solo el temporizador de polling; conserva las consultas HTTP provocadas por las notificaciones WebSocket, que son el mecanismo real con el que React carga el estado autoritativo. La caducidad se aplica al formato JSON de sesiones configurado por la aplicación.
+
 ## Concurrencia y privacidad
 
 Se amplían las barreras PostgreSQL multiproceso para confirmación, resolución, reanudación y cancelación; se mantienen las pruebas existentes de secuencias, inicio y finalización. Solo la prueba de cancelación difiere el despacho para observar CANCELLING antes de consumirlo.
@@ -50,4 +52,10 @@ Se conservan las regresiones de exportación por streaming, presupuestos por uni
 
 Docker Desktop no inicia en este host por un error de acceso a `dockerInference`. La línea base y las regresiones PHP se ejecutaron en contenedores Podman aislados; la VM dispone de 898 MiB y no tiene swap. La validación integrada de diez servicios y navegador debe quedar acreditada por la CI antes de declarar el cierre.
 
-BaseLine conserva 131 archivos con SHA-256 canónico `5a996439d8432e13abecbc4ebf57f12654d15e14afef8b1160fe55dcf82ae1d3`. No se modifica, ni se implementa la Iteración 2. El PR se publicará como borrador contra main, sin merge.
+En el [ciclo sobre 629b87b](https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/34760694134), antes de detenerlo para corregir los auxiliares E2E, aprobaron 241 pruebas PHP con 2216 aserciones, cinco pruebas Vitest y todas las puertas previas al navegador, incluidos diez servicios saludables y seis montajes solo lectura. Este ciclo no aprobó Playwright y no acredita el cierre. El recorrido CLI local recuperó una ejecución después de perder Redis y avanzar más de 24 horas, usando PIDs distintos, y generó cuatro artefactos con timestamps de cierre semánticamente iguales.
+
+La primera instalación identificó un healthcheck de Nginx que resolvía localhost por IPv6; se usa explícitamente 127.0.0.1. La siguiente detectó que el proceso padre de PHPUnit heredaba variables de la base E2E mientras sus hijos usaban las de PHPUnit. El lanzador aplica ahora las variables de `phpunit.xml` antes de arrancar PHP, sin modificar las expectativas de las pruebas. La imagen crea un `.env` vacío para las utilidades Laravel que requieren que exista; los secretos siguen llegando por el entorno efímero.
+
+Se reprodujo además un HTTP 500 al registrar una excepción esperada: PHPUnit había creado el log compartido como root y PHP-FPM no podía escribirlo. Los escritores PHP de calidad (PHPUnit, auxiliares CLI, worker, scheduler y Reverb) usan ahora `www-data`, igual que las peticiones web. La misma excepción volvió a registrarse correctamente después de corregir los permisos en el contenedor aislado.
+
+BaseLine conserva 131 archivos con SHA-256 canónico `5a996439d8432e13abecbc4ebf57f12654d15e14afef8b1160fe55dcf82ae1d3`. No se modifica, ni se implementa la Iteración 2. El PR #6 está publicado como borrador contra main, sin merge.

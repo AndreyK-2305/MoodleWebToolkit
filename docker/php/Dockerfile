@@ -59,7 +59,7 @@ FROM mcr.microsoft.com/playwright:v1.63.0-noble AS browsers
 FROM quality AS e2e
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 COPY --from=browsers /ms-playwright /ms-playwright
-RUN npx playwright install-deps chromium
+RUN npx playwright install-deps chromium && command -v runuser
 
 FROM nginx:1.27-alpine AS quality-nginx
 COPY --from=quality /var/www/html/public /var/www/html/public
