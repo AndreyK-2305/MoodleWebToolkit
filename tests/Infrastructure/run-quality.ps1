@@ -83,7 +83,7 @@ try {
     throw
 } finally {
     # This project was proven absent before creation; never remove development volumes.
-    & docker compose down --volumes --remove-orphans
+    & docker compose --profile e2e down --volumes --remove-orphans
     if ($LASTEXITCODE -ne 0) { throw "No se pudo desmontar el entorno exclusivo $ProjectName." }
     Remove-Item Env:QUALITY_APP_KEY, Env:QUALITY_DB_PASSWORD, Env:QUALITY_REVERB_SECRET -ErrorAction SilentlyContinue
 }

@@ -6,11 +6,13 @@ export default defineConfig({
     workers: 1,
     forbidOnly: true,
     retries: 0,
+    maxFailures: 5,
     timeout: 60_000,
     expect: { timeout: 20_000 },
     outputDir: 'quality-results/playwright',
     reporter: [
         ['list'],
+        ['./tests/E2E/failure-reporter.ts'],
         ['junit', { outputFile: 'quality-results/playwright.xml' }],
     ],
     use: {

@@ -20,6 +20,30 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
         page,
         password,
     }) => {
+        // Disable only the periodic fallback. Reverb notifications legitimately
+        // trigger HTTP catch-up to load the authoritative execution and review.
+        await page.addInitScript(() => {
+            const interval = window.setInterval.bind(window);
+            window.setInterval = ((
+                handler: TimerHandler,
+                timeout?: number,
+                ...args: unknown[]
+            ) =>
+                timeout === 15_000
+                    ? 0
+                    : interval(
+                          handler,
+                          timeout,
+                          ...args,
+                      )) as typeof window.setInterval;
+        });
+        let notifications = 0;
+        page.on('websocket', (socket) => {
+            socket.on('framereceived', ({ payload }) => {
+                if (String(payload).includes('execution.event'))
+                    notifications++;
+            });
+        });
         await login(page, password);
         const project = await wizard(page, type);
         await page
@@ -35,17 +59,15 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
         await expect(
             page.getByText('Tiempo real conectado', { exact: true }),
         ).toBeVisible();
-        // Block polling: the following DOM transitions must arrive by Reverb.
-        await page.route('**/events?*', (route) => route.abort());
         const firstPid = worker('once');
         await visibleStatus(page, 'RUNNING');
+        expect(notifications).toBeGreaterThan(0);
         expect(snapshot(project).execution.progress).toBe(25);
         const secondPid = worker('once');
         expect(secondPid).not.toBe(firstPid);
         await visibleStatus(page, 'VERIFYING');
         worker();
         await visibleStatus(page, 'REVIEW');
-        await page.unroute('**/events?*');
         expect(snapshot(project).review.tree.length).toBeGreaterThan(0);
         await page.reload();
         await visibleStatus(page, 'REVIEW');

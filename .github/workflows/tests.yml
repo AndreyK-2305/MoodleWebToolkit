@@ -26,8 +26,8 @@ jobs:
         run: ./tests/Infrastructure/run-quality.ps1 -ProjectName mt1g-ci
 
       - name: Preserve failure evidence temporarily
-        if: failure()
-        uses: actions/upload-artifact@v4
+        if: always() && (failure() || cancelled())
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: quality-failure-${{ github.sha }}
           path: quality-results/
@@ -39,4 +39,4 @@ jobs:
           QUALITY_APP_KEY: teardown-only
           QUALITY_DB_PASSWORD: teardown-only
           QUALITY_REVERB_SECRET: teardown-only
-        run: docker compose -f compose.quality.yaml -p mt1g-ci down -v --remove-orphans
+        run: docker compose -f compose.quality.yaml -p mt1g-ci --profile e2e down -v --remove-orphans
