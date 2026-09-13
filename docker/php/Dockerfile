@@ -48,6 +48,7 @@ CMD ["php-fpm"]
 
 # Immutable quality image: no host vendor/, node_modules/, .env or storage.
 FROM development AS quality
+RUN touch .env
 ENV VITE_REVERB_APP_KEY=quality-key \
     VITE_REVERB_HOST=localhost \
     VITE_REVERB_PORT=8081 \

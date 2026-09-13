@@ -50,8 +50,19 @@ try {
     Invoke-QualityCompose exec -T app php artisan migrate:fresh --force --no-interaction
     Invoke-QualityCompose exec -T app composer lint:check
     Invoke-QualityCompose exec -T app composer types:check
-    Invoke-QualityCompose exec -T app php artisan test --log-junit /tmp/phpunit.xml
-    Invoke-QualityCompose cp app:/tmp/phpunit.xml quality-results/phpunit.xml
+    # Apply PHPUnit's environment before Artisan boots: container server variables
+    # otherwise retain E2E database values in the parent but not its child workers.
+    [xml] $phpunit = Get-Content -LiteralPath phpunit.xml -Raw
+    $testArguments = @('exec', '-T')
+    foreach ($variable in $phpunit.phpunit.php.env) {
+        $testArguments += @('-e', "$($variable.name)=$($variable.value)")
+    }
+    $testArguments += @('app', 'php', 'artisan', 'test', '--display-warnings', '--log-junit', '/tmp/phpunit.xml')
+    try {
+        Invoke-QualityCompose -Arguments $testArguments
+    } finally {
+        Invoke-QualityCompose cp app:/tmp/phpunit.xml quality-results/phpunit.xml
+    }
     Invoke-QualityCompose exec -T vite npm run test
     Invoke-QualityCompose exec -T vite npm run check
     Invoke-QualityCompose exec -T vite npm run lint
