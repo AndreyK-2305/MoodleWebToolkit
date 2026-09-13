@@ -156,6 +156,12 @@ test('más de 24 horas: workers nuevos, navegador cerrado, recuperación y cierr
     const clock = new Date(
         new Date(started).getTime() + 25 * 60 * 60 * 1000,
     ).toISOString();
+    const persistedCommands = snapshot(project.uuid).commands.map((c) => c.id);
+    control('lose-queue');
+    expect(control('recover', { clock })).toEqual({ exit: 0 });
+    expect(snapshot(project.uuid).commands.map((c) => c.id)).toEqual(
+        persistedCommands,
+    );
     const secondPid = worker('drain', clock);
     expect(firstPid).not.toBe(secondPid);
     const advanced = snapshot(project.uuid);

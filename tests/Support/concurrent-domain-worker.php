@@ -13,6 +13,7 @@ use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 
 require dirname(__DIR__, 2).'/vendor/autoload.php';
 
@@ -189,7 +190,7 @@ try {
             );
         })(),
         'cancel-deferred-http' => (function () use ($postJson, $resourceId, $actorId, $extra): array {
-            Illuminate\Support\Facades\Queue::fake();
+            Queue::fake();
             $execution = Execution::query()->with('project')->findOrFail((int) $resourceId);
 
             return $postJson('/projects/'.$execution->project->uuid.'/executions/'.$execution->uuid.'/cancel', User::query()->findOrFail((int) $actorId), (string) $extra);

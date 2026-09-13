@@ -157,7 +157,7 @@ services:
                     wget,
                     --quiet,
                     --spider,
-                    'http://localhost:8080/nginx-health',
+                    'http://127.0.0.1:8080/nginx-health',
                 ]
             interval: 5s
             timeout: 5s

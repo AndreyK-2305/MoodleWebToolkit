@@ -26,7 +26,9 @@ function Invoke-QualityCompose {
 }
 
 $existing = @(& docker ps -aq --filter "label=com.docker.compose.project=$ProjectName")
+if ($LASTEXITCODE -ne 0) { throw 'No se pudo inspeccionar Docker; no se creará ni eliminará ningún recurso.' }
 $volumes = @(& docker volume ls -q --filter "label=com.docker.compose.project=$ProjectName")
+if ($LASTEXITCODE -ne 0) { throw 'No se pudieron inspeccionar los volúmenes Docker.' }
 if ($existing.Count -gt 0 -or $volumes.Count -gt 0) {
     throw 'El prefijo ya tiene recursos. Use un proyecto nuevo; no se borrará un entorno preexistente.'
 }
@@ -61,6 +63,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'git diff --check falló.' }
     Invoke-QualityCompose --profile e2e run --rm --no-deps playwright
     Write-Host 'Todas las puertas de calidad aprobaron.'
+} catch {
+    # Retain healthcheck diagnostics only, never inspect environment or credentials.
+    $ids = @(& docker compose ps -aq)
+    foreach ($id in $ids) {
+        & docker inspect --format '{{.Name}} {{json .State.Health}}' $id
+    }
+    throw
 } finally {
     # This project was proven absent before creation; never remove development volumes.
     & docker compose down --volumes --remove-orphans

@@ -9,6 +9,7 @@ use App\Jobs\RunExecutionUnit;
 use App\Models\Execution;
 use App\Models\Project;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
@@ -110,8 +111,15 @@ switch ($action) {
             RunExecutionUnit::dispatch($command->id)->onQueue('executions');
         }
         break;
+    case 'lose-queue':
+        // Simulate loss of Redis queue data while keeping the PostgreSQL outbox.
+        Artisan::call('queue:clear', ['connection' => 'redis', '--queue' => 'executions', '--force' => true]);
+        break;
     case 'recover':
-        Artisan::call('executions:recover-dispatches', ['--stale' => 1]);
+        if (isset($input['clock'])) {
+            Carbon::setTestNow($input['clock']);
+        }
+        $result = ['exit' => Artisan::call('executions:recover-dispatches', ['--stale' => 1])];
         break;
     case 'reverb-restart':
         Artisan::call('reverb:restart');
