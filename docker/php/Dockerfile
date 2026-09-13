@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim AS node
 
-FROM php:8.4-fpm-bookworm
+FROM php:8.4-fpm-bookworm AS development
 
 ENV COMPOSER_ALLOW_SUPERUSER=1
 
@@ -45,3 +45,21 @@ RUN composer dump-autoload --optimize --no-interaction \
     && chown -R www-data:www-data storage bootstrap/cache
 
 CMD ["php-fpm"]
+
+# Immutable quality image: no host vendor/, node_modules/, .env or storage.
+FROM development AS quality
+ENV VITE_REVERB_APP_KEY=quality-key \
+    VITE_REVERB_HOST=localhost \
+    VITE_REVERB_PORT=8081 \
+    VITE_REVERB_SCHEME=http
+RUN npm run build
+
+FROM mcr.microsoft.com/playwright:v1.63.0-noble AS browsers
+FROM quality AS e2e
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+COPY --from=browsers /ms-playwright /ms-playwright
+RUN npx playwright install-deps chromium
+
+FROM nginx:1.27-alpine AS quality-nginx
+COPY --from=quality /var/www/html/public /var/www/html/public
+COPY docker/quality/nginx.conf /etc/nginx/conf.d/default.conf

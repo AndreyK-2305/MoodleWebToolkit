@@ -188,6 +188,29 @@ try {
                 is_array($input['payload'] ?? null) ? $input['payload'] : [],
             );
         })(),
+        'cancel-deferred-http' => (function () use ($postJson, $resourceId, $actorId, $extra): array {
+            Illuminate\Support\Facades\Queue::fake();
+            $execution = Execution::query()->with('project')->findOrFail((int) $resourceId);
+
+            return $postJson('/projects/'.$execution->project->uuid.'/executions/'.$execution->uuid.'/cancel', User::query()->findOrFail((int) $actorId), (string) $extra);
+        })(),
+        'confirm-http' => (function () use ($postJson, $resourceId, $actorId): array {
+            $project = Project::query()->findOrFail((int) $resourceId);
+
+            return $postJson('/projects/'.$project->uuid.'/wizard/confirm', User::query()->findOrFail((int) $actorId), 'concurrent-confirm-1g', [
+                'configuration_version' => $project->configuration->version,
+                'accepted_warning_ids' => [],
+            ]);
+        })(),
+        'resolve-http', 'resume-http' => (function () use ($postJson, $mode, $resourceId, $actorId, $extra): array {
+            $execution = Execution::query()->with('project')->findOrFail((int) $resourceId);
+            $data = json_decode((string) $extra, true, flags: JSON_THROW_ON_ERROR);
+            $suffix = $mode === 'resolve-http'
+                ? '/conflicts/'.$data['conflict_id'].'/resolve'
+                : '/resume';
+
+            return $postJson('/projects/'.$execution->project->uuid.'/executions/'.$execution->uuid.$suffix, User::query()->findOrFail((int) $actorId), $data['key'], $data['payload']);
+        })(),
         default => throw new InvalidArgumentException("Unknown worker mode [{$mode}]."),
     };
 } catch (Throwable $exception) {

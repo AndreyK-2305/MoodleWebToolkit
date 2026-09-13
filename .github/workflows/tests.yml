@@ -12,7 +12,7 @@ permissions:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout code
@@ -20,36 +20,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build and start the application stack
-        run: docker compose up -d --build --wait --wait-timeout 300
-
-      - name: Run migrations
-        run: docker compose exec -T app php artisan migrate:fresh --force --no-interaction
-
-      - name: Run PHP checks
-        run: |
-          docker compose exec -T app composer lint:check
-          docker compose exec -T app composer types:check
-          docker compose exec -T app php artisan test
-
-      - name: Run frontend checks
-        run: |
-          docker compose exec -T vite npm run test
-          docker compose exec -T vite npm run check
-          docker compose exec -T vite npm run lint
-          docker compose exec -T vite npm run types:check
-          docker compose exec -T vite npm run build
-
-      - name: Verify protected baseline
+      - name: Clean installation and all quality gates including Playwright
         shell: pwsh
-        run: |
-          ./tests/Infrastructure/verify-baseline-integrity.ps1
-          ./tests/Infrastructure/verify-baseline-readonly.ps1
+        run: ./tests/Infrastructure/run-quality.ps1 -ProjectName mt1g-ci
 
-      - name: Show container logs on failure
+      - name: Preserve failure evidence temporarily
         if: failure()
-        run: docker compose logs --no-color
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-failure-${{ github.sha }}
+          path: quality-results/
+          retention-days: 3
 
-      - name: Stop application stack
+      - name: Ensure isolated stack is stopped even after interruption
         if: always()
-        run: docker compose down -v --remove-orphans
+        env:
+          QUALITY_APP_KEY: teardown-only
+          QUALITY_DB_PASSWORD: teardown-only
+          QUALITY_REVERB_SECRET: teardown-only
+        run: docker compose -f compose.quality.yaml -p mt1g-ci down -v --remove-orphans

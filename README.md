@@ -87,6 +87,16 @@ docker compose down
 
 ## Calidad
 
+Para validar la instalación limpia y la vertical simulada completa con Docker Compose y PowerShell 7:
+
+```powershell
+pwsh -File tests/Infrastructure/run-quality.ps1
+```
+
+Este comando crea un entorno exclusivo `mt1g-*`, ejecuta las puertas y Playwright y elimina sus recursos al terminar. Las dependencias y el navegador están incorporados en imágenes; no usa los datos de desarrollo. La cobertura, el aislamiento y la evidencia se describen en [Iteración 1G](docs/ITERACION-1G.md). Las operaciones Moodle siguen siendo simuladas.
+
+Para comprobaciones individuales sobre el entorno de desarrollo:
+
 ```powershell
 docker compose exec app php artisan test
 docker compose exec app vendor/bin/pint --test
@@ -108,3 +118,13 @@ Integrador. Está excluida de Pint y no forma parte del código que modifica la
 plataforma web. Los servicios que pueden verla la montan explícitamente como
 solo lectura; la prueba de infraestructura anterior debe rechazar cualquier
 intento de escritura.
+
+## Estructura
+
+- `app/`: dominio, autorización, ejecución y artefactos.
+- `resources/`: interfaz React, estilos y pruebas unitarias de frontend.
+- `database/`: esquema y factories.
+- `tests/`: pruebas PHP, navegador, infraestructura y auxiliares exclusivos de calidad.
+- `docker/`: imágenes y configuración de servicios.
+- `docs/`: decisiones y evidencia de las iteraciones.
+- `BaseLine/`: entregables originales protegidos, fuera del desarrollo web.
