@@ -40,6 +40,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'compose.yaml inválido.' }
     Invoke-QualityCompose build
     Invoke-QualityCompose --profile e2e build playwright
+    # Populate shared storage once before Compose creates its other consumers.
+    Invoke-QualityCompose create app
     Invoke-QualityCompose up -d --wait --wait-timeout 300
     $services = @(& docker compose ps --format json | ForEach-Object { $_ | ConvertFrom-Json })
     if ($services.Count -ne 10 -or @($services | Where-Object { $_.Health -ne 'healthy' }).Count -gt 0) {

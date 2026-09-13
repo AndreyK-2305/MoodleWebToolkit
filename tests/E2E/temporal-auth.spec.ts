@@ -177,7 +177,13 @@ test('más de 24 horas: workers nuevos, navegador cerrado, recuperación y cierr
     const observer = await recovered.newPage();
     await observer.goto(executionPath(project.uuid, execution));
     await expect(observer).toHaveURL(/\/login$/);
-    await login(observer, password);
+    await login(
+        observer,
+        password,
+        'admin',
+        false,
+        new RegExp(`${executionPath(project.uuid, execution)}$`),
+    );
     control('expire');
     await observer.goto(executionPath(project.uuid, execution));
     await visibleStatus(observer, 'REVIEW');
