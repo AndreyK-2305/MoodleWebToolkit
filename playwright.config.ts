@@ -6,7 +6,6 @@ export default defineConfig({
     workers: 1,
     forbidOnly: true,
     retries: 0,
-    maxFailures: 5,
     timeout: 60_000,
     expect: { timeout: 20_000 },
     outputDir: 'quality-results/playwright',

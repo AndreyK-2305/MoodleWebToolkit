@@ -158,8 +158,26 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
         await page
             .getByRole('button', { name: /Instancias simuladas/ })
             .click();
-        await expect(page.locator('#instance-name-0')).toHaveValue(
-            updated[0].name,
+        await expect(page.locator('input[id^="instance-name-"]')).toHaveCount(
+            updated.length,
         );
+        for (let index = 0; index < updated.length; index++) {
+            const name = await page
+                .locator(`#instance-name-${index}`)
+                .inputValue();
+            const persisted = updated.find(
+                (instance) => instance.name === name,
+            );
+            expect(persisted).toBeDefined();
+            await expect(page.locator(`#server-name-${index}`)).toHaveValue(
+                persisted!.server_name,
+            );
+            await expect(page.locator(`#server-host-${index}`)).toHaveValue(
+                persisted!.server_host,
+            );
+            await expect(page.locator(`#base-url-${index}`)).toHaveValue(
+                persisted!.base_url,
+            );
+        }
     });
 }

@@ -51,7 +51,13 @@ test('caducar autorización conserva seguimiento y reintenta payload y clave una
         }),
     ).toBeVisible();
     await page.locator('#action-confirmation-password').fill('wrong-password');
+    const rejectedConfirmation = page.waitForResponse(
+        (response) =>
+            response.url().endsWith('/auth/confirm-action-password') &&
+            response.request().method() === 'POST',
+    );
     await page.getByRole('button', { name: 'Confirmar y reintentar' }).click();
+    expect((await rejectedConfirmation).status()).toBe(422);
     await expect(page.getByRole('dialog')).toBeVisible();
     expect(
         snapshot(project.uuid).commands.filter(
