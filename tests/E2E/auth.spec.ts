@@ -16,7 +16,7 @@ test('login incorrecto, correcto y logout revocan acceso a rutas internas', asyn
     await failed;
     await expect(page).toHaveURL(/\/login$/);
     await login(page, password, 'admin', false, /\/projects$/);
-    expect((await request(page, '/logout')).status()).toBe(302);
+    expect((await request(page, '/logout')).status()).toBe(204);
     await page.goto('/dashboard');
     await expect(page).toHaveURL(/\/login$/);
 });

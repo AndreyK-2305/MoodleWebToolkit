@@ -38,10 +38,13 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
                       )) as typeof window.setInterval;
         });
         let notifications = 0;
+        const receivedEvents: string[] = [];
         page.on('websocket', (socket) => {
             socket.on('framereceived', ({ payload }) => {
-                if (String(payload).includes('execution.event'))
+                if (String(payload).includes('execution.event')) {
                     notifications++;
+                    receivedEvents.push(String(payload));
+                }
             });
         });
         await login(page, password);
@@ -69,6 +72,27 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
         worker();
         await visibleStatus(page, 'REVIEW');
         expect(snapshot(project).review.tree.length).toBeGreaterThan(0);
+        const syntheticSecret = `quality-secret-${randomUUID()}`;
+        control('event', {
+            execution,
+            message: `Calidad 1G Authorization: Bearer ${syntheticSecret}`,
+        });
+        await expect(
+            page.getByText('Calidad 1G Authorization: [REDACTED]', {
+                exact: true,
+            }),
+        ).toBeVisible();
+        expect(JSON.stringify(snapshot(project).events)).not.toContain(
+            syntheticSecret,
+        );
+        expect(receivedEvents.join('\n')).not.toContain(syntheticSecret);
+        expect(
+            await (
+                await page.request.get(
+                    `${executionPath(project, execution)}/events?after=0`,
+                )
+            ).text(),
+        ).not.toContain(syntheticSecret);
         await page.reload();
         await visibleStatus(page, 'REVIEW');
         await page
@@ -106,6 +130,7 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
                 'nosniff',
             );
             const bytes = await download.body();
+            expect(bytes.toString('utf8')).not.toContain(syntheticSecret);
             expect(bytes.length).toBe(artifact.size);
             expect(createHash('sha256').update(bytes).digest('hex')).toBe(
                 artifact.sha256,
@@ -113,7 +138,8 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
         }
         const downloadEvent = page.waitForEvent('download');
         await page
-            .getByRole('link', { name: /Descargar/ })
+            .getByRole('link')
+            .filter({ hasText: completed.review.artifacts[0].filename })
             .first()
             .click();
         const file = await downloadEvent;
@@ -283,8 +309,9 @@ test('fallo con checkpoint: reanuda una sola vez con workspace y secuencia nuevo
     expect(next.execution.uuid).toBe(resumed.execution_uuid);
     expect(next.execution.resumed_from_execution_uuid).toBe(execution);
     expect(next.workspace).not.toBe(failed.workspace);
-    expect(next.events[0].sequence).toBe(1);
+    expect(next.events).toHaveLength(0);
     worker();
+    expect(snapshot(project.uuid).events[0].sequence).toBe(1);
     await page.goto(executionPath(project.uuid, next.execution.uuid));
     await visibleStatus(page, 'REVIEW');
     expect(snapshot(project.uuid, execution).execution.status).toBe('FAILED');

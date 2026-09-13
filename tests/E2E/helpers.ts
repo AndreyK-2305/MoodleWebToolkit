@@ -187,17 +187,34 @@ export async function wizard(
     await expect(page.locator('#wizard-name')).toHaveValue(`E2E ${type}`);
     await page.getByRole('button', { name: 'Guardar y continuar' }).click();
     const count = type === 'COLLECT' ? 1 : type === 'CONSOLIDATE' ? 3 : 2;
+    const instanceDrafts = new Map<string, { host: string; url: string }>();
     for (let i = 0; i < count; i++) {
         await page.locator(`#server-host-${i}`).fill(`moodle-${i}.test`);
         await page.locator(`#base-url-${i}`).fill(`https://moodle-${i}.test`);
+        instanceDrafts.set(
+            await page.locator(`#instance-name-${i}`).inputValue(),
+            {
+                host: `moodle-${i}.test`,
+                url: `https://moodle-${i}.test`,
+            },
+        );
     }
     await page.getByRole('button', { name: 'Guardar y continuar' }).click();
     await expect(page.locator('#simulation-scenario')).toBeVisible();
     await page.reload();
     await page.getByRole('button', { name: 'Atrás', exact: true }).click();
-    await expect(page.locator('#base-url-0')).toHaveValue(
-        'https://moodle-0.test',
-    );
+    // Persistence orders by role; match each instance by its name, not its position.
+    await expect(page.locator('input[id^="base-url-"]')).toHaveCount(count);
+    for (let i = 0; i < count; i++) {
+        const draft = instanceDrafts.get(
+            await page.locator(`#instance-name-${i}`).inputValue(),
+        );
+        expect(draft).toBeDefined();
+        await expect(page.locator(`#base-url-${i}`)).toHaveValue(draft!.url);
+        await expect(page.locator(`#server-host-${i}`)).toHaveValue(
+            draft!.host,
+        );
+    }
     await page.getByRole('button', { name: 'Guardar y continuar' }).click();
     await page.locator('#simulation-scenario').selectOption(scenario);
     await page.locator('#processing-scenario').selectOption(processing);
