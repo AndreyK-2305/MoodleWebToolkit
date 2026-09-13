@@ -2,6 +2,7 @@
 
 namespace App\Events;
 
+use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Realtime\ProjectSessionChannels;
 use App\Models\ExecutionEvent;
 use Illuminate\Broadcasting\PrivateChannel;
@@ -39,8 +40,8 @@ class ExecutionEventBroadcast implements ShouldBroadcastNow
                 'step_key' => $this->event->step_key,
                 'severity' => $this->event->severity->value,
                 'progress' => $this->event->progress,
-                'message' => $this->event->message,
-                'payload' => $this->event->payload,
+                'message' => app(SensitiveValueRedactor::class)->redact($this->event->message),
+                'payload' => app(SensitiveValueRedactor::class)->redact($this->event->payload),
                 'created_at' => $this->event->created_at->toIso8601String(),
             ],
         ];

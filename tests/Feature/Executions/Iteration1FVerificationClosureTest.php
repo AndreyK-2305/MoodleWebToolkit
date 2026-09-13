@@ -511,12 +511,15 @@ class Iteration1FVerificationClosureTest extends TestCase
         }
         $oversizedSecret = 'oversized-sensitive-value';
         $oversizedMessage = 'clientSecret='.$oversizedSecret.' '.str_repeat('ñ', 1_000);
-        $execution->logs()->create([
+        $legacyLog = $execution->logs()->create([
             'stream' => 'SYSTEM',
             'level' => 'INFO',
             'message' => $oversizedMessage,
             'context' => ['payload' => str_repeat('á', 1_000)],
         ]);
+        // Simulate an existing row from before write-time redaction (1G).
+        // The exporter must still redact it and describe the original stored bytes.
+        DB::table('execution_logs')->where('id', $legacyLog->getKey())->update(['message' => $oversizedMessage]);
 
         $this->actingAs($operator)->postJson(
             route('projects.executions.finalize', [$project->uuid, $execution->uuid]),
