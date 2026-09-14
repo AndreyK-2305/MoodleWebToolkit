@@ -62,6 +62,24 @@ El caso prolongado elimina la cola Redis y recupera los mismos comandos desde Po
 
 ## Concurrencia y privacidad
 
+### Matriz de roles
+
+La matriz combina los recorridos HTTP y de navegador de `tests/e2e/permissions.spec.ts` con las regresiones PHP de autorización y cierre. Los permisos de operación requieren también un estado de proyecto compatible y confirmación reciente cuando corresponde.
+
+| Acción sobre el proyecto                | ADMIN | OPERATOR asignado | OPERATOR ajeno | AUDITOR asignado |
+| --------------------------------------- | ----- | ----------------- | -------------- | ---------------- |
+| Consultar proyecto, ejecución y eventos | Sí    | Sí                | No             | Sí               |
+| Configurar e iniciar                    | Sí    | Sí                | No             | No               |
+| Resolver, reanudar o cancelar           | Sí    | Sí                | No             | No               |
+| Proponer, validar y finalizar           | Sí    | Sí                | No             | No               |
+| Descargar artefactos                    | Sí    | Sí                | No             | Sí               |
+| Suscribirse al canal privado autorizado | Sí    | Sí                | No             | Sí               |
+| Consultar y crear usuarios              | Sí    | No                | No             | No               |
+
+Un AUDITOR sin asignación tampoco puede consultar el proyecto. Los identificadores de otro proyecto se rechazan, las suscripciones falsificadas no se autorizan y un usuario inactivo pierde el acceso. Las pruebas temporales verifican la revocación de rol, asignación y actividad, además de la reconfirmación tras caducar la autorización.
+
+### Regresiones y correcciones
+
 Se amplían las barreras PostgreSQL multiproceso para confirmación, resolución, reanudación y cancelación; se mantienen las pruebas existentes de secuencias, inicio y finalización. Solo la prueba de cancelación difiere el despacho para observar CANCELLING antes de consumirlo.
 
 Una regresión adicional usa dos procesos con el middleware real de sesión, PostgreSQL y locks de Redis. Retiene una petición de observación mientras otra confirma la contraseña: sin bloqueo, la primera sobrescribe la confirmación con el timestamp caducado. Se reprodujo el fallo con la estructura JSON anidada real y después pasó con ocho aserciones al activar el bloqueo de sesiones de Laravel. La serialización afecta solo a peticiones HTTP de la misma sesión; los jobs y las pruebas de concurrencia de dominio siguen siendo independientes.
