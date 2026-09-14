@@ -9,6 +9,7 @@ use App\Jobs\RunExecutionUnit;
 use App\Models\Execution;
 use App\Models\Project;
 use App\Models\User;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
@@ -96,7 +97,7 @@ switch ($action) {
         $user = User::query()->where('email', ($input['user'] ?? 'admin').'@quality.test')->sole();
         foreach (DB::table('sessions')->where('user_id', $user->id)->get() as $session) {
             $payload = json_decode(base64_decode($session->payload), true, flags: JSON_THROW_ON_ERROR);
-            $payload['auth.password_confirmed_at'] = now()->subHours(3)->timestamp;
+            Arr::set($payload, 'auth.password_confirmed_at', now()->subHours(3)->timestamp);
             DB::table('sessions')->where('id', $session->id)->update(['payload' => base64_encode(json_encode($payload, JSON_THROW_ON_ERROR))]);
         }
         break;

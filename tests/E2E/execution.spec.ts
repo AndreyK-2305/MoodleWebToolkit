@@ -95,9 +95,15 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
         ).not.toContain(syntheticSecret);
         await page.reload();
         await visibleStatus(page, 'REVIEW');
+        const finalizationAccepted = page.waitForResponse(
+            (response) =>
+                response.url().endsWith('/finalize') &&
+                response.request().method() === 'POST',
+        );
         await page
             .getByRole('button', { name: 'Finalizar', exact: true })
             .click();
+        expect((await finalizationAccepted).status()).toBe(302);
         expect(
             snapshot(project).commands.filter(
                 (c) => c.command_type === 'FINALIZE',

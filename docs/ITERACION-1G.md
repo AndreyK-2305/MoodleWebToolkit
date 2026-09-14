@@ -44,6 +44,8 @@ El caso prolongado elimina la cola Redis y recupera los mismos comandos desde Po
 
 Se amplían las barreras PostgreSQL multiproceso para confirmación, resolución, reanudación y cancelación; se mantienen las pruebas existentes de secuencias, inicio y finalización. Solo la prueba de cancelación difiere el despacho para observar CANCELLING antes de consumirlo.
 
+Una regresión adicional usa dos procesos con el middleware real de sesión, PostgreSQL y locks de Redis. Retiene una petición de observación mientras otra confirma la contraseña: sin bloqueo, la primera sobrescribe la confirmación con el timestamp caducado. Se reprodujo el fallo con la estructura JSON anidada real y después pasó con ocho aserciones al activar el bloqueo de sesiones de Laravel. La serialización afecta solo a peticiones HTTP de la misma sesión; los jobs y las pruebas de concurrencia de dominio siguen siendo independientes.
+
 Una regresión demostró que secretos sintéticos llegaban a eventos persistidos antes de la corrección. Ahora logs y eventos censuran mensajes y estructuras al guardar; el presentador y el broadcast protegen también registros heredados. El catálogo cubre claves compuestas, consultas URL codificadas y bloques PEM, conservando etiquetas no sensibles. La prueba heredada de truncamiento inserta expresamente un registro anterior a esta protección y mantiene sus aserciones de bytes y SHA-256 originales.
 
 Se conservan las regresiones de exportación por streaming, presupuestos por unidad, cursores, recuperación, promoción atómica, integridad, traversal y enlaces simbólicos de 1F. No se introducen conexiones ni migraciones Moodle reales.
@@ -51,6 +53,8 @@ Se conservan las regresiones de exportación por streaming, presupuestos por uni
 El E2E respeta el contrato previo de finalización: repetir `finalize` devuelve HTTP 200 con `created=false` y el resultado COMPLETED existente. Comprueba que no aparecen otro comando, nuevos eventos, artefactos ni timestamps. Las mutaciones de cancelación, validación y propuestas siguen rechazadas. También se corrigen expectativas del auxiliar sobre la redirección al destino solicitado, logout JSON 204, el orden de instancias por rol y los eventos creados por el worker después de reanudar.
 
 Las trazas confirmaron HTTP 429 en login cuando casos independientes acumulaban el límite de cinco solicitudes por minuto en Redis. El reset exclusivo de calidad vacía su caché antes de cada caso; el limitador de la aplicación permanece activo y sin cambios.
+
+El auxiliar de expiración respeta las claves anidadas de la sesión usando `Arr::set`; una clave plana con puntos ocultaba indebidamente las confirmaciones posteriores. El navegador espera la respuesta del reintento antes de consultar los comandos persistidos. La autorización de canales toma los datos del script JSON de Inertia 3 servido con la página, sin enviar una solicitud Inertia incompleta que provoque un conflicto de versión.
 
 ## Evidencia y limitaciones del entorno local
 
