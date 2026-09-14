@@ -157,6 +157,19 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
                     await request(
                         page,
                         `${executionPath(project, execution)}/${action}`,
+                        action === 'proposals'
+                            ? {
+                                  operation: 'RENAME_CATEGORY',
+                                  node_id: (
+                                      completed.review.tree[0] as { id: string }
+                                  ).id,
+                                  value: 'Cambio prohibido después del cierre',
+                                  expected_version:
+                                      completed.review.proposal_version,
+                                  base_fingerprint:
+                                      completed.review.fingerprint,
+                              }
+                            : {},
                     )
                 ).status(),
             ).toBe(403);

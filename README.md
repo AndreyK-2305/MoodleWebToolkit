@@ -3,7 +3,7 @@
 Plataforma de administración para el kit de consolidación de instancias Moodle.
 El repositorio contiene las iteraciones **1A (Bootstrap)**, **1B (Dominio)**,
 **1C (Wizard persistente)**, **1D (Motor asíncrono simulado)**, **1E
-(Ejecución supervisada)** y **1F (Verificación y cierre)** del Plan Maestro.
+(Ejecución supervisada)**, **1F (Verificación y cierre)** y **1G (Calidad de la vertical simulada)** del Plan Maestro.
 Incluye el inicio idempotente por HTTP, Redis Queue, workers acotados, eventos
 persistentes, artefactos finales verificables y actualización en tiempo real
 mediante canales privados de Reverb.
@@ -13,8 +13,9 @@ La implementación y los resultados de validación están documentados en
 [`docs/ITERACION-1B.md`](docs/ITERACION-1B.md),
 [`docs/ITERACION-1C.md`](docs/ITERACION-1C.md),
 [`docs/ITERACION-1D.md`](docs/ITERACION-1D.md),
-[`docs/ITERACION-1E.md`](docs/ITERACION-1E.md) y
-[`docs/ITERACION-1F.md`](docs/ITERACION-1F.md).
+[`docs/ITERACION-1E.md`](docs/ITERACION-1E.md),
+[`docs/ITERACION-1F.md`](docs/ITERACION-1F.md) y
+[`docs/ITERACION-1G.md`](docs/ITERACION-1G.md).
 
 ## Stack disponible
 
