@@ -48,6 +48,10 @@ Una regresión demostró que secretos sintéticos llegaban a eventos persistidos
 
 Se conservan las regresiones de exportación por streaming, presupuestos por unidad, cursores, recuperación, promoción atómica, integridad, traversal y enlaces simbólicos de 1F. No se introducen conexiones ni migraciones Moodle reales.
 
+El E2E respeta el contrato previo de finalización: repetir `finalize` devuelve HTTP 200 con `created=false` y el resultado COMPLETED existente. Comprueba que no aparecen otro comando, nuevos eventos, artefactos ni timestamps. Las mutaciones de cancelación, validación y propuestas siguen rechazadas. También se corrigen expectativas del auxiliar sobre la redirección al destino solicitado, logout JSON 204, el orden de instancias por rol y los eventos creados por el worker después de reanudar.
+
+Las trazas confirmaron HTTP 429 en login cuando casos independientes acumulaban el límite de cinco solicitudes por minuto en Redis. El reset exclusivo de calidad vacía su caché antes de cada caso; el limitador de la aplicación permanece activo y sin cambios.
+
 ## Evidencia y limitaciones del entorno local
 
 Docker Desktop no inicia en este host por un error de acceso a `dockerInference`. La línea base y las regresiones PHP se ejecutaron en contenedores Podman aislados; la VM dispone de 898 MiB y no tiene swap. La validación integrada de diez servicios y navegador debe quedar acreditada por la CI antes de declarar el cierre.

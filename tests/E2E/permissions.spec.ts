@@ -81,18 +81,14 @@ for (const role of ['admin', 'operator', 'outsider', 'auditor']) {
                 (await page.request.get(`${path}/events?after=0`)).status(),
             ).toBe(canView ? 200 : 403);
             // Reverb authorization is tested by an actual HTTP subscription request.
-            const html = await page.request.get(path);
             if (canView) {
-                const channel = await page.evaluate(
-                    (markup) => {
-                        const element = new DOMParser()
-                            .parseFromString(markup, 'text/html')
-                            .querySelector('[data-page]');
-                        return JSON.parse(element!.getAttribute('data-page')!)
-                            .props.realtimeChannel as string;
-                    },
-                    await html.text(),
-                );
+                const inertia = await page.request.get(path, {
+                    headers: { 'X-Inertia': 'true' },
+                });
+                expect(inertia.status()).toBe(200);
+                const channel: string = (await inertia.json()).props
+                    .realtimeChannel;
+                expect(channel).toBeTruthy();
                 expect(
                     (
                         await request(page, '/broadcasting/auth', {

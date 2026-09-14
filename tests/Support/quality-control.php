@@ -11,6 +11,7 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
@@ -24,6 +25,9 @@ switch ($action) {
     case 'worker-health':
         exit(Redis::exists('quality:worker:heartbeat') ? 0 : 1);
     case 'reset':
+        // Redis belongs exclusively to this quality project. Do not carry login
+        // rate limits or session-channel cache across independent browser cases.
+        Cache::flush();
         Artisan::call('migrate:fresh', ['--force' => true, '--no-interaction' => true]);
         Artisan::call('queue:clear', ['connection' => 'redis', '--queue' => 'executions', '--force' => true]);
         $password = $input['password'];

@@ -151,7 +151,7 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
                 .update(readFileSync((await file.path())!))
                 .digest('hex'),
         ).toBe(artifact.sha256);
-        for (const action of ['cancel', 'validate', 'finalize']) {
+        for (const action of ['cancel', 'validate', 'proposals']) {
             expect(
                 (
                     await request(
@@ -161,6 +161,21 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
                 ).status(),
             ).toBe(403);
         }
+        // 1F explicitly permits retrieving an existing finalization idempotently.
+        const repeatedFinalization = await request(
+            page,
+            `${executionPath(project, execution)}/finalize`,
+        );
+        expect(repeatedFinalization.status()).toBe(200);
+        expect(await repeatedFinalization.json()).toMatchObject({
+            created: false,
+            status: 'COMPLETED',
+        });
+        expect(
+            snapshot(project).commands.filter(
+                (command) => command.command_type === 'FINALIZE',
+            ),
+        ).toHaveLength(1);
         expect(
             (
                 await request(page, `/projects/${project}/executions`, {

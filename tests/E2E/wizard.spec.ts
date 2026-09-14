@@ -95,7 +95,7 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
             base_url: i.base_url,
             moodle_version: i.moodle_version,
             validated: i.validated,
-            destination_kind: i.destination_kind,
+            destination_kind: i.metadata?.destination_kind ?? null,
         }));
         for (const url of [
             'https://user:fixture-secret@moodle.test',

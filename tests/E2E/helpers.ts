@@ -96,7 +96,7 @@ export type Snapshot = {
         server: { uuid: string; name: string; host: string };
         base_url: string;
         role: string;
-        destination_kind: string | null;
+        metadata: { destination_kind?: string | null } | null;
         moodle_version: string;
         validated: boolean;
     }>;
