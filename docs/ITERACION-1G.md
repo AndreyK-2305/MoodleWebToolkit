@@ -1,6 +1,26 @@
 # Iteración 1G — Calidad y cierre de la vertical simulada
 
-Estado: implementación en validación. Las comprobaciones pendientes no constituyen evidencia de aprobación.
+Estado: validación integral aprobada. La entrega permanece en un PR en borrador contra `main`, sin merge.
+
+## Resultados verificados
+
+La [CI de la implementación](https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/34795882061), ejecutada sobre `bf066681118555e56970ac4079b403730808951e`, terminó correctamente con las siguientes puertas. El PR incorpora además la comprobación de CI del commit final de documentación.
+
+| Puerta                                                  | Resultado                                                                                           |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Compose de desarrollo y de calidad                      | Ambos válidos                                                                                       |
+| Instalación limpia y migraciones                        | Diez servicios saludables simultáneamente; imágenes sin montajes del código o dependencias del host |
+| Pint y PHPStan                                          | Aprobados, sin errores                                                                              |
+| PHPUnit con PostgreSQL, Redis y procesos independientes | 242 pruebas, 2224 aserciones                                                                        |
+| Vitest                                                  | 5 pruebas aprobadas                                                                                 |
+| Formato y lint                                          | Aprobados, sin advertencias ni errores                                                              |
+| TypeScript de aplicación y E2E; build                   | Aprobados                                                                                           |
+| BaseLine                                                | 131 archivos íntegros; seis montajes de solo lectura verificados                                    |
+| `git diff --check`                                      | Aprobado                                                                                            |
+| Playwright                                              | 42 casos aprobados, cero reintentos, 4,1 minutos                                                    |
+| Limpieza                                                | Entorno exclusivo desmontado correctamente                                                          |
+
+Las regresiones conservan las expectativas de las iteraciones anteriores. Las correcciones de producto se limitan a la censura de secretos en logs/eventos y a impedir que peticiones HTTP concurrentes de una sesión sobrescriban una confirmación reciente de contraseña. El resto incorpora o corrige infraestructura, auxiliares y cobertura de calidad de la vertical simulada.
 
 ## Punto de partida
 
@@ -58,9 +78,9 @@ El auxiliar de expiración respeta las claves anidadas de la sesión usando `Arr
 
 ## Evidencia y limitaciones del entorno local
 
-Docker Desktop no inicia en este host por un error de acceso a `dockerInference`. La línea base y las regresiones PHP se ejecutaron en contenedores Podman aislados; la VM dispone de 898 MiB y no tiene swap. La validación integrada de diez servicios y navegador debe quedar acreditada por la CI antes de declarar el cierre.
+Docker Desktop no pudo iniciar en este host por un error de acceso a `dockerInference`. La línea base y las regresiones PHP se ejecutaron en contenedores Podman aislados; la VM dispone de 898 MiB y no tiene swap. La validación integrada de diez servicios y navegador quedó acreditada por la CI enlazada arriba.
 
-En el [ciclo sobre 629b87b](https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/34760694134), antes de detenerlo para corregir los auxiliares E2E, aprobaron 241 pruebas PHP con 2216 aserciones, cinco pruebas Vitest y todas las puertas previas al navegador, incluidos diez servicios saludables y seis montajes solo lectura. Este ciclo no aprobó Playwright y no acredita el cierre. El recorrido CLI local recuperó una ejecución después de perder Redis y avanzar más de 24 horas, usando PIDs distintos, y generó cuatro artefactos con timestamps de cierre semánticamente iguales.
+Los ciclos iniciales expusieron los defectos de infraestructura y auxiliares descritos en este documento; sus resultados parciales no se usan como evidencia del cierre. La regresión local de concurrencia de sesión pasó con ocho aserciones y la suite de autenticación completa con 41 pruebas y 174 aserciones. El recorrido CLI local recuperó una ejecución después de perder Redis y avanzar más de 24 horas, usando PIDs distintos, y generó cuatro artefactos con timestamps de cierre semánticamente iguales. La CI final de implementación aprobó conjuntamente todas las pruebas, incluido el recorrido equivalente en navegador.
 
 La primera instalación identificó un healthcheck de Nginx que resolvía localhost por IPv6; se usa explícitamente 127.0.0.1. La siguiente detectó que el proceso padre de PHPUnit heredaba variables de la base E2E mientras sus hijos usaban las de PHPUnit. El lanzador aplica ahora las variables de `phpunit.xml` antes de arrancar PHP, sin modificar las expectativas de las pruebas. La imagen crea un `.env` vacío para las utilidades Laravel que requieren que exista; los secretos siguen llegando por el entorno efímero.
 
