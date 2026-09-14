@@ -19,7 +19,33 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Check committed whitespace
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "Checked-out HEAD: $(git rev-parse HEAD)"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            test -n "$PR_BASE_SHA"
+            git cat-file -e "${PR_BASE_SHA}^{commit}"
+            echo "Checking PR range: ${PR_BASE_SHA}...HEAD"
+            git diff --check "${PR_BASE_SHA}...HEAD"
+          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            git cat-file -e "${BEFORE_SHA}^{commit}"
+            echo "Checking push range: ${BEFORE_SHA}..${CURRENT_SHA}"
+            git diff --check "${BEFORE_SHA}..${CURRENT_SHA}"
+          else
+            echo "Checking current commit: ${CURRENT_SHA}"
+            git show --check --format= --no-renames "$CURRENT_SHA"
+          fi
 
       - name: Clean installation and all quality gates including Playwright
         shell: pwsh

@@ -72,8 +72,9 @@ try {
     Invoke-QualityCompose exec -T vite npm run build
     & ./tests/Infrastructure/verify-baseline-integrity.ps1
     & ./tests/Infrastructure/verify-baseline-readonly.ps1
+    # Additional local working-tree check; CI checks committed ranges separately.
     & git diff --check
-    if ($LASTEXITCODE -ne 0) { throw 'git diff --check falló.' }
+    if ($LASTEXITCODE -ne 0) { throw 'git diff --check del working tree falló.' }
     Invoke-QualityCompose --profile e2e run --rm --no-deps playwright
     Write-Host 'Todas las puertas de calidad aprobaron.'
 } catch {
