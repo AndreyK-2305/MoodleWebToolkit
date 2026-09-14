@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Enums\LogStream;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
@@ -27,6 +28,15 @@ class ExecutionLog extends Model
         'context',
         'logged_at',
     ];
+
+    protected static function booted(): void
+    {
+        static::saving(function (self $log): void {
+            $redactor = app(SensitiveValueRedactor::class);
+            $log->message = $redactor->redactString($log->message);
+            $log->context = $redactor->redact($log->context);
+        });
+    }
 
     /** @return BelongsTo<Execution, $this> */
     public function execution(): BelongsTo

@@ -51,6 +51,12 @@ final class SensitiveValueRedactor
 
     public function redactString(string $value): string
     {
+        $value = preg_replace(
+            '/-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----/s',
+            '[REDACTED PRIVATE KEY]',
+            $value,
+        ) ?? $value;
+
         try {
             $decoded = json_decode($value, true, flags: JSON_THROW_ON_ERROR);
 
@@ -81,8 +87,8 @@ final class SensitiveValueRedactor
         ) ?? $value;
 
         $value = preg_replace_callback(
-            '/(?<![A-Za-z0-9_-])(?<key>[A-Za-z][A-Za-z0-9_-]*)\s*=\s*(?<value>"(?:\\\\.|[^"\\\\])*"|[^\s&,;}]+)/u',
-            fn (array $match): string => $this->isSensitiveKey($match['key'])
+            '/(?<![A-Za-z0-9_%-])(?<key>[A-Za-z][A-Za-z0-9_%-]*)\s*=\s*(?<value>"(?:\\\\.|[^"\\\\])*"|[^\s&,;}]+)/u',
+            fn (array $match): string => $this->isSensitiveKey(rawurldecode($match['key']))
                 ? $match['key'].'=[REDACTED]'
                 : $match[0],
             $value,
@@ -101,6 +107,7 @@ final class SensitiveValueRedactor
     {
         $normalized = strtolower(preg_replace('/[^A-Za-z0-9]+/', '', $key) ?? $key);
 
-        return in_array($normalized, self::SENSITIVE_KEYS, true);
+        return in_array($normalized, self::SENSITIVE_KEYS, true)
+            || preg_match('/(?:password|passwd|passphrase|token|secret|privatekey|apikey)$/D', $normalized) === 1;
     }
 }

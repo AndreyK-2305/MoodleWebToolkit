@@ -20,6 +20,10 @@ return [
 
     'driver' => env('SESSION_DRIVER', 'database'),
 
+    // Serialize requests sharing a session: polling must not overwrite a recent
+    // password confirmation. Queue workers remain independent of HTTP sessions.
+    'block' => true,
+
     /*
     |--------------------------------------------------------------------------
     | Session Lifetime

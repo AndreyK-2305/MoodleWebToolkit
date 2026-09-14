@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Enums\EventSeverity;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
@@ -34,6 +35,15 @@ class ExecutionEvent extends Model
         'payload',
         'created_at',
     ];
+
+    protected static function booted(): void
+    {
+        static::saving(function (self $event): void {
+            $redactor = app(SensitiveValueRedactor::class);
+            $event->message = $event->message === null ? null : $redactor->redactString($event->message);
+            $event->payload = $redactor->redact($event->payload);
+        });
+    }
 
     /** @return BelongsTo<Execution, $this> */
     public function execution(): BelongsTo

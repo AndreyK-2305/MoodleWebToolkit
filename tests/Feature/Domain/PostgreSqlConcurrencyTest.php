@@ -38,10 +38,89 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use JsonException;
 use Symfony\Component\Process\Process;
+use Tests\Support\QualityFixtures;
 use Tests\TestCase;
 
 class PostgreSqlConcurrencyTest extends TestCase
 {
+    public function test_two_confirmations_only_persist_one_ready_confirmation(): void
+    {
+        Queue::fake();
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        $project = $this->readyCollectionProject($admin);
+        $wizard = app(ProjectWizard::class);
+        $wizard->saveBasics($project, $admin, ['name' => 'Nueva confirmación 1G', 'type' => 'COLLECT']);
+        $wizard->runPreflight($project, $admin);
+        $before = AuditLog::query()->where('project_id', $project->id)->where('action', 'PROJECT_CONFIGURATION_CONFIRMED')->count();
+        $results = $this->runConcurrently(array_fill(0, 2, ['confirm-http', $project->id, $admin->id]));
+        $this->assertSame([302, 302], array_column($results, 'http_status'));
+        $this->assertSame(ProjectStatus::READY, $project->fresh()->status);
+        $this->assertSame(0, $project->executions()->count());
+        $this->assertSame($before + 1, AuditLog::query()->where('project_id', $project->id)->where('action', 'PROJECT_CONFIGURATION_CONFIRMED')->count());
+    }
+
+    public function test_double_resolution_and_resume_with_same_and_different_keys_have_one_effect(): void
+    {
+        Queue::fake();
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        foreach (['resolve-http' => 'WARNING', 'resume-http' => 'FAILURE'] as $mode => $scenario) {
+            foreach ([true, false] as $sameKey) {
+                $project = QualityFixtures::ready($admin, scenario: $scenario);
+                $execution = app(StartProjectExecution::class)->start($project, $admin, 'start-'.Str::uuid(), $project->configuration->version)->execution;
+                foreach (['START', 'CONTINUE'] as $type) {
+                    $command = $execution->commands()->where('command_type', $type)->sole();
+                    (new RunExecutionUnit($command->id))->handle(app(ExecutionProvider::class), app(ToolAdapter::class));
+                }
+                $conflict = $execution->conflicts()->first();
+                $payload = $mode === 'resolve-http'
+                    ? ['decision' => 'ACCEPT', 'conflict_version' => $conflict->version]
+                    : ['checkpoint_id' => $execution->checkpoints()->sole()->id];
+                $workers = [];
+                foreach ([0, 1] as $index) {
+                    $workers[] = [$mode, $execution->id, $admin->id, json_encode([
+                        'key' => $sameKey ? 'same-quality-key' : 'quality-key-'.$index,
+                        'payload' => $payload, 'conflict_id' => $conflict?->id,
+                    ], JSON_THROW_ON_ERROR)];
+                }
+                $results = $this->runConcurrently($workers);
+                $statuses = array_column($results, 'http_status');
+                sort($statuses);
+                $this->assertSame($mode === 'resolve-http'
+                    ? ($sameKey ? [200, 200] : [200, 422])
+                    : ($sameKey ? [200, 201] : [201, 422]), $statuses);
+                if ($mode === 'resolve-http') {
+                    $this->assertSame(1, $execution->commands()->where('command_type', 'RESOLVE_CONFLICT')->count());
+                    $this->assertSame(1, $execution->events()->where('type', 'conflict.resolved')->count());
+                } else {
+                    $this->assertSame(2, $project->executions()->count());
+                    $resumed = $project->executions()->where('attempt', 2)->sole();
+                    $this->assertSame($execution->id, $resumed->resumed_from_execution_id);
+                    $this->assertNotSame($execution->workspace_key, $resumed->workspace_key);
+                    $this->assertSame(1, $resumed->events()->min('sequence'));
+                }
+            }
+        }
+    }
+
+    public function test_two_cancellation_requests_preserve_one_cooperative_transition(): void
+    {
+        Queue::fake();
+        $admin = User::factory()->create(['role' => UserRole::ADMIN]);
+        $project = $this->readyCollectionProject($admin);
+        $execution = app(StartProjectExecution::class)->start($project, $admin, 'cancel-race-start', $project->configuration->version)->execution;
+        $results = $this->runConcurrently(array_fill(0, 2, ['cancel-deferred-http', $execution->id, $admin->id, 'cancel-race-same-key']));
+        $statuses = array_column($results, 'http_status');
+        sort($statuses);
+        $this->assertSame([200, 202], $statuses);
+        $this->assertSame(ExecutionStatus::CANCELLING, $execution->fresh()->status);
+        $cancel = $execution->commands()->where('command_type', 'CANCEL')->sole();
+        foreach ([1, 2] as $_) {
+            (new RunExecutionUnit($cancel->id))->handle(app(ExecutionProvider::class), app(ToolAdapter::class));
+        }
+        $this->assertSame(ExecutionStatus::CANCELLED, $execution->fresh()->status);
+        $this->assertSame(1, $execution->events()->where('type', 'execution.cancelled')->count());
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

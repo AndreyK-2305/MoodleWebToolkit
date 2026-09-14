@@ -3,6 +3,7 @@
 namespace App\Domain\Executions;
 
 use App\Domain\Academic\AcademicPreview;
+use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Models\AcademicProposal;
 use App\Models\Artifact;
 use App\Models\Checkpoint;
@@ -135,8 +136,8 @@ class ExecutionPresenter
             'step_key' => $event->step_key,
             'severity' => $event->severity->value,
             'progress' => $event->progress,
-            'message' => $event->message,
-            'payload' => $event->payload,
+            'message' => app(SensitiveValueRedactor::class)->redact($event->message),
+            'payload' => app(SensitiveValueRedactor::class)->redact($event->payload),
             'created_at' => $event->created_at->toIso8601String(),
         ];
     }

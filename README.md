@@ -3,7 +3,7 @@
 Plataforma de administración para el kit de consolidación de instancias Moodle.
 El repositorio contiene las iteraciones **1A (Bootstrap)**, **1B (Dominio)**,
 **1C (Wizard persistente)**, **1D (Motor asíncrono simulado)**, **1E
-(Ejecución supervisada)** y **1F (Verificación y cierre)** del Plan Maestro.
+(Ejecución supervisada)**, **1F (Verificación y cierre)** y **1G (Calidad de la vertical simulada)** del Plan Maestro.
 Incluye el inicio idempotente por HTTP, Redis Queue, workers acotados, eventos
 persistentes, artefactos finales verificables y actualización en tiempo real
 mediante canales privados de Reverb.
@@ -13,8 +13,9 @@ La implementación y los resultados de validación están documentados en
 [`docs/ITERACION-1B.md`](docs/ITERACION-1B.md),
 [`docs/ITERACION-1C.md`](docs/ITERACION-1C.md),
 [`docs/ITERACION-1D.md`](docs/ITERACION-1D.md),
-[`docs/ITERACION-1E.md`](docs/ITERACION-1E.md) y
-[`docs/ITERACION-1F.md`](docs/ITERACION-1F.md).
+[`docs/ITERACION-1E.md`](docs/ITERACION-1E.md),
+[`docs/ITERACION-1F.md`](docs/ITERACION-1F.md) y
+[`docs/ITERACION-1G.md`](docs/ITERACION-1G.md).
 
 ## Stack disponible
 
@@ -87,6 +88,16 @@ docker compose down
 
 ## Calidad
 
+Para validar la instalación limpia y la vertical simulada completa con Docker Compose y PowerShell 7:
+
+```powershell
+pwsh -File tests/Infrastructure/run-quality.ps1
+```
+
+Este comando crea un entorno exclusivo `mt1g-*`, ejecuta las puertas y Playwright y elimina sus recursos al terminar. Las dependencias y el navegador están incorporados en imágenes; no usa los datos de desarrollo. La cobertura, el aislamiento y la evidencia se describen en [Iteración 1G](docs/ITERACION-1G.md). Las operaciones Moodle siguen siendo simuladas.
+
+Para comprobaciones individuales sobre el entorno de desarrollo:
+
 ```powershell
 docker compose exec app php artisan test
 docker compose exec app vendor/bin/pint --test
@@ -108,3 +119,13 @@ Integrador. Está excluida de Pint y no forma parte del código que modifica la
 plataforma web. Los servicios que pueden verla la montan explícitamente como
 solo lectura; la prueba de infraestructura anterior debe rechazar cualquier
 intento de escritura.
+
+## Estructura
+
+- `app/`: dominio, autorización, ejecución y artefactos.
+- `resources/`: interfaz React, estilos y pruebas unitarias de frontend.
+- `database/`: esquema y factories.
+- `tests/`: pruebas PHP, navegador, infraestructura y auxiliares exclusivos de calidad.
+- `docker/`: imágenes y configuración de servicios.
+- `docs/`: decisiones y evidencia de las iteraciones.
+- `BaseLine/`: entregables originales protegidos, fuera del desarrollo web.
