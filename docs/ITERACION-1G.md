@@ -16,7 +16,7 @@ La [CI de la implementación](https://github.com/AndreyK-2305/MoodleWebToolkit/a
 | Formato y lint                                          | Aprobados, sin advertencias ni errores                                                              |
 | TypeScript de aplicación y E2E; build                   | Aprobados                                                                                           |
 | BaseLine                                                | 131 archivos íntegros; seis montajes de solo lectura verificados                                    |
-| `git diff --check`                                      | Aprobado                                                                                            |
+| `git diff --check` del working tree                     | Aprobado; comprobación local adicional, no del rango comprometido                                   |
 | Playwright                                              | 42 casos aprobados, cero reintentos, 4,1 minutos                                                    |
 | Limpieza                                                | Entorno exclusivo desmontado correctamente                                                          |
 
@@ -39,7 +39,25 @@ El script genera un proyecto exclusivo `mt1g-*` y rechaza prefijos con recursos 
 
 Los diez servicios son PostgreSQL de navegador, PostgreSQL de PHPUnit, Redis, aplicación, worker, scheduler, Reverb, Vite, Mailpit y Nginx. Playwright se ejecuta en un contenedor adicional al terminar las puertas. Comparte la red de Nginx para acceder a HTTP y WebSocket mediante localhost.
 
-Puertas: ambos Compose, instalación limpia, diez healthchecks, migraciones, Pint, PHPStan, PHPUnit sobre PostgreSQL, Vitest, formato/lint, TypeScript de aplicación y E2E, build, integridad y seis montajes de BaseLine solo lectura, `git diff --check` y Playwright. La CI ejecuta el mismo script sobre el SHA de la rama. Los informes quedan en `quality-results/`; trazas, capturas y vídeos se conservan solo cuando falla un caso. La CI retiene la evidencia de fallo durante tres días. La ejecución recorre los 42 casos, sin reintentos automáticos; aprobar exige que todos pasen.
+Puertas: ambos Compose, instalación limpia, diez healthchecks, migraciones, Pint, PHPStan, PHPUnit sobre PostgreSQL, Vitest, formato/lint, TypeScript de aplicación y E2E, build, integridad y seis montajes de BaseLine solo lectura, `git diff --check` del working tree y Playwright. La CI ejecuta el mismo script sobre el SHA de la rama y comprueba primero el rango comprometido mediante la etapa independiente descrita abajo. Los informes quedan en `quality-results/`; trazas, capturas y vídeos se conservan solo cuando falla un caso. La CI retiene la evidencia de fallo durante tres días. La ejecución recorre los 42 casos, sin reintentos automáticos; aprobar exige que todos pasen.
+
+### Corrección de la puerta de whitespace comprometido
+
+La revisión parte del SHA aprobado `66bca7c22154f6b6e37d4d33494a421c4d971591`, con árbol limpio y sin retraso respecto de `origin/main`. El rango real `origin/main...HEAD` no presentaba errores. El defecto estaba en la puerta: `git diff --check` sin rango revisa cambios locales sin comprometer y puede aprobar en un checkout limpio aunque los commits del PR contengan whitespace inválido.
+
+El checkout conserva el pin de la acción, obtiene el historial completo con `fetch-depth: 0` y selecciona el HEAD real de la rama. Antes de construir Docker, `Check committed whitespace` usa:
+
+| Evento                      | Comprobación obligatoria                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Pull request                | `git diff --check "${PR_BASE_SHA}...HEAD"`, con el SHA base del evento validado mediante `git cat-file` |
+| Push con SHA previo no nulo | `git diff --check "${BEFORE_SHA}..${CURRENT_SHA}"`, validando el commit previo                          |
+| SHA previo nulo o ausente   | `git show --check --format= --no-renames "$CURRENT_SHA"`                                                |
+
+La etapa registra el HEAD efectivo y el rango seleccionado. Bash usa `set -euo pipefail` y no ignora códigos de salida. La comprobación del working tree permanece como control local adicional en `run-quality.ps1`; no sustituye la revisión de commits. Se conservan el `finally` del script y el teardown del workflow con `if: always()`, incluso si falla la nueva puerta.
+
+Se ejecutó localmente el Bash extraído del YAML para los tres casos, todos con código 0 sobre datos válidos. Una base inexistente produjo código 128. Como prueba negativa, un diff controlado entre dos archivos temporales añadió tres espacios al final de una línea: `git diff --check --no-index` detectó `trailing whitespace` y devolvió código 3. Los archivos se eliminaron sin incorporarlos al índice, crear commits defectuosos ni publicarlos; el árbol volvió a quedar limpio al registrar únicamente la corrección. También aprobaron el parser YAML, ambos `docker compose config --quiet`, el rango real del PR y la integridad de BaseLine. El motor Docker local no estaba disponible, por lo que la validación integrada se delega a GitHub Actions.
+
+Evidencia del nuevo commit `36a9fa3d160da6cc701547462d8aa5e4800eb2a1`: [CI de la corrección](https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/34851232950). La [CI del HEAD publicado del PR #6](https://github.com/AndreyK-2305/MoodleWebToolkit/pull/6/checks) incluye también el cierre documental; la descripción del PR registra su SHA y enlace de ejecución exactos. Esta revisión modifica exclusivamente el workflow, la identificación de la comprobación local en el script y esta documentación.
 
 ## Cobertura de navegador
 
