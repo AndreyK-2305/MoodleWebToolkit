@@ -37,14 +37,16 @@ jobs:
             test -n "$PR_BASE_SHA"
             git cat-file -e "${PR_BASE_SHA}^{commit}"
             echo "Checking PR range: ${PR_BASE_SHA}...HEAD"
-            git diff --check "${PR_BASE_SHA}...HEAD"
+            # BaseLine contains source-owned trailing blank lines; preserve its
+            # bytes and verify it with the dedicated canonical integrity gate.
+            git diff --check "${PR_BASE_SHA}...HEAD" -- . ':(exclude)BaseLine/**'
           elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
             git cat-file -e "${BEFORE_SHA}^{commit}"
             echo "Checking push range: ${BEFORE_SHA}..${CURRENT_SHA}"
-            git diff --check "${BEFORE_SHA}..${CURRENT_SHA}"
+            git diff --check "${BEFORE_SHA}..${CURRENT_SHA}" -- . ':(exclude)BaseLine/**'
           else
             echo "Checking current commit: ${CURRENT_SHA}"
-            git show --check --format= --no-renames "$CURRENT_SHA"
+            git show --check --format= --no-renames "$CURRENT_SHA" -- . ':(exclude)BaseLine/**'
           fi
 
       - name: Clean installation and all quality gates including Playwright
