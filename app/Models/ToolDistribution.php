@@ -10,7 +10,7 @@ class ToolDistribution extends Model
 {
     protected $fillable = [
         'tool_version_id', 'key', 'kind', 'source_path', 'manifest_name', 'manifest_sha256',
-        'distribution_sha256', 'file_count', 'verification_state', 'verified_at', 'mutable_paths', 'evidence',
+        'distribution_sha256', 'file_count', 'verification_state', 'verified_at', 'mutable_paths', 'deployment_exclusions', 'evidence',
     ];
 
     /** @return BelongsTo<ToolVersion, $this> */
@@ -27,6 +27,6 @@ class ToolDistribution extends Model
 
     protected function casts(): array
     {
-        return ['file_count' => 'integer', 'verified_at' => 'immutable_datetime', 'mutable_paths' => 'array', 'evidence' => 'array'];
+        return ['file_count' => 'integer', 'verified_at' => 'immutable_datetime', 'mutable_paths' => 'array', 'deployment_exclusions' => 'array', 'evidence' => 'array'];
     }
 }

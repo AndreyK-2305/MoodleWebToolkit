@@ -501,17 +501,11 @@ No eliminar `FakeExecutionProvider`; conservarlo para pruebas y demostración.
 
 ## Cierre de Iteración 2
 
-- Catálogo funcional.
-- Distribuciones verificadas.
-- Workspaces seguros.
-- Storage por referencia.
-- Runner local.
-- Ejecución durable.
-- Recuperación después de reinicio.
-- Ningún proceso duplicado.
-- BaseLine intacta.
-- Vertical simulada sin regresiones.
-- Herramientas reales todavía controladas por feature flags.
+Este cierre describe el alcance esperado, no una aprobación automática. La corrección de infraestructura en `refactor-v8` añade catálogo y distribución verificados, workspaces por ejecución, storage por referencia, supervisor Linux local, reconciliación, paquetes fuente, configuración V8 separada, rollback y cuotas fijadas por ejecución. La vertical Fake permanece como predeterminada; las versiones y flags reales siguen cerrados y no hay comandos reales registrados.
+
+El supervisor conserva UUID, PID, grupo, `/proc` start time, hash, host y runtime. La evidencia terminal y los logs permiten reconciliar después de que muera el worker Laravel, pero no se afirma supervivencia ante reinicio completo del contenedor. Si no aparece evidencia terminal íntegra ni se confirma el proceso, el resultado queda desconocido y requiere revisión; nunca se infiere éxito por ausencia del PID. La medición de cuota de archivos escritos directamente por herramientas es periódica, no un límite duro de filesystem.
+
+Las regresiones se añadieron, pero el estado de cada puerta debe leerse en `docs/ITERACION-2-IMPLEMENTACION.md` y en CI del SHA final. Si faltan dependencias o un servicio, la puerta queda sin validar y el PR se mantiene en borrador. `BaseLine/` debe conservar 423 archivos y su huella canónica registrada.
 
 ---
 
@@ -1438,13 +1432,13 @@ La rama de trabajo es `refactor-v8`, creada desde `origin/main` en `bf9bdb796054
 
 En la inspección inicial, las distribuciones definitivas estaban en `C:\Users\kevin\OneDrive\Desktop\moodle-consolidation-toolkit\moodle-consolidation-toolkit`, fuera del repositorio web. No se encontró ningún ZIP original en ese directorio ni en su carpeta padre. Se registraron como árboles fuente verificados, sin atribuirles un ZIP o archivo original no disponible.
 
-| Distribución                                            | Versión declarada  | Archivos / entradas del manifiesto | SHA-256 canónico del árbol                                         | Resultado                                                                                                                                                                                                                                          |
-| ------------------------------------------------------- | ------------------ | ---------------------------------: | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Recolector/Recolector-v7.4.2`                          | `7.4.2-linux`      |                            29 / 28 | `4daaa16d278991f098b7f9c85361f7800193c4825e1f8cb6cb2c4b2870103c2e` | Todas las entradas declaradas coinciden; no se encontró discrepancia.                                                                                                                                                                              |
-| `Consolidador/Consolidador-v8.0.0`                      | `8.0.0-linux-rc12` |                          263 / 260 | `74d976c5290724ff52452d6abe117aa34876b1daab36d624c5e7adc353ab3ab7` | Todas las entradas declaradas coinciden. `config/phase5-pilot-package.json` y `config/phase6-batch.json` son archivos operativos no incluidos en `FILES.sha256`; se deben tratar como overlays por workspace y conservar evidencia de sus valores. |
-| `Integrador/Integrador-Incremental-Moodle-v1.1.5-linux` | `1.1.5-linux`      |                            22 / 21 | `0e1f3c40167a66c272774ccb366438593f492f47e96c80e93e72c5555ae7f6b3` | Todas las entradas declaradas coinciden; no se encontró discrepancia.                                                                                                                                                                              |
+| Distribución                                            | Versión declarada  | Archivos / entradas del manifiesto | SHA-256 canónico del árbol                                         | Resultado                                                                                                                                                                  |
+| ------------------------------------------------------- | ------------------ | ---------------------------------: | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Recolector/Recolector-v7.4.2`                          | `7.4.2-linux`      |                            29 / 28 | `4daaa16d278991f098b7f9c85361f7800193c4825e1f8cb6cb2c4b2870103c2e` | Todas las entradas declaradas coinciden; no se encontró discrepancia.                                                                                                      |
+| `Consolidador/Consolidador-v8.0.0`                      | `8.0.0-linux-rc12` |                          263 / 260 | `74d976c5290724ff52452d6abe117aa34876b1daab36d624c5e7adc353ab3ab7` | Todas las entradas declaradas coinciden. Dos archivos operativos no aparecen en `FILES.sha256`; Iteración 2 los excluye del runtime y exige configuración activa separada. |
+| `Integrador/Integrador-Incremental-Moodle-v1.1.5-linux` | `1.1.5-linux`      |                            22 / 21 | `0e1f3c40167a66c272774ccb366438593f492f47e96c80e93e72c5555ae7f6b3` | Todas las entradas declaradas coinciden; no se encontró discrepancia.                                                                                                      |
 
-El hash canónico del árbol se calculó sobre todos los archivos presentes, con rutas relativas normalizadas y ordenadas, incorporando el SHA-256 de cada contenido. Los manifiestos `FILES.sha256` se verificaron por separado. El Consolidador no declara en el manifiesto los dos archivos operativos citados; esto no se clasifica como corrupción, pero sí exige distinguir distribución inmutable de configuración mutable.
+El hash canónico del árbol se calculó sobre todos los archivos presentes, con rutas relativas normalizadas y ordenadas, incorporando el SHA-256 de cada contenido. Los manifiestos `FILES.sha256` se verificaron por separado. El Consolidador no declara en el manifiesto los dos archivos operativos citados; esto no se clasifica como corrupción, pero sí exige distinguir distribución inmutable de configuración mutable. La solución de Iteración 2 los excluye del runtime junto con las resoluciones del benchmark; no se copian como overlays activos.
 
 Al comenzar Iteración 2, el usuario incorporó a `BaseLine/` los árboles finales del Recolector 7.4.2 y Consolidador V8 RC12. Sus hashes canónicos coinciden con los verificados en la inspección inicial: `4daaa16d278991f098b7f9c85361f7800193c4825e1f8cb6cb2c4b2870103c2e` y `74d976c5290724ff52452d6abe117aa34876b1daab36d624c5e7adc353ab3ab7`. La BaseLine actual conserva también versiones históricas e Integrador 1.1.5: 423 archivos, SHA-256 canónico `d2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221`. La prueba de integridad se actualizó a esa línea base; no se modificó ningún archivo de herramienta.
 
@@ -1486,12 +1480,12 @@ Los adaptadores necesitan invocaciones acotadas con argumentos conocidos, config
 
 El modelo visual deberá reflejar las subetapas reales, métricas de workers y outcomes por curso. Debe incluir la revisión del inventario y pin de plugins, selección de tema global, asignaciones de tema por curso, faltantes de inventario y fallback. El cierre `COMPLETED` representa solo cierre académico y deja backup/publicación en operaciones separadas. Antes de permitir `preparar`, `publicar` o detener runtime, la UI requiere permisos, confirmación contextual, registro de actor/evidencia y comprobación del estado actual.
 
-Estas son entradas de diseño para las iteraciones 2–4; en esta rama y corte no se crean migraciones, adaptadores, jobs, comandos, conexiones ni cambios de interfaz. La vertical Fake 1A–1G se conserva.
+Estas observaciones fundamentan las iteraciones 2–4. La infraestructura de Iteración 2 añade migraciones, jobs y comandos locales registrados, mantiene la vertical Fake 1A–1G como predeterminada y no integra comandos reales de las distribuciones. Los adaptadores de Recolector, Consolidador e Integrador, las conexiones Moodle/AWS y los flujos de plugins, temas, identidades e intervenciones permanecen para las iteraciones funcionales posteriores.
 
 ## Cierre de este corte
 
 Se verificaron versiones, árboles y entradas de manifiesto; se registraron comandos, estados, capacidades, temas, plugins, intervenciones, detención e incompatibilidad del Integrador. Hay fixtures pequeños en las distribuciones, incluidos `Recolector/.../tests/fixtures/theme-inventory.json` y `Consolidador/.../tests/fixtures/v8-themes.json`, `v8-identities.json` y `rc12-shared-emails.json`. Solo se inspeccionó su disponibilidad; no se ejecutaron pruebas de las herramientas. La integridad de `BaseLine/` sí se comprobó con el test propio del repositorio.
 
-La Fase 0 queda ejecutada documentalmente y lista para revisión: este anexo conserva inventario y hallazgos; [`FASE-0-MATRIZ-CAPACIDADES.md`](FASE-0-MATRIZ-CAPACIDADES.md) registra los contratos y mapeos; [`contracts/tool-operation.v1.schema.json`](contracts/tool-operation.v1.schema.json) define el contrato común propuesto y sus ejemplos sintéticos.
+La Fase 0 queda como registro histórico del inventario y sus hallazgos; [`FASE-0-MATRIZ-CAPACIDADES.md`](FASE-0-MATRIZ-CAPACIDADES.md) añade el estado corregido de Iteración 2; [`contracts/tool-operation.v1.schema.json`](contracts/tool-operation.v1.schema.json) define el contrato común propuesto y sus ejemplos sintéticos. Los defectos, regresiones y limitaciones de ejecución se describen en [`ITERACION-2-IMPLEMENTACION.md`](ITERACION-2-IMPLEMENTACION.md).
 
-Según el gate de este plan, no se inicia Iteración 2A hasta que el inventario y el contrato queden revisados y aprobados. Las iteraciones 2–7 conservan su orden; el Integrador permanece aplazado y fuera del bloqueo del flujo principal.
+El inventario y el contrato no habilitan por sí solos las herramientas reales. La infraestructura corregida debe pasar las puertas de calidad sobre el SHA final publicado antes de salir de borrador. La integración funcional del Recolector corresponde a la Iteración 3; Consolidador V8 e Integrador siguen en sus iteraciones posteriores, y no se hace merge como parte de este cierre.

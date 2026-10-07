@@ -19,7 +19,7 @@ class ReconcileRemoteOperations extends Command
         $failed = 0;
 
         RemoteOperation::query()
-            ->whereIn('communication_state', ['CONNECTED', 'DEGRADED', 'RECONCILING'])
+            ->whereIn('communication_state', ['CONNECTED', 'DEGRADED', 'UNREACHABLE', 'RECONCILING'])
             ->whereNotNull('next_poll_at')
             ->where('next_poll_at', '<=', now()->utc())
             ->orderBy('id')

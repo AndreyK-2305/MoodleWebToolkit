@@ -22,6 +22,11 @@ class DeployToolDistribution
         $verified = $this->verifier->verify($distribution);
         $this->workspaces->prepare($execution);
         $slug = Str::slug($distribution->key);
+        $excluded = $this->deploymentExclusions($distribution, $verified);
+        $runtimeConfig = $this->workspaces->resolve($execution, 'state', 'runtime-config/'.$slug);
+        if (! is_dir($runtimeConfig) && ! mkdir($runtimeConfig, 0700, true) && ! is_dir($runtimeConfig)) {
+            throw new RuntimeException('No se pudo crear el área separada de configuración activa.');
+        }
 
         if ($slug === '' || strlen($slug) > 160) {
             throw new RuntimeException('La clave de distribución no puede convertirse en una ruta segura.');
@@ -32,8 +37,8 @@ class DeployToolDistribution
         $staging = $toolsRoot.DIRECTORY_SEPARATOR.'.staging-'.$slug.'-'.Str::uuid();
 
         if (file_exists($target) || is_link($target)) {
-            $evidence = $this->verifyDeployedTree($target, $verified, (string) $distribution->manifest_name);
-            $overlayEvidence = $this->deployMutableOverlays($execution, $distribution, $verified, $slug);
+            $evidence = $this->verifyDeployedTree($target, $verified, (string) $distribution->manifest_name, $excluded);
+            $overlayEvidence = $this->deployMutableOverlays($execution, $distribution, $verified, $slug, $excluded);
             $fullEvidence = $this->deploymentEvidence($distribution, $verified, $target, [...$evidence, 'workspace_overlays' => $overlayEvidence]);
             $this->workspaces->writeState($execution, 'distribution-'.$slug.'.json', $fullEvidence);
 
@@ -45,8 +50,11 @@ class DeployToolDistribution
         }
 
         try {
-            $files = $verified->manifestFiles;
+            $files = array_diff_key($verified->manifestFiles, array_fill_keys($excluded, true));
             $files[$distribution->manifest_name] = $verified->manifestSha256;
+            if (in_array($distribution->manifest_name, $excluded, true)) {
+                unset($files[$distribution->manifest_name]);
+            }
             ksort($files, SORT_STRING);
 
             foreach ($files as $relative => $expectedHash) {
@@ -56,9 +64,9 @@ class DeployToolDistribution
                 $this->copyVerifiedFile($source, $destination, $expectedHash);
             }
 
-            $overlayEvidence = $this->deployMutableOverlays($execution, $distribution, $verified, $slug);
+            $overlayEvidence = $this->deployMutableOverlays($execution, $distribution, $verified, $slug, $excluded);
 
-            $deployedEvidence = $this->verifyDeployedTree($staging, $verified, (string) $distribution->manifest_name);
+            $deployedEvidence = $this->verifyDeployedTree($staging, $verified, (string) $distribution->manifest_name, $excluded);
             $this->sealTree($staging);
 
             if (! rename($staging, $target)) {
@@ -77,7 +85,7 @@ class DeployToolDistribution
     }
 
     /** @return array<string, mixed> */
-    private function verifyDeployedTree(string $root, VerifiedDistribution $verified, string $manifestName): array
+    private function verifyDeployedTree(string $root, VerifiedDistribution $verified, string $manifestName, array $excluded = []): array
     {
         if (is_link($root) || ! is_dir($root)) {
             throw new RuntimeException('El destino del despliegue no es un directorio normal.');
@@ -85,6 +93,9 @@ class DeployToolDistribution
 
         $expected = $verified->manifestFiles;
         $expected[$manifestName] = $verified->manifestSha256;
+        foreach ($excluded as $path) {
+            unset($expected[$path]);
+        }
         ksort($expected, SORT_STRING);
         $actual = [];
         $iterator = new \RecursiveIteratorIterator(
@@ -163,10 +174,13 @@ class DeployToolDistribution
     }
 
     /** @return array<string, array{path: string, sha256: string}> */
-    private function deployMutableOverlays(Execution $execution, ToolDistribution $distribution, VerifiedDistribution $verified, string $slug): array
+    private function deployMutableOverlays(Execution $execution, ToolDistribution $distribution, VerifiedDistribution $verified, string $slug, array $excluded = []): array
     {
         $evidence = [];
         foreach ($verified->mutableFiles as $relative => $hash) {
+            if (in_array($relative, $excluded, true)) {
+                continue;
+            }
             $source = $verified->sourceRoot.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relative);
             $workspaceRelative = 'overlays/'.$slug.'/'.$relative;
             $target = $this->workspaces->resolve($execution, 'state', $workspaceRelative);
@@ -239,8 +253,27 @@ class DeployToolDistribution
             'deployed_path' => $target,
             ...$deployed,
             'excluded_mutable_overlays' => $verified->mutableFiles,
+            'excluded_from_runtime' => $distribution->deployment_exclusions ?? [],
+            'runtime_configuration_required' => str_starts_with((string) $distribution->key, 'moodle-consolidador-'),
+            'runtime_configuration_approved' => false,
             'verified_at' => now()->utc()->toIso8601String(),
         ];
+    }
+
+    /** @return list<string> */
+    private function deploymentExclusions(ToolDistribution $distribution, VerifiedDistribution $verified): array
+    {
+        $exclusions = array_values(array_unique(array_map('strval', $distribution->deployment_exclusions ?? [])));
+        foreach ($exclusions as $path) {
+            if (! array_key_exists($path, $verified->manifestFiles) && ! array_key_exists($path, $verified->mutableFiles)
+                && $path !== $distribution->manifest_name
+            ) {
+                throw new RuntimeException("La exclusión de despliegue [{$path}] no pertenece a la distribución verificada.");
+            }
+        }
+        sort($exclusions, SORT_STRING);
+
+        return $exclusions;
     }
 
     private function removeStaging(string $path): void

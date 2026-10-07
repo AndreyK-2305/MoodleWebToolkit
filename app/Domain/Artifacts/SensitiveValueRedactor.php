@@ -20,6 +20,10 @@ final class SensitiveValueRedactor
         'resumetoken',
         'oauthtoken',
         'clientsecret',
+        'credential',
+        'credentials',
+        'accesskey',
+        'awsaccesskeyid',
         'apikey',
         'awssecretaccesskey',
         'secretaccesskey',
@@ -103,11 +107,16 @@ final class SensitiveValueRedactor
         ) ?? $value;
     }
 
+    public function isSensitiveKeyName(string $key): bool
+    {
+        return $this->isSensitiveKey($key);
+    }
+
     private function isSensitiveKey(string $key): bool
     {
         $normalized = strtolower(preg_replace('/[^A-Za-z0-9]+/', '', $key) ?? $key);
 
         return in_array($normalized, self::SENSITIVE_KEYS, true)
-            || preg_match('/(?:password|passwd|passphrase|token|secret|privatekey|apikey)$/D', $normalized) === 1;
+            || preg_match('/(?:password|passwd|passphrase|token|secret|privatekey|apikey|credential|credentials|accesskey)$/D', $normalized) === 1;
     }
 }

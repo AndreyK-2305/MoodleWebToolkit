@@ -3,6 +3,8 @@
 namespace Tests\Feature\Tools;
 
 use App\Domain\Tools\DeployToolDistribution;
+use App\Domain\Workspaces\ApproveExecutionCapacity;
+use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Models\ToolDistribution;
 use Database\Seeders\ToolCatalogSeeder;
 use Illuminate\Support\Facades\File;
@@ -39,6 +41,7 @@ class ToolDistributionDeploymentTest extends DomainTestCase
     public function test_recolector_is_copied_to_an_isolated_workspace_and_reverified(): void
     {
         $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
         $distribution = ToolDistribution::query()->where('key', 'moodle-recolector-7.4.2-linux-tree')->firstOrFail();
         $result = app(DeployToolDistribution::class)->deploy($execution, $distribution);
 
@@ -55,18 +58,33 @@ class ToolDistributionDeploymentTest extends DomainTestCase
         $this->assertSame($result['evidence']['deployed_tree_sha256'], $again['evidence']['deployed_tree_sha256']);
     }
 
-    public function test_v8_mutable_overlays_are_kept_out_of_the_sealed_distribution(): void
+    public function test_v8_benchmark_and_operational_configuration_is_not_copied_into_runtime(): void
     {
         $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
         $distribution = ToolDistribution::query()->where('key', 'moodle-consolidador-8.0.0-linux-rc12-tree')->firstOrFail();
         $result = app(DeployToolDistribution::class)->deploy($execution, $distribution);
 
         $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config/phase5-pilot-package.json');
         $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config/phase6-batch.json');
-        $this->assertArrayHasKey('config/phase5-pilot-package.json', $result['evidence']['workspace_overlays']);
-        $overlay = $result['evidence']['workspace_overlays']['config/phase5-pilot-package.json'];
-        $this->assertFileExists($overlay['path']);
-        $this->assertSame($overlay['source_sha256'], $overlay['workspace_sha256']);
-        $this->assertSame(261, $result['evidence']['deployed_file_count']);
+        $this->assertSame([], $result['evidence']['workspace_overlays']);
+        $this->assertSame(250, $result['evidence']['deployed_file_count']);
+        $activeConfig = app(ExecutionWorkspaceManager::class)->resolve(
+            $execution,
+            'state',
+            'runtime-config/'.Str::slug($distribution->key),
+        );
+        $this->assertDirectoryExists($activeConfig);
+        $this->assertSame([], File::allFiles($activeConfig));
+        $contents = implode("\n", array_map(fn ($file): string => File::get($file->getPathname()), File::allFiles($activeConfig)));
+        foreach (['pregrado-2026-03-04-directo', 'posgrados-2025-05-02-directo', 'benchmark-operator'] as $benchmarkValue) {
+            $this->assertStringNotContainsString($benchmarkValue, $contents);
+        }
+        $this->assertFalse($result['evidence']['runtime_configuration_approved']);
+    }
+
+    private function approveCapacity(\App\Models\Execution $execution): void
+    {
+        app(ApproveExecutionCapacity::class)->approve($execution, 512 * 1024 * 1024, 10, $execution->creator);
     }
 }

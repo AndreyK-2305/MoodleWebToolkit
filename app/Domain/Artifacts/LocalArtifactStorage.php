@@ -227,7 +227,7 @@ class LocalArtifactStorage implements ArtifactReferenceStorage
         $this->storage()->delete($path);
     }
 
-    public function referenceExisting(string $sourceAbsolutePath, string $targetPath, ?string $expectedSha256 = null): StoredArtifact
+    public function referenceExisting(string $sourceAbsolutePath, string $targetPath, ?string $expectedSha256 = null, ?int $expectedSize = null): StoredArtifact
     {
         $targetPath = $this->safePath($targetPath);
         $this->rejectSymbolicLinks($targetPath);
@@ -263,14 +263,21 @@ class LocalArtifactStorage implements ArtifactReferenceStorage
         }
 
         $this->rejectAbsoluteSymlinks($storageRoot, $source);
+        $before = @stat($source);
         $size = filesize($source);
         $checksum = hash_file('sha256', $source);
+        $afterHash = @stat($source);
 
-        if (! is_int($size) || ! is_string($checksum)) {
+        if (! is_array($before) || ! is_array($afterHash) || ! is_int($size) || ! is_string($checksum)
+            || $before['dev'] !== $afterHash['dev'] || $before['ino'] !== $afterHash['ino']
+            || $before['size'] !== $afterHash['size'] || $before['mtime'] !== $afterHash['mtime']
+        ) {
             throw new RuntimeException('No se pudo verificar el archivo que se desea referenciar.');
         }
 
-        if ($expectedSha256 !== null && ! hash_equals(strtolower($expectedSha256), $checksum)) {
+        if (($expectedSha256 !== null && ! hash_equals(strtolower($expectedSha256), $checksum))
+            || ($expectedSize !== null && $size !== $expectedSize)
+        ) {
             throw new RuntimeException('El hash esperado del archivo de referencia no coincide.');
         }
 
@@ -285,12 +292,27 @@ class LocalArtifactStorage implements ArtifactReferenceStorage
             throw new RuntimeException('No se pudo crear la referencia sin duplicar el archivo.');
         }
 
+        if (fileinode($source) !== fileinode($target)) {
+            @unlink($target);
+            throw new RuntimeException('El enlace creado no comparte la identidad del archivo fuente.');
+        }
+
+        clearstatcache(true, $target);
+        clearstatcache(true, $source);
+        $linkedStat = @stat($target);
+        $sourceAfterLink = @stat($source);
         $linkedChecksum = hash_file('sha256', $target);
-        if (! is_string($linkedChecksum) || ! hash_equals($checksum, $linkedChecksum)) {
+        if (! is_array($linkedStat) || ! is_array($sourceAfterLink)
+            || $linkedStat['dev'] !== $before['dev'] || $linkedStat['ino'] !== $before['ino']
+            || $sourceAfterLink['dev'] !== $before['dev'] || $sourceAfterLink['ino'] !== $before['ino']
+            || $sourceAfterLink['size'] !== $before['size'] || $sourceAfterLink['mtime'] !== $before['mtime']
+            || $linkedStat['size'] !== $size || ! is_string($linkedChecksum) || ! hash_equals($checksum, $linkedChecksum)
+        ) {
             @unlink($target);
             throw new RuntimeException('El archivo cambió mientras se creaba su referencia.');
         }
 
+        // A hard link shares the source inode, so this also makes the producer's file read-only.
         @chmod($target, 0440);
 
         return new StoredArtifact($this->disk, $targetPath, $size, $checksum);

@@ -196,6 +196,12 @@ class Execution extends Model
         return $this->hasOne(ExecutionWorkspace::class);
     }
 
+    /** @return HasOne<ExecutionCapacityApproval, $this> */
+    public function capacityApproval(): HasOne
+    {
+        return $this->hasOne(ExecutionCapacityApproval::class);
+    }
+
     /** @return HasMany<RemoteOperation, $this> */
     public function remoteOperations(): HasMany
     {

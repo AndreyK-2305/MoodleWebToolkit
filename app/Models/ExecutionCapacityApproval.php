@@ -1,0 +1,47 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use LogicException;
+
+class ExecutionCapacityApproval extends Model
+{
+    public const UPDATED_AT = null;
+
+    protected $fillable = [
+        'execution_id', 'estimate_bytes', 'available_bytes_observed', 'approved_quota_bytes',
+        'margin_percent', 'approved_by', 'approved_at', 'fingerprint', 'evidence',
+    ];
+
+    protected static function booted(): void
+    {
+        static::updating(fn (): never => throw new LogicException('La aprobación de capacidad es inmutable.'));
+        static::deleting(fn (): never => throw new LogicException('La aprobación de capacidad es inmutable.'));
+    }
+
+    /** @return BelongsTo<Execution, $this> */
+    public function execution(): BelongsTo
+    {
+        return $this->belongsTo(Execution::class);
+    }
+
+    /** @return BelongsTo<User, $this> */
+    public function approver(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    protected function casts(): array
+    {
+        return [
+            'estimate_bytes' => 'integer',
+            'available_bytes_observed' => 'integer',
+            'approved_quota_bytes' => 'integer',
+            'margin_percent' => 'integer',
+            'approved_at' => 'immutable_datetime',
+            'evidence' => 'array',
+        ];
+    }
+}

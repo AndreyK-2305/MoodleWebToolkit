@@ -19,7 +19,7 @@ class RunRegisteredRemoteOperation implements ShouldQueue, ShouldBeEncrypted
 
     public int $tries = 1;
 
-    public int $timeout = 86400;
+    public int $timeout = 120;
 
     public bool $failOnTimeout = true;
 

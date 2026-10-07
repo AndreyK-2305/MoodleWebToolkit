@@ -26,6 +26,7 @@ class ExecutionEvent extends Model
 
     protected $fillable = [
         'execution_id',
+        'remote_operation_id',
         'sequence',
         'type',
         'step_key',

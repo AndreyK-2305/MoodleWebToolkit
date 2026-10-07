@@ -16,6 +16,8 @@ use App\Models\ExecutionCommand;
 use App\Models\ExecutionLog;
 use App\Models\RemoteOperation;
 use App\Models\ToolDistribution;
+use App\Models\ExecutionCapacityApproval;
+use App\Models\ExecutionRuntimeConfiguration;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use RuntimeException;
 use SplFileInfo;
@@ -62,7 +64,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
 
     public function start(Execution $execution, string $idempotencyKey, string $commandKey, array $parameters = []): RemoteOperation
     {
-        $binding = $execution->toolBinding()->with(['toolVersion', 'distribution'])->first();
+        $binding = $execution->toolBinding()->with(['toolVersion.tool', 'distribution'])->first();
         if ($binding === null) {
             throw new ToolOperationBlocked('La ejecución no tiene un binding inmutable de versión y distribución.');
         }
@@ -73,6 +75,19 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
             || ! hash_equals($binding->distribution_sha256, $binding->distribution->distribution_sha256)
         ) {
             throw new ToolOperationBlocked('La distribución ya no coincide con el hash fijado al crear la ejecución.');
+        }
+
+        $capacity = ExecutionCapacityApproval::query()->where('execution_id', $execution->getKey())->find($binding->capacity_approval_id);
+        if ($capacity === null || (int) $capacity->approved_quota_bytes !== (int) $binding->approved_quota_bytes) {
+            throw new ToolOperationBlocked('La cuota de la ejecución no coincide con una aprobación de capacidad vigente.');
+        }
+        $available = @disk_free_space((string) config('toolkit.workspaces.root'));
+        if ((! is_float($available) && ! is_int($available)) || $available < $capacity->approved_quota_bytes) {
+            throw new ToolOperationBlocked('El espacio disponible ya no cubre la cuota aprobada para esta ejecución.');
+        }
+
+        if ($binding->toolVersion->tool->key === 'moodle-consolidador') {
+            $this->assertApprovedV8RuntimeConfiguration($execution, $binding);
         }
 
         $this->gate->assertRunnable($binding->toolVersion, $binding->workflow_key);
@@ -124,9 +139,9 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         return $this->reconcile($operation);
     }
 
-    public function readEvents(RemoteOperation $operation): array
+    public function readEvents(RemoteOperation $operation, int $afterSequence = 0): array
     {
-        return $operation->execution->events()->get()->map(fn ($event): array => [
+        return $operation->execution->events()->where('remote_operation_id', $operation->getKey())->where('sequence', '>', max(0, $afterSequence))->get()->map(fn ($event): array => [
             'sequence' => $event->sequence,
             'type' => $event->type,
             'step_key' => $event->step_key,
@@ -138,12 +153,14 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         ])->all();
     }
 
-    public function readLogs(RemoteOperation $operation): array
+    public function readLogs(RemoteOperation $operation, int $afterId = 0): array
     {
         $redactor = app(\App\Domain\Artifacts\SensitiveValueRedactor::class);
 
         return ExecutionLog::query()
             ->where('execution_id', $operation->execution_id)
+            ->where('remote_operation_id', $operation->getKey())
+            ->where('id', '>', max(0, $afterId))
             ->orderBy('id')
             ->get()
             ->map(fn (ExecutionLog $log): array => [
@@ -172,8 +189,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
 
     public function stopRuntime(RemoteOperation $operation): RemoteOperation
     {
-        // The local provider owns only the registered process represented by this operation.
-        return $this->cancel($operation);
+        throw new ToolOperationBlocked('La parada de un runtime completo no está implementada. Use la cancelación granular de esta operación.');
     }
 
     /** @return list<Artifact> */
@@ -185,7 +201,25 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
 
         $execution = $operation->execution;
         $root = $this->workspaces->resolve($execution, 'output');
-        $artifacts = [];
+        $descriptors = $operation->evidence['artifact_descriptors'] ?? null;
+        if (! is_array($descriptors) || ! array_is_list($descriptors)) {
+            throw new RuntimeException('La operación no tiene descriptores declarativos de artefactos.');
+        }
+        $declared = [];
+        foreach ($descriptors as $descriptor) {
+            if (! is_array($descriptor) || ! is_string($descriptor['relative_path'] ?? null)
+                || ! is_string($descriptor['name'] ?? null) || ! is_string($descriptor['category'] ?? null)
+                || ! is_array($descriptor['mime_types'] ?? null) || ! is_int($descriptor['max_size_bytes'] ?? null)
+            ) {
+                throw new RuntimeException('El contrato de descriptor de artefacto guardado no es válido.');
+            }
+            $relative = str_replace('\\', '/', $descriptor['relative_path']);
+            if ($relative === '' || str_starts_with($relative, '/') || preg_match('#(^|/)\.\.?(/|$)#', $relative) === 1 || isset($declared[$relative])) {
+                throw new RuntimeException('Un descriptor de artefacto contiene una ruta duplicada o insegura.');
+            }
+            $declared[$relative] = $descriptor;
+        }
+        $actual = [];
         $iterator = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
             \RecursiveIteratorIterator::SELF_FIRST,
@@ -201,23 +235,49 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
             if (! $item->isFile()) {
                 continue;
             }
+            $relative = str_replace('\\', '/', substr($item->getPathname(), strlen($root) + 1));
+            $actual[$relative] = $item->getPathname();
+        }
+        ksort($actual, SORT_STRING);
+        $requiredPaths = array_keys(array_filter($declared, fn (array $descriptor): bool => ($descriptor['required'] ?? true) === true));
+        sort($requiredPaths, SORT_STRING);
+        if (array_diff(array_keys($actual), array_keys($declared)) !== []
+            || array_diff($requiredPaths, array_keys($actual)) !== []
+        ) {
+            throw new RuntimeException('La salida contiene archivos no declarados o falta un artefacto requerido.');
+        }
 
-            $name = $item->getFilename();
-            $extension = strtolower($item->getExtension());
-            $category = match (true) {
-                $extension === 'mbz' => ArtifactCategory::COURSE_PACKAGE,
-                $extension === 'zip' => ArtifactCategory::SOURCE_PACKAGE,
-                $extension === 'log' => ArtifactCategory::LOG,
-                str_contains(strtolower($name), 'manifest') => ArtifactCategory::MANIFEST,
-                in_array($extension, ['json', 'csv', 'html', 'pdf'], true) => ArtifactCategory::REPORT,
-                default => ArtifactCategory::TECHNICAL_EVIDENCE,
-            };
-            $artifacts[] = $this->artifacts->register($execution, $item->getPathname(), $category, $name, [
+        $artifacts = [];
+        foreach ($actual as $relative => $path) {
+            $descriptor = $declared[$relative];
+            $sizeBefore = filesize($path);
+            $statBefore = @stat($path);
+            $hash = hash_file('sha256', $path);
+            $mime = function_exists('mime_content_type') ? (@mime_content_type($path) ?: 'application/octet-stream') : 'application/octet-stream';
+            clearstatcache(true, $path);
+            $sizeAfter = filesize($path);
+            $statAfter = @stat($path);
+            if (! is_int($sizeBefore) || $sizeBefore < 0 || $sizeBefore > $descriptor['max_size_bytes']
+                || $sizeAfter !== $sizeBefore || ! is_array($statBefore) || ! is_array($statAfter)
+                || $statBefore['dev'] !== $statAfter['dev'] || $statBefore['ino'] !== $statAfter['ino']
+                || $statBefore['size'] !== $statAfter['size'] || $statBefore['mtime'] !== $statAfter['mtime']
+                || ! is_string($hash) || ! in_array($mime, $descriptor['mime_types'], true)
+                || (isset($descriptor['expected_sha256']) && ! hash_equals($descriptor['expected_sha256'], $hash))
+            ) {
+                throw new RuntimeException("El artefacto declarado [{$relative}] no pasó validación de tamaño, hash estable o MIME.");
+            }
+            $category = ArtifactCategory::tryFrom($descriptor['category']);
+            if ($category === null) {
+                throw new RuntimeException('La categoría del descriptor no está permitida.');
+            }
+            $artifacts[] = $this->artifacts->register($execution, $path, $category, $descriptor['name'], [
                 'remote_operation_uuid' => $operation->operation_uuid,
                 'command_key' => $operation->command_key,
-                'source_relative_path' => str_replace('\\', '/', substr($item->getPathname(), strlen($root) + 1)),
+                'source_relative_path' => $relative,
+                'sensitivity' => $descriptor['sensitivity'] ?? 'INTERNAL',
+                'declared_mime_type' => $mime,
                 'storage_strategy' => 'same-filesystem-hard-link',
-            ]);
+            ], $hash, $sizeBefore, (int) $operation->getKey());
         }
 
         return $artifacts;
@@ -235,5 +295,35 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
     public function cleanup(Execution $execution): void
     {
         $this->workspaces->cleanup($execution);
+    }
+
+    private function assertApprovedV8RuntimeConfiguration(Execution $execution, \App\Models\ExecutionToolBinding $binding): void
+    {
+        if ($binding->runtime_configuration_id === null) {
+            throw new ToolOperationBlocked('V8 no puede iniciar sin configuración runtime generada y aprobada.');
+        }
+        $configuration = ExecutionRuntimeConfiguration::query()
+            ->whereKey($binding->runtime_configuration_id)
+            ->where('execution_id', $execution->getKey())
+            ->where('tool_version_id', $binding->tool_version_id)
+            ->where('approval_state', 'APPROVED')
+            ->first();
+        if ($configuration === null) {
+            throw new ToolOperationBlocked('La aprobación de configuración runtime de V8 no existe o fue revocada.');
+        }
+        $path = $this->workspaces->resolve($execution, 'state', $configuration->relative_path);
+        if (is_link($path) || ! is_file($path)) {
+            throw new ToolOperationBlocked('No existe el archivo de configuración activa aprobado de V8.');
+        }
+        $contents = file_get_contents($path);
+        $hash = hash_file('sha256', $path);
+        if (! is_string($contents) || ! is_string($hash) || ! hash_equals($configuration->content_sha256, $hash)) {
+            throw new ToolOperationBlocked('La configuración activa cambió después de su aprobación.');
+        }
+        foreach (['pregrado-2026-03-04-directo', 'posgrados-2025-05-02-directo', 'benchmark-operator'] as $forbidden) {
+            if (str_contains($contents, $forbidden)) {
+                throw new ToolOperationBlocked('La configuración activa de V8 contiene una decisión del benchmark.');
+            }
+        }
     }
 }

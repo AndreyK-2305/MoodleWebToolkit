@@ -13,6 +13,14 @@ Fecha de corte: 2026-10-07. La matriz registra capacidades que aparecen en el c�
 
 Durante Fase 0, los árboles fuente definitivos estaban fuera del repositorio web. Al comenzar Iteración 2, los paquetes Recolector 7.4.2 y Consolidador V8 RC12 se incorporaron a `BaseLine/` y conservaron exactamente sus hashes de árbol. No se encontró un ZIP original; la identidad disponible es la del árbol. En V8, `config/phase5-pilot-package.json` y `config/phase6-batch.json` no están declarados en `FILES.sha256`; son configuración operativa mutable y se deben separar de la copia inmutable de distribución.
 
+## Estado corregido de Iteración 2
+
+La observación anterior describe el inventario de Fase 0. La infraestructura corregida mantiene todo `BaseLine/` intacto y excluye del runtime V8 tanto esos dos archivos como las demás configuraciones operativas, las resoluciones del benchmark, el catálogo de compatibilidad y `FILES.sha256`. El runtime requiere una configuración separada, generada y aprobada por ejecución; todavía no se genera la configuración completa ni se habilita V8.
+
+El catálogo continúa en modo cerrado: Recolector `LABORATORY`, Consolidador `BLOCKED`, Integrador `INCOMPATIBLE`, versiones deshabilitadas, feature flags reales en `false` y registro de comandos reales vacío. La plataforma conserva Fake como proveedor predeterminado. `SourcePackage` y los snapshots permiten el flujo futuro entre ejecuciones del mismo proyecto, pero no interpretan el ZIP. El runner local solo acepta el registro cerrado, conserva evidencia de proceso y resultado, y no garantiza supervivencia al reinicio completo del contenedor. Sin `exit.json` válido ni proceso identificable, el estado queda desconocido para reconciliación manual.
+
+La cuota queda aprobada por ejecución y se fija en el binding. Las comprobaciones de escritura de la aplicación se serializan; la medición de archivos escritos directamente por una herramienta es periódica y no constituye una cuota dura del sistema operativo. La BaseLine de referencia sigue siendo 423 archivos con SHA-256 canónico `d2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221`.
+
 ## Matriz de capacidades
 
 | Capacidad                      | Recolector 7.4.2                                                                                                                                                                                | Consolidador V8 RC12                                                                                                                                                                                                                | Integrador 1.1.5                                                                                                                 | MoodleWebToolkit actual                                                                                                            |

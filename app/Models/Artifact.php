@@ -12,6 +12,7 @@ class Artifact extends Model
 
     protected $fillable = [
         'execution_id',
+        'remote_operation_id',
         'type',
         'disk',
         'path',

@@ -6,6 +6,7 @@ use App\Enums\WorkspaceStatus;
 use App\Models\Artifact;
 use App\Models\Execution;
 use App\Models\ExecutionWorkspace;
+use App\Models\ExecutionCapacityApproval;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use RuntimeException;
@@ -24,6 +25,22 @@ class ExecutionWorkspaceManager
             throw new RuntimeException('El workspace de esta ejecución ya fue limpiado y no se puede reabrir.');
         }
         $root = rtrim((string) config('toolkit.workspaces.root'), DIRECTORY_SEPARATOR);
+        $capacity = ExecutionCapacityApproval::query()->where('execution_id', $execution->getKey())->first();
+        $bindingQuota = $execution->toolBinding()->value('approved_quota_bytes');
+        $approvedQuota = $bindingQuota !== null ? (int) $bindingQuota : $capacity?->approved_quota_bytes;
+        if ($quotaBytes !== null && ! app()->environment('testing')) {
+            throw new RuntimeException('El runtime no acepta cuotas arbitrarias; requiere una aprobación de capacidad persistida.');
+        }
+        if ($approvedQuota === null && ! (app()->environment('testing') && $existingWorkspace !== null)) {
+            throw new RuntimeException('No se prepara un workspace sin estimación y aprobación explícita de capacidad.');
+        }
+        if ($capacity !== null && $bindingQuota !== null && (int) $capacity->approved_quota_bytes !== (int) $bindingQuota) {
+            throw new RuntimeException('La cuota del binding no coincide con la aprobación inmutable de capacidad.');
+        }
+        $effectiveQuota = $quotaBytes ?? $approvedQuota ?? $existingWorkspace?->quota_bytes;
+        if ($existingWorkspace !== null && $approvedQuota !== null && (int) $existingWorkspace->quota_bytes !== (int) $approvedQuota) {
+            throw new RuntimeException('La cuota persistida del workspace ya no coincide con la aprobación fijada.');
+        }
         $this->ensureDirectory($root);
         $workspacePath = $root.DIRECTORY_SEPARATOR.$execution->project->uuid.DIRECTORY_SEPARATOR.$execution->uuid;
         $this->ensureDirectory($root.DIRECTORY_SEPARATOR.$execution->project->uuid);
@@ -38,7 +55,7 @@ class ExecutionWorkspaceManager
             [
                 'uuid' => (string) Str::uuid(),
                 'relative_path' => 'workspaces/'.$relative,
-                'quota_bytes' => max(1, $quotaBytes ?? (int) config('toolkit.workspaces.quota_bytes', 20 * 1024 * 1024 * 1024)),
+                'quota_bytes' => max(1, (int) $effectiveQuota),
                 'usage_bytes' => 0,
                 'status' => WorkspaceStatus::READY,
             ],
@@ -87,25 +104,110 @@ class ExecutionWorkspaceManager
             throw new InvalidArgumentException('El nombre del archivo de estado no es válido.');
         }
 
-        $target = $this->resolve($execution, 'state', $name);
         $contents = json_encode($state, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $this->assertWithinQuota($execution, strlen($contents));
-        $temporary = $target.'.tmp-'.Str::uuid();
+        return $this->writeAtomic($execution, 'state', $name, $contents);
+    }
 
-        if (file_put_contents($temporary, $contents, LOCK_EX) === false) {
-            throw new RuntimeException('No se pudo escribir el estado del workspace.');
+    public function writeOperationEvidence(Execution $execution, string $operationUuid, string $name, array $state): string
+    {
+        if (preg_match('/^[a-f0-9-]{36}$/Di', $operationUuid) !== 1
+            || ! in_array($name, ['launch.json', 'heartbeat.json', 'exit.json', 'cancel.json'], true)
+        ) {
+            throw new InvalidArgumentException('La identidad del archivo de evidencia de operación no es válida.');
+        }
+        $contents = json_encode($state, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $path = $this->operationEvidencePath($execution, $operationUuid, $name);
+        if (in_array($name, ['launch.json', 'exit.json', 'cancel.json'], true) && is_file($path)) {
+            $existing = json_decode((string) file_get_contents($path), true);
+            if (is_array($existing) && $existing === $state) {
+                return $path;
+            }
+            throw new RuntimeException("La evidencia inmutable [{$name}] ya existe y no se reemplazará.");
         }
 
-        @chmod($temporary, 0600);
+        return $this->writeAtomic($execution, 'state', 'remote-operations/'.$operationUuid.'/'.$name, $contents);
+    }
 
-        if (! rename($temporary, $target)) {
-            @unlink($temporary);
-            throw new RuntimeException('No se pudo actualizar el estado del workspace de forma atómica.');
+    public function operationEvidencePath(Execution $execution, string $operationUuid, string $name): string
+    {
+        if (preg_match('/^[a-f0-9-]{36}$/Di', $operationUuid) !== 1
+            || ! in_array($name, ['launch.json', 'heartbeat.json', 'exit.json', 'cancel.json', 'request.json'], true)
+        ) {
+            throw new InvalidArgumentException('La ruta de evidencia de operación no es válida.');
         }
+        $path = $this->resolve($execution, 'state', 'remote-operations/'.$operationUuid.'/'.$name);
+        $this->ensureDirectory(dirname($path));
 
-        $this->measure($execution);
+        return $path;
+    }
 
-        return $target;
+    public function operationLogPath(Execution $execution, string $operationUuid, string $stream): string
+    {
+        if (preg_match('/^[a-f0-9-]{36}$/Di', $operationUuid) !== 1 || ! in_array($stream, ['stdout', 'stderr'], true)) {
+            throw new InvalidArgumentException('La ruta del log de operación no es válida.');
+        }
+        $path = $this->resolve($execution, 'logs', 'remote-operations/'.$operationUuid.'/'.$stream.'.log');
+        $this->ensureDirectory(dirname($path));
+
+        return $path;
+    }
+
+    public function writeAtomic(Execution $execution, string $area, string $relativePath, string $contents): string
+    {
+        $lock = $this->acquireCapacityLock($execution);
+        $temporary = null;
+        $handle = null;
+        try {
+            $target = $this->resolve($execution, $area, $relativePath);
+            $this->ensureDirectory(dirname($target));
+            $this->assertWithinQuota($execution, strlen($contents));
+            $temporary = $target.'.tmp-'.Str::uuid();
+            $handle = fopen($temporary, 'xb');
+            if ($handle === false) {
+                throw new RuntimeException('No se pudo abrir un archivo temporal privado de estado.');
+            }
+            $offset = 0;
+            while ($offset < strlen($contents)) {
+                $written = fwrite($handle, substr($contents, $offset));
+                if ($written === false || $written === 0) {
+                    throw new RuntimeException('No se pudo escribir el estado del workspace.');
+                }
+                $offset += $written;
+            }
+            if (! fflush($handle) || (function_exists('fsync') && ! fsync($handle))) {
+                throw new RuntimeException('No se pudo sincronizar el estado del workspace.');
+            }
+            fclose($handle);
+            $handle = null;
+
+            @chmod($temporary, 0600);
+
+            if (! rename($temporary, $target)) {
+                throw new RuntimeException('No se pudo actualizar el estado del workspace de forma atómica.');
+            }
+            $temporary = null;
+
+            $directoryHandle = @fopen(dirname($target), 'r');
+            if (is_resource($directoryHandle)) {
+                if (function_exists('fsync')) {
+                    @fsync($directoryHandle);
+                }
+                fclose($directoryHandle);
+            }
+
+            $this->measure($execution);
+
+            return $target;
+        } finally {
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
+            if (is_string($temporary) && file_exists($temporary)) {
+                @unlink($temporary);
+            }
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     public function measure(Execution $execution): int
@@ -165,6 +267,30 @@ class ExecutionWorkspaceManager
         }
 
         @chmod($path, 0700);
+    }
+
+    /** @return resource */
+    private function acquireCapacityLock(Execution $execution)
+    {
+        $root = rtrim((string) config('toolkit.workspaces.root'), DIRECTORY_SEPARATOR);
+        $lockDirectory = $root.DIRECTORY_SEPARATOR.'.locks';
+        $this->ensureDirectory($root);
+        $this->ensureDirectory($lockDirectory);
+        $lockPath = $lockDirectory.DIRECTORY_SEPARATOR.$execution->uuid.'.lock';
+        if (is_link($lockPath)) {
+            throw new RuntimeException('El lock de cuota del workspace no puede ser un enlace simbólico.');
+        }
+        $lock = fopen($lockPath, 'c+b');
+        if ($lock === false) {
+            throw new RuntimeException('No se pudo abrir el lock de capacidad del workspace.');
+        }
+        @chmod($lockPath, 0600);
+        if (! flock($lock, LOCK_EX)) {
+            fclose($lock);
+            throw new RuntimeException('No se pudo serializar la escritura contra la cuota del workspace.');
+        }
+
+        return $lock;
     }
 
     private function rejectSymlinkPath(string $root, string $target): void

@@ -24,10 +24,10 @@ interface ExecutionRuntimeProvider extends ExecutionProvider
     public function poll(RemoteOperation $operation): RemoteOperation;
 
     /** @return list<array<string, mixed>> */
-    public function readEvents(RemoteOperation $operation): array;
+    public function readEvents(RemoteOperation $operation, int $afterSequence = 0): array;
 
     /** @return list<array<string, mixed>> */
-    public function readLogs(RemoteOperation $operation): array;
+    public function readLogs(RemoteOperation $operation, int $afterId = 0): array;
 
     public function heartbeat(RemoteOperation $operation): RemoteOperation;
 

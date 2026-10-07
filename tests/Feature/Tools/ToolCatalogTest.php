@@ -8,6 +8,7 @@ use App\Enums\ToolCompatibilityStatus;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Tool;
 use App\Models\ToolDistribution;
+use App\Domain\Workspaces\ApproveExecutionCapacity;
 use Database\Seeders\ToolCatalogSeeder;
 use RuntimeException;
 use Tests\Feature\Domain\DomainTestCase;
@@ -43,7 +44,7 @@ class ToolCatalogTest extends DomainTestCase
         app(ToolDistributionVerifier::class)->verify($distribution);
     }
 
-    public function test_execution_binding_is_pinned_once_and_secret_values_are_redacted(): void
+    public function test_execution_binding_is_pinned_once_and_inline_secrets_are_blocked(): void
     {
         $this->seed(ToolCatalogSeeder::class);
         $version = Tool::query()->where('key', 'moodle-recolector')->firstOrFail()->versions()->where('version', '7.4.2-linux')->firstOrFail();
@@ -52,13 +53,14 @@ class ToolCatalogTest extends DomainTestCase
         $distribution = $version->distributions()->firstOrFail();
         $execution = $this->execution($this->project());
         $binder = app(BindExecutionTool::class);
-        $configuration = ['workers' => 2, 'smtp_password' => 'never-store-this-secret'];
+        $configuration = ['workers' => 2];
+        app(ApproveExecutionCapacity::class)->approve($execution, 16 * 1024 * 1024, 10, $execution->creator);
 
         $binding = $binder->bind($execution, $version, $distribution, 'moodle.source.export', 'recolector-742', 'local-registered-process', $configuration);
-        $sameBinding = $binder->bind($execution, $version, $distribution, 'moodle.source.export', 'recolector-742', 'local-registered-process', ['smtp_password' => 'never-store-this-secret', 'workers' => 2]);
+        $sameBinding = $binder->bind($execution, $version, $distribution, 'moodle.source.export', 'recolector-742', 'local-registered-process', ['workers' => 2]);
 
         $this->assertSame($binding->getKey(), $sameBinding->getKey());
-        $this->assertSame('[REDACTED]', $binding->configuration_snapshot['smtp_password']);
+        $this->assertSame(['workers' => 2], $binding->configuration_snapshot);
         $this->assertSame($distribution->distribution_sha256, $binding->distribution_sha256);
 
         try {
@@ -67,6 +69,35 @@ class ToolCatalogTest extends DomainTestCase
         } catch (ToolOperationBlocked) {
             $this->assertSame(1, $execution->toolBinding()->count());
         }
+
+        try {
+            $binder->bind($execution, $version, $distribution, 'moodle.source.export', 'recolector-742', 'local-registered-process', ['smtp_password' => 'never-store-this-secret']);
+            $this->fail('No existe almacén de secretos: la configuración en claro debe bloquearse.');
+        } catch (ToolOperationBlocked) {
+            $this->assertStringNotContainsString('never-store-this-secret', (string) json_encode($binding->fresh()->configuration_snapshot));
+        }
+
+        try {
+            $binder->bind($execution, $version, $distribution, 'moodle.source.export', 'recolector-742', 'local-registered-process', [
+                'endpoint' => 'https://operator:private-value@example.test',
+            ]);
+            $this->fail('Credentials embedded in a generic URL must not enter the immutable configuration snapshot.');
+        } catch (ToolOperationBlocked) {
+            $this->assertStringNotContainsString('private-value', (string) json_encode($binding->fresh()->configuration_snapshot));
+        }
+    }
+
+    public function test_catalog_sync_is_idempotent_and_keeps_feature_flags_closed(): void
+    {
+        $this->seed(ToolCatalogSeeder::class);
+        $firstCounts = [Tool::query()->count(), ToolDistribution::query()->count()];
+        $this->seed(ToolCatalogSeeder::class);
+
+        $this->assertSame($firstCounts, [Tool::query()->count(), ToolDistribution::query()->count()]);
+        $this->assertSame(3, Tool::query()->count());
+        $this->assertFalse((bool) config('toolkit.features.recolector_742.enabled'));
+        $this->assertFalse((bool) config('toolkit.features.consolidador_800.enabled'));
+        $this->assertFalse((bool) config('toolkit.features.integrador_115.enabled'));
     }
 
     public function test_real_tool_execution_is_blocked_until_both_catalog_and_feature_flag_allow_it(): void

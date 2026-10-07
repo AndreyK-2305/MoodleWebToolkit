@@ -35,6 +35,8 @@ class ExecutionWorkspaceManagerTest extends DomainTestCase
         $first = $this->execution($project, attempt: 1);
         $second = $this->execution($project, attempt: 2);
         $manager = app(ExecutionWorkspaceManager::class);
+        $manager->prepare($first, quotaBytes: 1024);
+        $manager->prepare($second, quotaBytes: 1024);
 
         $firstRoot = $manager->resolve($first, 'output');
         $secondRoot = $manager->resolve($second, 'output');
@@ -73,5 +75,16 @@ class ExecutionWorkspaceManagerTest extends DomainTestCase
 
         $this->expectException(RuntimeException::class);
         $manager->writeState($execution, 'too-large.json', ['payload' => str_repeat('x', 256)]);
+    }
+
+    public function test_quota_checks_include_files_written_by_earlier_calls(): void
+    {
+        $execution = $this->execution($this->project());
+        $manager = app(ExecutionWorkspaceManager::class);
+        $manager->prepare($execution, quotaBytes: 128);
+        $manager->writeAtomic($execution, 'output', 'first.bin', str_repeat('a', 80));
+
+        $this->expectException(RuntimeException::class);
+        $manager->writeAtomic($execution, 'output', 'second.bin', str_repeat('b', 80));
     }
 }

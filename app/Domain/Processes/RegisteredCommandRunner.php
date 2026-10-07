@@ -34,18 +34,24 @@ class RegisteredCommandRunner
         ?string $operationUuid = null,
         ?callable $onStarted = null,
         ?callable $onHeartbeat = null,
+        ?string $commandSha256 = null,
+        ?array $registeredDefinition = null,
     ): RegisteredProcessResult {
         if (! (bool) config('toolkit.features.local_runner.enabled', false)) {
             throw new RuntimeException('El runner local está deshabilitado por feature flag.');
         }
+        if (PHP_OS_FAMILY === 'Windows' || ! function_exists('posix_kill')) {
+            throw new RuntimeException('El runner de operaciones requiere Linux con soporte de grupos de procesos.');
+        }
 
-        $definition = $this->registry->resolve($commandKey, $parameters);
+        $definition = $registeredDefinition ?? $this->registry->resolve($commandKey, $parameters);
         $cwd = $this->workspaces->resolve($execution, $area, $workingDirectory);
         $environment = $definition['environment'];
         $workspaceTemp = $this->workspaces->resolve($execution, 'temporary');
         $environment['HOME'] = $workspaceTemp;
         $environment['TMPDIR'] = $workspaceTemp;
         $environment['MOODLE_OPERATION_ID'] = $operationUuid ?? (string) ($execution->uuid ?? $execution->getKey());
+        $environment['MOODLE_COMMAND_SHA256'] = $commandSha256 ?? hash('sha256', json_encode([$commandKey, $definition['argv']], JSON_THROW_ON_ERROR));
         $argv = $definition['argv'];
         if ((bool) config('toolkit.runner.enforce_os_limits', true)) {
             $wrapper = (string) config('toolkit.runner.limit_wrapper', '/usr/bin/prlimit');
@@ -63,6 +69,11 @@ class RegisteredCommandRunner
                 ...$argv,
             ];
         }
+        $sessionWrapper = (string) config('toolkit.runner.session_wrapper', '/usr/bin/setsid');
+        if (! str_starts_with($sessionWrapper, DIRECTORY_SEPARATOR) || ! is_file($sessionWrapper) || ! is_executable($sessionWrapper)) {
+            throw new RuntimeException('El runner requiere setsid para aislar y cancelar el grupo de procesos.');
+        }
+        $argv = [$sessionWrapper, ...$argv];
         $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
         $process = proc_open($argv, $descriptors, $pipes, $cwd, $environment, ['bypass_shell' => true]);
 
@@ -83,8 +94,23 @@ class RegisteredCommandRunner
         $stdout = '';
         $stderr = '';
         $limit = $definition['max_output_bytes'];
+        $stdoutBytes = 0;
+        $stderrBytes = 0;
+        $stdoutHash = hash_init('sha256');
+        $stderrHash = hash_init('sha256');
+        $stdoutFile = null;
+        $stderrFile = null;
 
         try {
+            if ($operationUuid !== null) {
+                $stdoutFile = fopen($this->workspaces->operationLogPath($execution, $operationUuid, 'stdout'), 'xb');
+                $stderrFile = fopen($this->workspaces->operationLogPath($execution, $operationUuid, 'stderr'), 'xb');
+                if ($stdoutFile === false || $stderrFile === false) {
+                    throw new RuntimeException('No se pudo crear el log durable de la operación.');
+                }
+                @chmod($this->workspaces->operationLogPath($execution, $operationUuid, 'stdout'), 0600);
+                @chmod($this->workspaces->operationLogPath($execution, $operationUuid, 'stderr'), 0600);
+            }
             do {
                 $status = proc_get_status($process);
                 if ($processId === null && isset($status['pid']) && (int) $status['pid'] > 0) {
@@ -98,6 +124,14 @@ class RegisteredCommandRunner
                     $chunk = stream_get_contents($pipes[$index]);
                     if (! is_string($chunk) || $chunk === '') {
                         continue;
+                    }
+                    $chunk = $this->redactor->redactString($chunk);
+                    if ($streamName === 'stdout') {
+                        $this->persistOutputChunk($stdoutFile, $chunk, $stdoutHash);
+                        $stdoutBytes += strlen($chunk);
+                    } else {
+                        $this->persistOutputChunk($stderrFile, $chunk, $stderrHash);
+                        $stderrBytes += strlen($chunk);
                     }
                     $current = $streamName === 'stdout' ? $stdout : $stderr;
                     $remaining = max(0, $limit - strlen($current));
@@ -113,20 +147,17 @@ class RegisteredCommandRunner
                 }
 
                 if (! $status['running']) {
-                    $exitCode = (int) $status['exitcode'];
+                    $exitCode ??= (int) $status['exitcode'];
                     break;
                 }
 
                 if (microtime(true) - $startedAt > $definition['timeout']) {
                     $timedOut = true;
-                    proc_terminate($process, 15);
-                    usleep(100_000);
-                    $status = proc_get_status($process);
-                    if ($status['running']) {
-                        proc_terminate($process, 9);
-                    }
+                    $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
                     $exitCode = 124;
-                    break;
+                    if (! $status['running']) {
+                        break;
+                    }
                 }
 
                 if (microtime(true) - $lastHeartbeat >= 10) {
@@ -141,15 +172,12 @@ class RegisteredCommandRunner
                         $this->workspaces->measure($execution);
                     } catch (Throwable $exception) {
                         $resourceLimitExceeded = true;
-                        proc_terminate($process, 15);
-                        usleep(100_000);
-                        $status = proc_get_status($process);
-                        if ($status['running']) {
-                            proc_terminate($process, 9);
-                        }
+                        $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
                         $exitCode = 125;
                         $stderr .= "\n[Proceso terminado al superar la cuota o fallar la inspección del workspace.]";
-                        break;
+                        if (! $status['running']) {
+                            break;
+                        }
                     }
                 }
 
@@ -159,6 +187,14 @@ class RegisteredCommandRunner
             foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $streamName) {
                 $chunk = stream_get_contents($pipes[$index]);
                 if (is_string($chunk) && $chunk !== '') {
+                    $chunk = $this->redactor->redactString($chunk);
+                    if ($streamName === 'stdout') {
+                        $this->persistOutputChunk($stdoutFile, $chunk, $stdoutHash);
+                        $stdoutBytes += strlen($chunk);
+                    } else {
+                        $this->persistOutputChunk($stderrFile, $chunk, $stderrHash);
+                        $stderrBytes += strlen($chunk);
+                    }
                     $current = $streamName === 'stdout' ? $stdout : $stderr;
                     $remaining = max(0, $limit - strlen($current));
                     if (strlen($chunk) > $remaining) {
@@ -175,17 +211,21 @@ class RegisteredCommandRunner
         } catch (Throwable $exception) {
             $status = proc_get_status($process);
             if ($status['running']) {
-                proc_terminate($process, 15);
-                usleep(100_000);
-                $status = proc_get_status($process);
-                if ($status['running']) {
-                    proc_terminate($process, 9);
-                }
+                $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
             }
             throw $exception;
         } finally {
             fclose($pipes[1]);
             fclose($pipes[2]);
+            foreach ([$stdoutFile, $stderrFile] as $outputFile) {
+                if (is_resource($outputFile)) {
+                    fflush($outputFile);
+                    if (function_exists('fsync')) {
+                        fsync($outputFile);
+                    }
+                    fclose($outputFile);
+                }
+            }
             $closedCode = proc_close($process);
             if ($exitCode === null && $closedCode >= 0) {
                 $exitCode = $closedCode;
@@ -204,6 +244,56 @@ class RegisteredCommandRunner
             $stderr .= "\n[Salida truncada por superar el límite configurado.]";
         }
 
-        return new RegisteredProcessResult($exitCode ?? 255, $stdout, $stderr, $processId, $timedOut, $truncated, $resourceLimitExceeded);
+        return new RegisteredProcessResult(
+            $exitCode ?? 255,
+            $stdout,
+            $stderr,
+            $processId,
+            $timedOut,
+            $truncated,
+            $resourceLimitExceeded,
+            $stdoutBytes,
+            $stderrBytes,
+            hash_final($stdoutHash),
+            hash_final($stderrHash),
+        );
+    }
+
+    /** @param resource|null $stream @param resource $hash */
+    private function persistOutputChunk(mixed $stream, string $chunk, mixed $hash): void
+    {
+        hash_update($hash, $chunk);
+        if (! is_resource($stream)) {
+            return;
+        }
+        $offset = 0;
+        while ($offset < strlen($chunk)) {
+            $written = fwrite($stream, substr($chunk, $offset));
+            if ($written === false || $written === 0) {
+                throw new RuntimeException('No se pudo persistir la salida de la operación.');
+            }
+            $offset += $written;
+        }
+        if (! fflush($stream) || (function_exists('fsync') && ! fsync($stream))) {
+            throw new RuntimeException('No se pudo sincronizar la salida de la operación.');
+        }
+    }
+
+    private function terminateProcessGroup(int $pid, bool $forceAfterGrace = false): void
+    {
+        if ($pid < 2 || ! function_exists('posix_kill')) {
+            return;
+        }
+        @posix_kill(-$pid, SIGTERM);
+        $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.cancel_grace_seconds', 3)));
+        do {
+            if (! @posix_kill(-$pid, 0)) {
+                return;
+            }
+            usleep(100_000);
+        } while (microtime(true) < $deadline);
+        if ($forceAfterGrace || (bool) config('toolkit.runner.allow_force_kill', false)) {
+            @posix_kill(-$pid, SIGKILL);
+        }
     }
 }

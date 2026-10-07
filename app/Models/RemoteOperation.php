@@ -10,9 +10,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class RemoteOperation extends Model
 {
     protected $fillable = [
-        'execution_id', 'operation_uuid', 'idempotency_key', 'provider_key', 'host_id', 'runtime_key', 'process_id',
+        'execution_id', 'operation_uuid', 'idempotency_key', 'provider_key', 'host_id', 'runtime_key', 'process_id', 'process_group_id', 'process_start_identity',
         'command_key', 'command_sha256', 'communication_state', 'functional_state', 'last_heartbeat_at', 'launch_claimed_at',
-        'last_observed_at', 'next_poll_at', 'started_at', 'terminated_at', 'exit_code', 'evidence', 'last_error',
+        'last_observed_at', 'next_poll_at', 'reconcile_attempts', 'last_reconcile_error', 'manual_intervention_required', 'started_at', 'terminated_at', 'exit_code', 'evidence', 'last_error',
     ];
 
     /** @return BelongsTo<Execution, $this> */
@@ -29,6 +29,7 @@ class RemoteOperation extends Model
             'last_heartbeat_at' => 'immutable_datetime', 'launch_claimed_at' => 'immutable_datetime', 'last_observed_at' => 'immutable_datetime',
             'next_poll_at' => 'immutable_datetime', 'started_at' => 'immutable_datetime',
             'terminated_at' => 'immutable_datetime', 'exit_code' => 'integer', 'evidence' => 'array',
+            'reconcile_attempts' => 'integer', 'manual_intervention_required' => 'boolean',
         ];
     }
 }

@@ -193,5 +193,25 @@ return new class extends Migration
         Schema::dropIfExists('tool_compatibilities');
         Schema::dropIfExists('tool_capabilities');
         Schema::dropIfExists('tool_distributions');
+
+        // Iteration 2 introduced tree-only catalog versions while relaxing these
+        // archive columns. Remove only those new tree-only rows before restoring
+        // the original not-null contract.
+        DB::table('tool_versions')
+            ->whereNull('archive_name')
+            ->orWhereNull('archive_sha256')
+            ->delete();
+
+        DB::table('tools')
+            ->whereIn('key', ['moodle-recolector', 'moodle-consolidador', 'moodle-integrador-incremental'])
+            ->whereNotExists(function ($query): void {
+                $query->selectRaw('1')->from('tool_versions')->whereColumn('tool_versions.tool_id', 'tools.id');
+            })
+            ->delete();
+
+        Schema::table('tool_versions', function (Blueprint $table): void {
+            $table->string('archive_name')->nullable(false)->change();
+            $table->string('archive_sha256', 64)->nullable(false)->change();
+        });
     }
 };

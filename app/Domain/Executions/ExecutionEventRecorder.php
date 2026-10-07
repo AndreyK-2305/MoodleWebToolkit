@@ -7,6 +7,7 @@ use App\Enums\EventSeverity;
 use App\Events\ExecutionEventBroadcast;
 use App\Models\Execution;
 use App\Models\ExecutionEvent;
+use App\Models\RemoteOperation;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -38,13 +39,17 @@ class ExecutionEventRecorder
         ?string $message = null,
         ?array $payload = null,
         ?CarbonInterface $createdAt = null,
+        ?RemoteOperation $operation = null,
     ): ExecutionEvent {
         if ($progress !== null && ($progress < 0 || $progress > 100)) {
             throw new InvalidArgumentException('El progreso debe ser null o estar entre 0 y 100.');
         }
 
-        return DB::transaction(function () use ($execution, $type, $stepKey, $severity, $progress, $message, $payload, $createdAt): ExecutionEvent {
+        return DB::transaction(function () use ($execution, $type, $stepKey, $severity, $progress, $message, $payload, $createdAt, $operation): ExecutionEvent {
             $lockedExecution = Execution::query()->lockForUpdate()->findOrFail((int) $execution->getKey());
+            if ($operation !== null && (int) $operation->execution_id !== (int) $lockedExecution->getKey()) {
+                throw new InvalidArgumentException('El evento remoto debe pertenecer a la misma ejecución.');
+            }
             $sequence = ((int) $lockedExecution->last_event_sequence) + 1;
 
             $lockedExecution->last_event_sequence = $sequence;
@@ -58,6 +63,7 @@ class ExecutionEventRecorder
                 'progress' => $progress,
                 'message' => $message,
                 'payload' => $payload,
+                'remote_operation_id' => $operation?->getKey(),
             ];
 
             if ($createdAt !== null) {

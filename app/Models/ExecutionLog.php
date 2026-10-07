@@ -21,6 +21,7 @@ class ExecutionLog extends Model
 
     protected $fillable = [
         'execution_id',
+        'remote_operation_id',
         'execution_step_id',
         'stream',
         'level',

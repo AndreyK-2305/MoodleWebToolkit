@@ -12,6 +12,10 @@ final readonly class RegisteredProcessResult
         public bool $timedOut,
         public bool $outputTruncated,
         public bool $resourceLimitExceeded,
+        public int $stdoutBytes,
+        public int $stderrBytes,
+        public string $stdoutSha256,
+        public string $stderrSha256,
     ) {}
 
     public function successful(): bool
