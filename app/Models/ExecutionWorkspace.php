@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\WorkspaceStatus;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -14,8 +15,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $quota_bytes
  * @property int $usage_bytes
  * @property WorkspaceStatus $status
- * @property \Carbon\CarbonImmutable|null $last_measured_at
- * @property \Carbon\CarbonImmutable|null $cleaned_at
+ * @property CarbonImmutable|null $last_measured_at
+ * @property CarbonImmutable|null $cleaned_at
  */
 class ExecutionWorkspace extends Model
 {

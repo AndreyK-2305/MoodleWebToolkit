@@ -22,7 +22,7 @@ class ApproveExecutionCapacity
             $volumePath = dirname($volumePath);
         }
         $available = is_dir($volumePath) ? @disk_free_space($volumePath) : false;
-        if (! is_float($available)) {
+        if (is_float($available) === false) {
             throw new ToolOperationBlocked('No se pudo observar el espacio disponible del volumen de workspaces.');
         }
 

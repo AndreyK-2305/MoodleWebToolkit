@@ -90,7 +90,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
             throw new ToolOperationBlocked('La cuota de la ejecución no coincide con una aprobación de capacidad vigente.');
         }
         $available = @disk_free_space((string) config('toolkit.workspaces.root'));
-        if (! is_float($available) || $available < $capacity->approved_quota_bytes) {
+        if (is_float($available) === false || $available < $capacity->approved_quota_bytes) {
             throw new ToolOperationBlocked('El espacio disponible ya no cubre la cuota aprobada para esta ejecución.');
         }
 

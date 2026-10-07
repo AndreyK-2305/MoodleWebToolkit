@@ -44,7 +44,7 @@ class RemoteOperationCoordinator
     public function schedule(Execution $execution, string $idempotencyKey, string $commandKey, array $parameters = [], string $workingDirectory = ''): RemoteOperation
     {
         [$operation, $created] = $this->createOperation($execution, $idempotencyKey, $commandKey, $parameters, $workingDirectory);
-        if (! $created) {
+        if ($created === false) {
             return $operation;
         }
 
@@ -107,13 +107,13 @@ class RemoteOperationCoordinator
 
         try {
             $registeredDefinition = $this->registry->resolve($commandKey, $parameters);
-            if (! hash_equals($operation->command_sha256, $this->commandHash(
+            if (hash_equals($operation->command_sha256, $this->commandHash(
                 $commandKey,
                 $parameters,
                 $workingDirectory,
                 $registeredDefinition['artifact_descriptors'],
                 $registeredDefinition,
-            ))) {
+            )) === false) {
                 throw new RuntimeException('La definición registrada cambió después de fijar el binding de la operación.');
             }
             $request = [
@@ -129,11 +129,11 @@ class RemoteOperationCoordinator
             $requestPath = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, 'request.json');
             $this->workspaces->writeAtomic($operation->execution, 'state', 'remote-operations/'.$operation->operation_uuid.'/request.json', json_encode($request, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
 
-            if (PHP_OS_FAMILY === 'Windows' || ! function_exists('posix_kill')) {
+            if (PHP_OS_FAMILY === 'Windows' || function_exists('posix_kill') === false) {
                 throw new RuntimeException('El runtime durable requiere Linux y grupos de procesos POSIX.');
             }
             $setsid = (string) config('toolkit.runner.session_wrapper', '/usr/bin/setsid');
-            if (! is_file($setsid) || ! is_executable($setsid)) {
+            if (is_file($setsid) === false || is_executable($setsid) === false) {
                 throw new RuntimeException('No se encontró setsid para separar el supervisor del worker Laravel.');
             }
             $launcherEnvironment = getenv();
@@ -162,7 +162,7 @@ class RemoteOperationCoordinator
                 $launcherEnvironment,
                 ['bypass_shell' => true],
             );
-            if (! is_resource($launcher)) {
+            if (is_resource($launcher) === false) {
                 throw new RuntimeException('No se pudo separar el supervisor de la operación.');
             }
             $launcherStatus = proc_get_status($launcher);
@@ -181,7 +181,7 @@ class RemoteOperationCoordinator
             $launchPath = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, 'launch.json');
             $exitPath = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, 'exit.json');
             do {
-                if ((is_file($launchPath) && ! is_link($launchPath)) || (is_file($exitPath) && ! is_link($exitPath))) {
+                if ((is_file($launchPath) && is_link($launchPath) === false) || (is_file($exitPath) && is_link($exitPath) === false)) {
                     return $this->reconcile($operation);
                 }
                 usleep(50_000);
@@ -200,10 +200,9 @@ class RemoteOperationCoordinator
         return $operation->refresh();
     }
 
-    /** @param array<string, string> $parameters */
     /**
-     * @param array<string, string> $parameters
-     * @param RegisteredCommandDefinition $registeredDefinition
+     * @param  array<string, string>               $parameters
+     * @param  RegisteredCommandDefinition         $registeredDefinition
      */
     public function runDetached(int $operationId, string $commandKey, array $parameters, string $workingDirectory, array $registeredDefinition): RemoteOperation
     {
@@ -213,13 +212,13 @@ class RemoteOperationCoordinator
             || $operation->runtime_key !== 'workspace-process-v2'
             || $operation->command_key !== $commandKey
             || $operation->communication_state === RemoteCommunicationState::TERMINATED
-            || ! hash_equals($operation->command_sha256, $this->commandHash(
+            || hash_equals($operation->command_sha256, $this->commandHash(
                 $commandKey,
                 $parameters,
                 $workingDirectory,
                 $registeredDefinition['artifact_descriptors'] ?? [],
                 $registeredDefinition,
-            ))
+            )) === false
         ) {
             throw new RuntimeException('El supervisor rechazó una identidad o un hash de comando diferente al binding.');
         }
@@ -241,12 +240,12 @@ class RemoteOperationCoordinator
     }
 
     /**
-     * @param array<string, string> $parameters
+     * @param  array<string, string>  $parameters
      * @return array{RemoteOperation, bool}
      */
     private function createOperation(Execution $execution, string $idempotencyKey, string $commandKey, array $parameters, string $workingDirectory): array
     {
-        if (! (bool) config('toolkit.features.local_runner.enabled', false)) {
+        if ((bool) config('toolkit.features.local_runner.enabled', false) === false) {
             throw new RuntimeException('El runtime local está deshabilitado por feature flag.');
         }
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/D', $idempotencyKey) !== 1) {
@@ -267,7 +266,7 @@ class RemoteOperationCoordinator
                 ->first();
 
             if ($existing !== null) {
-                if (! hash_equals($existing->command_sha256, $commandHash) || $existing->command_key !== $commandKey) {
+                if (hash_equals($existing->command_sha256, $commandHash) === false || $existing->command_key !== $commandKey) {
                     throw new RuntimeException('La clave de idempotencia ya está asociada a otro comando.');
                 }
 
@@ -295,9 +294,9 @@ class RemoteOperationCoordinator
     }
 
     /**
-     * @param array<string, string> $parameters
-     * @param list<array<string, mixed>> $descriptors
-     * @param array<string, mixed> $definition
+     * @param  array<string, string>         $parameters
+     * @param  list<array<string, mixed>>    $descriptors
+     * @param  array<string, mixed>          $definition
      */
     private function commandHash(string $commandKey, array $parameters, string $workingDirectory, array $descriptors = [], array $definition = []): string
     {
@@ -319,8 +318,8 @@ class RemoteOperationCoordinator
     }
 
     /**
-     * @param array<string, string> $parameters
-     * @param RegisteredCommandDefinition $registeredDefinition
+     * @param  array<string, string>               $parameters
+     * @param  RegisteredCommandDefinition         $registeredDefinition
      */
     private function runProcess(RemoteOperation $operation, array $parameters, string $workingDirectory, array $registeredDefinition): RemoteOperation
     {
@@ -476,7 +475,7 @@ class RemoteOperationCoordinator
 
         $launch = $this->readOperationEvidence($operation, 'launch.json');
         if ($launch !== null) {
-            if (! $this->validLaunchEvidence($operation, $launch)) {
+            if ($this->validLaunchEvidence($operation, $launch) === false) {
                 return $this->markUnreachable($operation, 'La evidencia launch.json no coincide con la identidad durable de la operación.');
             }
             if ($operation->process_id === null) {
@@ -499,7 +498,7 @@ class RemoteOperationCoordinator
 
         $exit = $this->readOperationEvidence($operation, 'exit.json');
         if ($exit !== null) {
-            if (! $this->validExitEvidence($operation, $exit, $launch)) {
+            if ($this->validExitEvidence($operation, $exit, $launch) === false) {
                 return $this->markUnreachable($operation, 'La evidencia exit.json no pasó validación de identidad, hash o integridad.');
             }
 
@@ -582,7 +581,7 @@ class RemoteOperationCoordinator
     {
         try {
             $path = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, $name);
-            if (is_link($path) || ! is_file($path)) {
+            if (is_link($path) || is_file($path) === false) {
                 return null;
             }
             $decoded = json_decode((string) file_get_contents($path), true);
@@ -608,8 +607,8 @@ class RemoteOperationCoordinator
     }
 
     /**
-     * @param array<string, mixed> $evidence
-     * @param array<string, mixed>|null $launch
+     * @param  array<string, mixed>       $evidence
+     * @param  array<string, mixed>|null  $launch
      */
     private function validExitEvidence(RemoteOperation $operation, array $evidence, ?array $launch): bool
     {
@@ -652,11 +651,11 @@ class RemoteOperationCoordinator
             } catch (\Throwable) {
                 return false;
             }
-            $size = is_link($path) || ! is_file($path) ? false : filesize($path);
-            $hash = is_link($path) || ! is_file($path) ? false : hash_file('sha256', $path);
-            if (! is_int($size) || $size !== ($evidence[$stream.'_size_bytes'] ?? null)
-                || ! is_string($hash) || ! is_string($evidence[$stream.'_sha256'] ?? null)
-                || ! hash_equals($evidence[$stream.'_sha256'], $hash)
+            $size = is_link($path) || is_file($path) === false ? false : filesize($path);
+            $hash = is_link($path) || is_file($path) === false ? false : hash_file('sha256', $path);
+            if (is_int($size) === false || $size !== ($evidence[$stream.'_size_bytes'] ?? null)
+                || is_string($hash) === false || is_string($evidence[$stream.'_sha256'] ?? null) === false
+                || hash_equals($evidence[$stream.'_sha256'], $hash) === false
             ) {
                 return false;
             }
@@ -685,7 +684,7 @@ class RemoteOperationCoordinator
             $manualRequired = $attempts >= 8;
             $delaySeconds = min(900, 15 * (2 ** min(6, max(0, $attempts - 1))));
             $evidence = $locked->evidence ?? [];
-            if ($manualRequired && ! $locked->manual_intervention_required) {
+            if ($manualRequired && $locked->manual_intervention_required === false) {
                 $evidence['manual_intervention_required_at'] = now()->utc()->toIso8601String();
                 AuditLog::query()->create([
                     'project_id' => $locked->execution->project_id,
@@ -715,7 +714,7 @@ class RemoteOperationCoordinator
 
     public function heartbeat(RemoteOperation $operation): RemoteOperation
     {
-        if (! $this->inspector->isRunning($operation)) {
+        if ($this->inspector->isRunning($operation) === false) {
             return $this->reconcile($operation);
         }
 
@@ -748,12 +747,13 @@ class RemoteOperationCoordinator
             if ($locked->communication_state === RemoteCommunicationState::TERMINATED) {
                 return $locked;
             }
-            if (((($locked->evidence ?? [])['cancellable'] ?? false)) !== true) {
+            $operationEvidence = $locked->evidence ?? [];
+            if (($operationEvidence['cancellable'] ?? false) !== true) {
                 throw new RuntimeException('La operación registrada no es cancelable; detener el coordinador o el runtime es una acción distinta.');
             }
 
             $now = now()->utc();
-            $cancelAt = ($locked->evidence ?? [])['cancel_requested_at'] ?? $now->toIso8601String();
+            $cancelAt = $operationEvidence['cancel_requested_at'] ?? $now->toIso8601String();
             $fields = [
                 'last_observed_at' => $now,
                 'evidence' => [...($locked->evidence ?? []), 'cancel_requested_at' => $cancelAt],
@@ -784,7 +784,7 @@ class RemoteOperationCoordinator
         }
 
         $cancelPath = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, 'cancel.json');
-        if (! is_file($cancelPath)) {
+        if (is_file($cancelPath) === false) {
             $this->workspaces->writeOperationEvidence($operation->execution, $operation->operation_uuid, 'cancel.json', [
                 'schema_version' => 'remote-operation-cancel.v1',
                 'operation_uuid' => $operation->operation_uuid,
@@ -800,7 +800,7 @@ class RemoteOperationCoordinator
             return $operation->refresh();
         }
 
-        if (! $this->inspector->terminate($operation)) {
+        if ($this->inspector->terminate($operation) === false) {
             return $this->markUnreachable($operation, 'La cancelación no encontró la identidad exacta del grupo de procesos; no se envió una señal.');
         }
 

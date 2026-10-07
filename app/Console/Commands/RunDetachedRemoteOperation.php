@@ -19,8 +19,7 @@ class RunDetachedRemoteOperation extends Command
         RemoteOperationCoordinator $operations,
         ExecutionWorkspaceManager $workspaces,
         RegisteredCommandRegistry $registry,
-    ): int
-    {
+    ): int {
         $requestPath = (string) $this->argument('requestPath');
         if (is_link($requestPath) || is_file($requestPath) === false) {
             $this->error('No se encontró el descriptor privado de la operación.');
@@ -54,7 +53,7 @@ class RunDetachedRemoteOperation extends Command
 
         $commandKey = $payload['command_key'] ?? null;
         $rawParameters = $payload['parameters'] ?? null;
-        if (! is_string($commandKey) || ! is_array($rawParameters)) {
+        if (is_string($commandKey) === false || is_array($rawParameters) === false) {
             $this->error('El comando o sus parámetros no tienen un formato válido.');
 
             return self::FAILURE;
@@ -62,7 +61,7 @@ class RunDetachedRemoteOperation extends Command
         /** @var array<string, string> $parameters */
         $parameters = [];
         foreach ($rawParameters as $name => $value) {
-            if (! is_string($name) || ! is_string($value)) {
+            if (is_string($name) === false || is_string($value) === false) {
                 $this->error('Los parámetros del comando no tienen un formato válido.');
 
                 return self::FAILURE;

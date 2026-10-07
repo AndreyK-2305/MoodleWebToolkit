@@ -7,12 +7,19 @@ use App\Enums\ArtifactCategory;
 use InvalidArgumentException;
 
 /**
- * @phpstan-type RegisteredCommandDefinition array{argv: list<string>, environment: array<string, string>, timeout: int, max_output_bytes: int, artifact_descriptors: list<array<string, mixed>>, cancellable: bool}
+ * @phpstan-type RegisteredCommandDefinition array{
+ *     argv: list<string>,
+ *     environment: array<string, string>,
+ *     timeout: int,
+ *     max_output_bytes: int,
+ *     artifact_descriptors: list<array<string, mixed>>,
+ *     cancellable: bool,
+ * }
  */
 class RegisteredCommandRegistry
 {
     /**
-     * @param array<string, string> $parameters
+     * @param  array<string, string>  $parameters
      * @return RegisteredCommandDefinition
      */
     public function resolve(string $key, array $parameters = []): array
@@ -24,7 +31,7 @@ class RegisteredCommandRegistry
         $definitions = config('toolkit.runner.commands', []);
         $definition = is_array($definitions) ? ($definitions[$key] ?? null) : null;
 
-        if (! is_array($definition)) {
+        if (is_array($definition) === false) {
             throw new InvalidArgumentException('El comando solicitado no está registrado.');
         }
 
@@ -35,8 +42,8 @@ class RegisteredCommandRegistry
             throw new InvalidArgumentException('El comando requiere secretos, pero no hay un almacén de secretos aprobado; su ejecución está bloqueada.');
         }
 
-        if (! is_string($executable) || $executable === '' || ! $this->isAbsolute($executable) || ! is_file($executable) || ! is_executable($executable)
-            || ! is_array($fixed) || ! is_array($schema)
+        if (is_string($executable) === false || $executable === '' || $this->isAbsolute($executable) === false || is_file($executable) === false || is_executable($executable) === false
+            || is_array($fixed) === false || is_array($schema) === false
         ) {
             throw new InvalidArgumentException('La definición del comando registrado es inválida.');
         }
@@ -48,7 +55,7 @@ class RegisteredCommandRegistry
 
         $argv = [$executable];
         foreach ($fixed as $argument) {
-            if (! is_string($argument) || str_contains($argument, "\0")) {
+            if (is_string($argument) === false || str_contains($argument, "\0")) {
                 throw new InvalidArgumentException('La lista fija de argumentos no es válida.');
             }
             if (app(SensitiveValueRedactor::class)->redactString($argument) !== $argument) {
@@ -58,13 +65,13 @@ class RegisteredCommandRegistry
         }
 
         foreach ($schema as $name => $parameterDefinition) {
-            if (! is_array($parameterDefinition) || ! isset($parameterDefinition['pattern'])) {
+            if (is_array($parameterDefinition) === false || isset($parameterDefinition['pattern']) === false) {
                 throw new InvalidArgumentException('El esquema de parámetros del comando está incompleto.');
             }
             if (app(SensitiveValueRedactor::class)->isSensitiveKeyName((string) $name) || ($parameterDefinition['secret'] ?? false) === true) {
                 throw new InvalidArgumentException('El comando declara un parámetro sensible sin un almacén de secretos aprobado.');
             }
-            if (! array_key_exists($name, $parameters)) {
+            if (array_key_exists($name, $parameters) === false) {
                 if (($parameterDefinition['optional'] ?? false) === true) {
                     continue;
                 }
@@ -73,9 +80,9 @@ class RegisteredCommandRegistry
 
             $value = $parameters[$name];
             $pattern = $parameterDefinition['pattern'];
-            if (! is_string($value) || strlen($value) > 4096 || str_contains($value, "\0")
+            if (is_string($value) === false || strlen($value) > 4096 || str_contains($value, "\0")
                 || app(SensitiveValueRedactor::class)->redactString($value) !== $value
-                || ! is_string($pattern) || @preg_match($pattern, $value) !== 1
+                || is_string($pattern) === false || @preg_match($pattern, $value) !== 1
             ) {
                 throw new InvalidArgumentException("El parámetro [{$name}] no cumple el formato registrado.");
             }
@@ -84,7 +91,7 @@ class RegisteredCommandRegistry
 
         $environment = ['LANG' => 'C.UTF-8'];
         foreach (($definition['environment'] ?? []) as $name => $value) {
-            if (! is_string($name) || preg_match('/^[A-Z_][A-Z0-9_]*$/D', $name) !== 1 || ! is_string($value) || str_contains($value, "\0")) {
+            if (is_string($name) === false || preg_match('/^[A-Z_][A-Z0-9_]*$/D', $name) !== 1 || is_string($value) === false || str_contains($value, "\0")) {
                 throw new InvalidArgumentException('El entorno fijo del comando contiene una entrada inválida.');
             }
             if (app(SensitiveValueRedactor::class)->isSensitiveKeyName($name)) {
@@ -115,12 +122,12 @@ class RegisteredCommandRegistry
     /** @return list<array<string, mixed>> */
     private function validateArtifactDescriptors(mixed $descriptors): array
     {
-        if (! is_array($descriptors) || ! array_is_list($descriptors)) {
+        if (is_array($descriptors) === false || array_is_list($descriptors) === false) {
             throw new InvalidArgumentException('Los descriptores de artefactos del comando deben ser una lista explícita.');
         }
         $paths = [];
         foreach ($descriptors as $descriptor) {
-            if (! is_array($descriptor)) {
+            if (is_array($descriptor) === false) {
                 throw new InvalidArgumentException('Un descriptor de artefacto no es válido.');
             }
             $path = $descriptor['relative_path'] ?? null;
@@ -135,17 +142,17 @@ class RegisteredCommandRegistry
             $descriptorStrings = array_merge(is_string($path) ? [$path] : [], is_string($name) ? [$name] : [], $descriptorMimeStrings);
             if (array_diff(array_keys($descriptor), $allowedKeys) !== []
                 || array_filter($descriptorStrings, fn (string $value): bool => app(SensitiveValueRedactor::class)->redactString($value) !== $value) !== []
-                || ! is_string($path) || $path === '' || str_contains($path, "\0")
+                || is_string($path) === false || $path === '' || str_contains($path, "\0")
                 || str_starts_with($path, '/') || preg_match('/^[A-Za-z]:/', $path) === 1
                 || preg_match('#(^|[\\/])\.\.?([\\/]|$)#', $path) === 1
-                || ! is_string($name) || basename(str_replace('\\', '/', $name)) !== $name
-                || ! is_string($category) || ArtifactCategory::tryFrom($category) === null
-                || ! is_array($mimeTypes) || $mimeTypes === []
-                || array_filter($mimeTypes, fn (mixed $mime): bool => ! is_string($mime) || preg_match('#^[a-z0-9.+-]+/[a-z0-9.+-]+$#iD', $mime) !== 1) !== []
-                || ! is_int($maximum) || $maximum < 1
-                || ($expectedSha256 !== null && (! is_string($expectedSha256) || preg_match('/^[a-f0-9]{64}$/D', $expectedSha256) !== 1))
-                || ! in_array($sensitivity, ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'], true)
-                || (isset($descriptor['required']) && ! is_bool($descriptor['required']))
+                || is_string($name) === false || basename(str_replace('\\', '/', $name)) !== $name
+                || is_string($category) === false || ArtifactCategory::tryFrom($category) === null
+                || is_array($mimeTypes) === false || $mimeTypes === []
+                || array_filter($mimeTypes, fn (mixed $mime): bool => is_string($mime) === false || preg_match('#^[a-z0-9.+-]+/[a-z0-9.+-]+$#iD', $mime) !== 1) !== []
+                || is_int($maximum) === false || $maximum < 1
+                || ($expectedSha256 !== null && (is_string($expectedSha256) === false || preg_match('/^[a-f0-9]{64}$/D', $expectedSha256) !== 1))
+                || in_array($sensitivity, ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'], true) === false
+                || (isset($descriptor['required']) && is_bool($descriptor['required']) === false)
                 || isset($paths[$path])
             ) {
                 throw new InvalidArgumentException('Un descriptor de artefacto no cumple el contrato declarativo.');

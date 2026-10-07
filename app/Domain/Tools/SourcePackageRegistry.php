@@ -13,11 +13,16 @@ use Illuminate\Support\Str;
 
 class SourcePackageRegistry
 {
-    public function __construct(private readonly SensitiveValueRedactor $redactor) {}
+    private readonly SensitiveValueRedactor $redactor;
+
+    public function __construct(SensitiveValueRedactor $redactor)
+    {
+        $this->redactor = $redactor;
+    }
 
     /**
-     * @param list<string> $compatibleWorkflows
-     * @param array<string, mixed> $capabilities
+     * @param  list<string>            $compatibleWorkflows
+     * @param  array<string, mixed>    $capabilities
      */
     public function register(
         Artifact $artifact,

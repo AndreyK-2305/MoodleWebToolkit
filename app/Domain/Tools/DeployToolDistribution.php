@@ -24,7 +24,7 @@ class DeployToolDistribution
         $slug = Str::slug($distribution->key);
         $excluded = $this->deploymentExclusions($distribution, $verified);
         $runtimeConfig = $this->workspaces->resolve($execution, 'state', 'runtime-config/'.$slug);
-        if (! is_dir($runtimeConfig) && ! mkdir($runtimeConfig, 0700, true) && ! is_dir($runtimeConfig)) {
+        if (is_dir($runtimeConfig) === false && mkdir($runtimeConfig, 0700, true) === false && is_dir($runtimeConfig) === false) {
             throw new RuntimeException('No se pudo crear el área separada de configuración activa.');
         }
 
@@ -45,7 +45,7 @@ class DeployToolDistribution
             return ['path' => $target, 'evidence' => $fullEvidence];
         }
 
-        if (! mkdir($staging, 0700)) {
+        if (mkdir($staging, 0700) === false) {
             throw new RuntimeException('No se pudo crear un área de staging dentro del workspace.');
         }
 
@@ -69,7 +69,7 @@ class DeployToolDistribution
             $deployedEvidence = $this->verifyDeployedTree($staging, $verified, (string) $distribution->manifest_name, $excluded);
             $this->sealTree($staging);
 
-            if (! rename($staging, $target)) {
+            if (rename($staging, $target) === false) {
                 throw new RuntimeException('No se pudo desplegar atómicamente la distribución verificada.');
             }
 
@@ -90,7 +90,7 @@ class DeployToolDistribution
      */
     private function verifyDeployedTree(string $root, VerifiedDistribution $verified, string $manifestName, array $excluded = []): array
     {
-        if (is_link($root) || ! is_dir($root)) {
+        if (is_link($root) || is_dir($root) === false) {
             throw new RuntimeException('El destino del despliegue no es un directorio normal.');
         }
 
@@ -110,12 +110,12 @@ class DeployToolDistribution
             if ($item->isLink()) {
                 throw new RuntimeException('El staging desplegado contiene un enlace simbólico.');
             }
-            if (! $item->isFile()) {
+            if ($item->isFile() === false) {
                 continue;
             }
             $relative = str_replace('\\', '/', substr($item->getPathname(), strlen($root) + 1));
             $hash = hash_file('sha256', $item->getPathname());
-            if (! is_string($hash)) {
+            if (is_string($hash) === false) {
                 throw new RuntimeException("No se pudo verificar el hash del archivo desplegado [{$relative}].");
             }
             $actual[$relative] = $hash;
@@ -126,7 +126,7 @@ class DeployToolDistribution
             throw new RuntimeException('El árbol copiado tiene archivos diferentes al paquete inmutable declarado.');
         }
         foreach ($expected as $path => $hash) {
-            if (! is_string($actual[$path]) || ! hash_equals($hash, $actual[$path])) {
+            if (is_string($actual[$path]) === false || hash_equals($hash, $actual[$path]) === false) {
                 throw new RuntimeException("La copia desplegada falló su revalidación en [{$path}].");
             }
         }
@@ -139,7 +139,7 @@ class DeployToolDistribution
 
     private function copyVerifiedFile(string $source, string $destination, string $expectedHash): void
     {
-        if (is_link($source) || ! is_file($source)) {
+        if (is_link($source) || is_file($source) === false) {
             throw new RuntimeException('El origen de una copia del paquete no es un archivo regular.');
         }
 
@@ -157,7 +157,7 @@ class DeployToolDistribution
 
         try {
             $hash = hash_init('sha256');
-            while (! feof($input)) {
+            while (feof($input) === false) {
                 $chunk = fread($input, 65_536);
                 if ($chunk === false) {
                     throw new RuntimeException('No se pudo leer una parte de la distribución.');
@@ -169,7 +169,7 @@ class DeployToolDistribution
                     }
                 }
             }
-            if (! fflush($output) || ! hash_equals($expectedHash, hash_final($hash))) {
+            if (fflush($output) === false || hash_equals($expectedHash, hash_final($hash)) === false) {
                 throw new RuntimeException('La copia del archivo no pasó la comprobación SHA-256.');
             }
         } finally {
@@ -198,11 +198,11 @@ class DeployToolDistribution
             if (is_link($target)) {
                 throw new RuntimeException('El overlay de workspace no puede ser un enlace simbólico.');
             }
-            if (! file_exists($target)) {
+            if (file_exists($target) === false) {
                 $this->copyVerifiedFile($source, $target, $hash);
                 @chmod($target, 0600);
             }
-            if (! is_file($target) || ! is_string($workspaceHash = hash_file('sha256', $target))) {
+            if (is_file($target) === false || is_string($workspaceHash = hash_file('sha256', $target)) === false) {
                 throw new RuntimeException('No se pudo verificar un overlay operativo del workspace.');
             }
             $evidence[$relative] = ['path' => $target, 'source_sha256' => $hash, 'workspace_sha256' => $workspaceHash];
@@ -225,7 +225,7 @@ class DeployToolDistribution
             }
             if ($entry->isDir()) {
                 $directories[] = $entry->getPathname();
-            } elseif ($entry->isFile() && ! str_ends_with(strtolower($entry->getFilename()), '.sh')) {
+            } elseif ($entry->isFile() && str_ends_with(strtolower($entry->getFilename()), '.sh') === false) {
                 @chmod($entry->getPathname(), 0400);
             }
         }
@@ -240,13 +240,13 @@ class DeployToolDistribution
     {
         $normalizedRoot = rtrim(str_replace('\\', '/', $root), '/');
         $normalizedDirectory = str_replace('\\', '/', $directory);
-        if (! str_starts_with($normalizedDirectory.'/', $normalizedRoot.'/')) {
+        if (str_starts_with($normalizedDirectory.'/', $normalizedRoot.'/') === false) {
             throw new RuntimeException('El destino de copia intentó escapar del staging.');
         }
         if (is_link($directory)) {
             throw new RuntimeException('Se rechazó un enlace simbólico en staging.');
         }
-        if (! is_dir($directory) && ! mkdir($directory, 0700, true) && ! is_dir($directory)) {
+        if (is_dir($directory) === false && mkdir($directory, 0700, true) === false && is_dir($directory) === false) {
             throw new RuntimeException('No se pudo crear un directorio del staging.');
         }
     }
@@ -278,7 +278,7 @@ class DeployToolDistribution
     {
         $exclusions = array_values(array_unique(array_map('strval', $distribution->deployment_exclusions ?? [])));
         foreach ($exclusions as $path) {
-            if (! array_key_exists($path, $verified->manifestFiles) && ! array_key_exists($path, $verified->mutableFiles)
+            if (array_key_exists($path, $verified->manifestFiles) === false && array_key_exists($path, $verified->mutableFiles) === false
                 && $path !== $distribution->manifest_name
             ) {
                 throw new RuntimeException("La exclusión de despliegue [{$path}] no pertenece a la distribución verificada.");
@@ -291,7 +291,7 @@ class DeployToolDistribution
 
     private function removeStaging(string $path): void
     {
-        if (! is_dir($path) || is_link($path)) {
+        if (is_dir($path) === false || is_link($path)) {
             return;
         }
         @chmod($path, 0700);

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use LogicException;
@@ -14,7 +15,7 @@ use LogicException;
  * @property int $approved_quota_bytes
  * @property int $margin_percent
  * @property int $approved_by
- * @property \Carbon\CarbonImmutable $approved_at
+ * @property CarbonImmutable $approved_at
  * @property string $fingerprint
  * @property array<string, mixed>|null $evidence
  */

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use LogicException;
@@ -17,7 +18,7 @@ use LogicException;
  * @property string $content_sha256
  * @property string $fingerprint
  * @property string $approval_state
- * @property \Carbon\CarbonImmutable|null $approved_at
+ * @property CarbonImmutable|null $approved_at
  */
 class ExecutionRuntimeConfiguration extends Model
 {

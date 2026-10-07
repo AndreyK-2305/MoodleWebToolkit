@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -17,7 +18,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string $distribution_sha256
  * @property int $file_count
  * @property string $verification_state
- * @property \Carbon\CarbonImmutable|null $verified_at
+ * @property CarbonImmutable|null $verified_at
  * @property list<string>|null $mutable_paths
  * @property list<string>|null $deployment_exclusions
  * @property array<string, mixed>|null $evidence

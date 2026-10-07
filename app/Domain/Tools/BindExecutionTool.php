@@ -35,8 +35,8 @@ class BindExecutionTool
     }
 
     /**
-     * @param array<string, mixed> $configuration
-     * @param list<int> $sourcePackageIds
+     * @param  array<string, mixed>  $configuration
+     * @param  list<int>             $sourcePackageIds
      */
     public function bind(
         Execution $execution,
@@ -232,7 +232,7 @@ class BindExecutionTool
     }
 
     /**
-     * @param array<string, mixed> $configuration
+     * @param  array<string, mixed>  $configuration
      * @return array<string, mixed>
      */
     private function sanitizeConfiguration(array $configuration): array

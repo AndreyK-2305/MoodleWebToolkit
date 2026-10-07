@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use LogicException;
@@ -20,12 +21,12 @@ use LogicException;
  * @property string $sha256
  * @property string|null $manifest_sha256
  * @property string $validation_state
- * @property \Carbon\CarbonImmutable|null $validated_at
+ * @property CarbonImmutable|null $validated_at
  * @property array<string, mixed>|null $capabilities
  * @property array{workflows?: list<string>}|null $compatibility
  * @property string $sensitivity
  * @property string $availability
- * @property \Carbon\CarbonImmutable|null $revoked_at
+ * @property CarbonImmutable|null $revoked_at
  * @property array<string, mixed>|null $evidence
  * @property-read Artifact|null $artifact
  */

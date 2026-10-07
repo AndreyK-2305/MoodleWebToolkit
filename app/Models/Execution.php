@@ -6,6 +6,7 @@ use App\Enums\ExecutionStatus;
 use App\Exceptions\InvalidStateTransition;
 use App\Models\Concerns\HasPublicUuid;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -35,7 +36,7 @@ use LogicException;
  * @property CarbonImmutable|null $finished_at
  * @property array<string, mixed>|null $completion_summary
  * @property-read Project $project
- * @property-read \Illuminate\Database\Eloquent\Collection<int, RemoteOperation> $remoteOperations
+ * @property-read Collection<int, RemoteOperation> $remoteOperations
  */
 class Execution extends Model
 {
