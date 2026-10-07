@@ -4,9 +4,39 @@ namespace App\Models;
 
 use App\Enums\RemoteCommunicationState;
 use App\Enums\RemoteFunctionalState;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property int $id
+ * @property int $execution_id
+ * @property string $operation_uuid
+ * @property string $idempotency_key
+ * @property string $provider_key
+ * @property string|null $host_id
+ * @property string $runtime_key
+ * @property string|null $process_id
+ * @property string|null $process_group_id
+ * @property string|null $process_start_identity
+ * @property string $command_key
+ * @property string $command_sha256
+ * @property RemoteCommunicationState $communication_state
+ * @property RemoteFunctionalState $functional_state
+ * @property CarbonImmutable|null $last_heartbeat_at
+ * @property CarbonImmutable|null $launch_claimed_at
+ * @property CarbonImmutable|null $last_observed_at
+ * @property CarbonImmutable|null $next_poll_at
+ * @property int $reconcile_attempts
+ * @property string|null $last_reconcile_error
+ * @property bool $manual_intervention_required
+ * @property CarbonImmutable|null $started_at
+ * @property CarbonImmutable|null $terminated_at
+ * @property int|null $exit_code
+ * @property array<string, mixed>|null $evidence
+ * @property string|null $last_error
+ * @property-read Execution $execution
+ */
 class RemoteOperation extends Model
 {
     protected $fillable = [

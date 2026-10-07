@@ -6,6 +6,17 @@ use App\Enums\WorkspaceStatus;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property int $id
+ * @property int $execution_id
+ * @property string $uuid
+ * @property string $relative_path
+ * @property int $quota_bytes
+ * @property int $usage_bytes
+ * @property WorkspaceStatus $status
+ * @property \Carbon\CarbonImmutable|null $last_measured_at
+ * @property \Carbon\CarbonImmutable|null $cleaned_at
+ */
 class ExecutionWorkspace extends Model
 {
     protected $fillable = [

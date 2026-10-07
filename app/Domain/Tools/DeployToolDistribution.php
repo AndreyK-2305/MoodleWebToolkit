@@ -84,7 +84,10 @@ class DeployToolDistribution
         }
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @param list<string> $excluded
+     * @return array<string, mixed>
+     */
     private function verifyDeployedTree(string $root, VerifiedDistribution $verified, string $manifestName, array $excluded = []): array
     {
         if (is_link($root) || ! is_dir($root)) {
@@ -111,7 +114,11 @@ class DeployToolDistribution
                 continue;
             }
             $relative = str_replace('\\', '/', substr($item->getPathname(), strlen($root) + 1));
-            $actual[$relative] = hash_file('sha256', $item->getPathname());
+            $hash = hash_file('sha256', $item->getPathname());
+            if (! is_string($hash)) {
+                throw new RuntimeException("No se pudo verificar el hash del archivo desplegado [{$relative}].");
+            }
+            $actual[$relative] = $hash;
         }
         ksort($actual, SORT_STRING);
 
@@ -173,7 +180,10 @@ class DeployToolDistribution
         @chmod($destination, str_ends_with(strtolower($destination), '.sh') ? 0500 : 0400);
     }
 
-    /** @return array<string, array{path: string, sha256: string}> */
+    /**
+     * @param list<string> $excluded
+     * @return array<string, array{path: string, source_sha256: string, workspace_sha256: string}>
+     */
     private function deployMutableOverlays(Execution $execution, ToolDistribution $distribution, VerifiedDistribution $verified, string $slug, array $excluded = []): array
     {
         $evidence = [];
@@ -241,7 +251,10 @@ class DeployToolDistribution
         }
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $deployed
+     * @return array<string, mixed>
+     */
     private function deploymentEvidence(ToolDistribution $distribution, VerifiedDistribution $verified, string $target, array $deployed): array
     {
         return [

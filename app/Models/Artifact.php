@@ -6,6 +6,22 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * @property int $id
+ * @property int $execution_id
+ * @property int|null $remote_operation_id
+ * @property string $type
+ * @property string $disk
+ * @property string $path
+ * @property string $filename
+ * @property string|null $mime_type
+ * @property int $size
+ * @property string $sha256
+ * @property array<string, mixed>|null $metadata
+ * @property string|null $category
+ * @property string|null $storage_mode
+ * @property-read Execution|null $execution
+ */
 class Artifact extends Model
 {
     public const UPDATED_AT = null;

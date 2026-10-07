@@ -3,6 +3,7 @@
 namespace App\Domain\Artifacts;
 
 use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
+use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
 use App\Domain\Artifacts\Streams\ArtifactReadStream;
 use Closure;

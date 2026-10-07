@@ -6,6 +6,19 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use LogicException;
 
+/**
+ * @property int $id
+ * @property int $execution_id
+ * @property int $tool_version_id
+ * @property string $schema_version
+ * @property string $source
+ * @property int $approved_by
+ * @property string $relative_path
+ * @property string $content_sha256
+ * @property string $fingerprint
+ * @property string $approval_state
+ * @property \Carbon\CarbonImmutable|null $approved_at
+ */
 class ExecutionRuntimeConfiguration extends Model
 {
     public const UPDATED_AT = null;

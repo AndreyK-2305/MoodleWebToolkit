@@ -17,6 +17,7 @@ use LogicException;
  * @property int $id
  * @property int $project_id
  * @property string $uuid
+ * @property string $workspace_key
  * @property int $attempt
  * @property ExecutionStatus $status
  * @property int|null $progress
@@ -25,10 +26,16 @@ use LogicException;
  * @property int|null $validated_proposal_version
  * @property string|null $validated_fingerprint
  * @property int $last_event_sequence
+ * @property int|null $created_by
+ * @property int|null $finalized_by
+ * @property int|null $resumed_from_execution_id
+ * @property int|null $resume_checkpoint_id
+ * @property CarbonImmutable|null $cancel_requested_at
  * @property CarbonImmutable|null $started_at
  * @property CarbonImmutable|null $finished_at
  * @property array<string, mixed>|null $completion_summary
  * @property-read Project $project
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, RemoteOperation> $remoteOperations
  */
 class Execution extends Model
 {

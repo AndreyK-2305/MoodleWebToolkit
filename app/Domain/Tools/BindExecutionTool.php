@@ -34,7 +34,10 @@ class BindExecutionTool
         $this->redactor = $redactor;
     }
 
-    /** @param list<int> $sourcePackageIds @param array<string, mixed> $configuration */
+    /**
+     * @param array<string, mixed> $configuration
+     * @param list<int> $sourcePackageIds
+     */
     public function bind(
         Execution $execution,
         ToolVersion $version,
@@ -55,7 +58,7 @@ class BindExecutionTool
         if (count(array_unique($normalizedSourcePackageIds)) !== count($normalizedSourcePackageIds)) {
             throw new ToolOperationBlocked('Un paquete fuente no puede aparecer dos veces en el binding.');
         }
-        $sourcePackageIds = array_values($normalizedSourcePackageIds);
+        $sourcePackageIds = $normalizedSourcePackageIds;
         sort($sourcePackageIds, SORT_NUMERIC);
 
         $safeConfiguration = $this->sanitizeConfiguration($configuration);
@@ -228,7 +231,10 @@ class BindExecutionTool
         return $value;
     }
 
-    /** @param array<string, mixed> $configuration @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $configuration
+     * @return array<string, mixed>
+     */
     private function sanitizeConfiguration(array $configuration): array
     {
         $safe = [];

@@ -45,6 +45,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         throw new ToolOperationBlocked('El provider real requiere un binding de catálogo y una operación explícita; la cola Fake se conserva como provider predeterminado.');
     }
 
+    /** @return array<string, mixed> */
     public function prepare(Execution $execution, ToolDistribution $distribution): array
     {
         $workspace = $this->workspaces->prepare($execution);
@@ -63,6 +64,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         return $evidence;
     }
 
+    /** @return array<string, mixed> */
     public function deploy(Execution $execution, ToolDistribution $distribution): array
     {
         return $this->deployer->deploy($execution, $distribution);
@@ -88,7 +90,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
             throw new ToolOperationBlocked('La cuota de la ejecución no coincide con una aprobación de capacidad vigente.');
         }
         $available = @disk_free_space((string) config('toolkit.workspaces.root'));
-        if ((! is_float($available) && ! is_int($available)) || $available < $capacity->approved_quota_bytes) {
+        if (! is_float($available) || $available < $capacity->approved_quota_bytes) {
             throw new ToolOperationBlocked('El espacio disponible ya no cubre la cuota aprobada para esta ejecución.');
         }
 
@@ -119,6 +121,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         );
     }
 
+    /** @return array<string, mixed> */
     public function inspect(RemoteOperation $operation): array
     {
         $operation->refresh();
@@ -145,6 +148,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         return $this->reconcile($operation);
     }
 
+    /** @return list<array<string, mixed>> */
     public function readEvents(RemoteOperation $operation, int $afterSequence = 0): array
     {
         return $operation->execution->events()->where('remote_operation_id', $operation->getKey())->where('sequence', '>', max(0, $afterSequence))->get()->map(fn ($event): array => [
@@ -159,6 +163,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         ])->all();
     }
 
+    /** @return list<array<string, mixed>> */
     public function readLogs(RemoteOperation $operation, int $afterId = 0): array
     {
         $redactor = app(SensitiveValueRedactor::class);

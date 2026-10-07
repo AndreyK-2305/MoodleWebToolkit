@@ -9,6 +9,10 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
+ * @property int $id
+ * @property int $execution_id
+ * @property int|null $remote_operation_id
+ * @property int|null $execution_step_id
  * @property LogStream $stream
  * @property string $level
  * @property string $message

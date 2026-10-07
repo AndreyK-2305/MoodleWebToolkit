@@ -2,9 +2,15 @@
 
 namespace App\Domain\Tools\DTOs;
 
+/**
+ * @phpstan-type FileHashMap array<string, string>
+ */
 final readonly class VerifiedDistribution
 {
-    /** @param array<string, string> $manifestFiles @param array<string, string> $mutableFiles */
+    /**
+     * @param FileHashMap $manifestFiles
+     * @param FileHashMap $mutableFiles
+     */
     public function __construct(
         public string $sourceRoot,
         public string $treeSha256,

@@ -6,9 +6,15 @@ use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Enums\ArtifactCategory;
 use InvalidArgumentException;
 
+/**
+ * @phpstan-type RegisteredCommandDefinition array{argv: list<string>, environment: array<string, string>, timeout: int, max_output_bytes: int, artifact_descriptors: list<array<string, mixed>>, cancellable: bool}
+ */
 class RegisteredCommandRegistry
 {
-    /** @return array{argv: list<string>, environment: array<string, string>, timeout: int, max_output_bytes: int, artifact_descriptors: list<array<string, mixed>>, cancellable: bool} */
+    /**
+     * @param array<string, string> $parameters
+     * @return RegisteredCommandDefinition
+     */
     public function resolve(string $key, array $parameters = []): array
     {
         if (preg_match('/^[a-z][a-z0-9._-]{2,119}$/D', $key) !== 1) {

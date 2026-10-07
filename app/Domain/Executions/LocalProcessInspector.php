@@ -94,6 +94,7 @@ class LocalProcessInspector
         return ! $this->processGroupExists($processGroupId);
     }
 
+    /** @phpstan-impure */
     private function processGroupExists(int $processGroupId): bool
     {
         return $processGroupId > 1 && function_exists('posix_kill') && @posix_kill(-$processGroupId, 0);

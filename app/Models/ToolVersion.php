@@ -6,6 +6,16 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * @property int $id
+ * @property int $tool_id
+ * @property string $version
+ * @property string|null $archive_name
+ * @property string|null $archive_sha256
+ * @property string|null $tree_sha256
+ * @property bool $enabled
+ * @property-read Tool $tool
+ */
 class ToolVersion extends Model
 {
     protected $fillable = [

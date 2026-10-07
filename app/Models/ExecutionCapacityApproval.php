@@ -6,6 +6,18 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use LogicException;
 
+/**
+ * @property int $id
+ * @property int $execution_id
+ * @property int $estimate_bytes
+ * @property int $available_bytes_observed
+ * @property int $approved_quota_bytes
+ * @property int $margin_percent
+ * @property int $approved_by
+ * @property \Carbon\CarbonImmutable $approved_at
+ * @property string $fingerprint
+ * @property array<string, mixed>|null $evidence
+ */
 class ExecutionCapacityApproval extends Model
 {
     public const UPDATED_AT = null;

@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 /**
  * @property int $id
  * @property int $execution_id
+ * @property int|null $remote_operation_id
  * @property int $sequence
  * @property string $type
  * @property string|null $step_key

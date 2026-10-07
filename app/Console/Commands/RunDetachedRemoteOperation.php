@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Domain\Executions\RemoteOperationCoordinator;
+use App\Domain\Processes\RegisteredCommandRegistry;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Models\RemoteOperation;
 use Illuminate\Console\Command;
@@ -14,7 +15,11 @@ class RunDetachedRemoteOperation extends Command
 
     protected $description = 'Ejecuta una operación registrada fuera del worker Laravel y conserva evidencia durable.';
 
-    public function handle(RemoteOperationCoordinator $operations, ExecutionWorkspaceManager $workspaces): int
+    public function handle(
+        RemoteOperationCoordinator $operations,
+        ExecutionWorkspaceManager $workspaces,
+        RegisteredCommandRegistry $registry,
+    ): int
     {
         $requestPath = (string) $this->argument('requestPath');
         if (is_link($requestPath) || is_file($requestPath) === false) {
@@ -47,12 +52,30 @@ class RunDetachedRemoteOperation extends Command
             throw new RuntimeException('No se pudo retirar el descriptor de lanzamiento de un solo uso.');
         }
 
+        $commandKey = $payload['command_key'] ?? null;
+        $rawParameters = $payload['parameters'] ?? null;
+        if (! is_string($commandKey) || ! is_array($rawParameters)) {
+            $this->error('El comando o sus parámetros no tienen un formato válido.');
+
+            return self::FAILURE;
+        }
+        /** @var array<string, string> $parameters */
+        $parameters = [];
+        foreach ($rawParameters as $name => $value) {
+            if (! is_string($name) || ! is_string($value)) {
+                $this->error('Los parámetros del comando no tienen un formato válido.');
+
+                return self::FAILURE;
+            }
+            $parameters[$name] = $value;
+        }
+
         $operations->runDetached(
             (int) $operation->getKey(),
-            (string) $payload['command_key'],
-            is_array($payload['parameters'] ?? null) ? $payload['parameters'] : [],
-            (string) ($payload['working_directory'] ?? ''),
-            is_array($payload['registered_definition'] ?? null) ? $payload['registered_definition'] : [],
+            $commandKey,
+            $parameters,
+            is_string($payload['working_directory'] ?? null) ? $payload['working_directory'] : '',
+            $registry->resolve($commandKey, $parameters),
         );
 
         return self::SUCCESS;

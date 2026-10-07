@@ -5,6 +5,28 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property int $id
+ * @property int $execution_id
+ * @property int $project_id
+ * @property int $tool_version_id
+ * @property int $tool_distribution_id
+ * @property string $workflow_key
+ * @property string $adapter_key
+ * @property string $provider_key
+ * @property string $distribution_sha256
+ * @property string $configuration_sha256
+ * @property array<string, mixed> $capabilities_snapshot
+ * @property list<int>|null $input_artifact_ids
+ * @property array<string, mixed>|null $configuration_snapshot
+ * @property list<int>|null $source_package_ids
+ * @property array<string, string>|null $source_package_hashes
+ * @property int|null $capacity_approval_id
+ * @property int|null $approved_quota_bytes
+ * @property int|null $runtime_configuration_id
+ * @property-read ToolVersion $toolVersion
+ * @property-read ToolDistribution $distribution
+ */
 class ExecutionToolBinding extends Model
 {
     public const UPDATED_AT = null;

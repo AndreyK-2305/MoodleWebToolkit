@@ -102,6 +102,7 @@ class ExecutionWorkspaceManager
         return $absolute;
     }
 
+    /** @param array<string, mixed> $state */
     public function writeState(Execution $execution, string $name, array $state): string
     {
         if (preg_match('/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}\.json$/D', $name) !== 1) {
@@ -113,6 +114,7 @@ class ExecutionWorkspaceManager
         return $this->writeAtomic($execution, 'state', $name, $contents);
     }
 
+    /** @param array<string, mixed> $state */
     public function writeOperationEvidence(Execution $execution, string $operationUuid, string $name, array $state): string
     {
         if (preg_match('/^[a-f0-9-]{36}$/Di', $operationUuid) !== 1
@@ -303,7 +305,7 @@ class ExecutionWorkspaceManager
         $relative = ltrim(substr($target, strlen($root)), DIRECTORY_SEPARATOR);
         $cursor = rtrim($root, DIRECTORY_SEPARATOR);
 
-        foreach (array_filter(explode(DIRECTORY_SEPARATOR, $relative), 'strlen') as $segment) {
+        foreach (array_filter(explode(DIRECTORY_SEPARATOR, $relative), fn (string $segment): bool => $segment !== '') as $segment) {
             $cursor .= DIRECTORY_SEPARATOR.$segment;
 
             if (is_link($cursor)) {

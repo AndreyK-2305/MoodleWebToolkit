@@ -9,6 +9,7 @@ use App\Models\Execution;
 use RuntimeException;
 use Throwable;
 
+/** @phpstan-import-type RegisteredCommandDefinition from RegisteredCommandRegistry */
 class RegisteredCommandRunner
 {
     private readonly RegisteredCommandRegistry $registry;
@@ -34,6 +35,7 @@ class RegisteredCommandRunner
      * @param  array<string, string>  $parameters
      * @param  null|callable(int):void  $onStarted
      * @param  null|callable(int):void  $onHeartbeat
+     * @param  RegisteredCommandDefinition|null  $registeredDefinition
      */
     public function run(
         Execution $execution,
@@ -165,9 +167,6 @@ class RegisteredCommandRunner
                     $timedOut = true;
                     $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
                     $exitCode = 124;
-                    if ($status['running'] === false) {
-                        break;
-                    }
                 }
 
                 if (microtime(true) - $lastHeartbeat >= 10) {
@@ -185,9 +184,6 @@ class RegisteredCommandRunner
                         $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
                         $exitCode = 125;
                         $stderr .= "\n[Proceso terminado al superar la cuota o fallar la inspección del workspace.]";
-                        if ($status['running'] === false) {
-                            break;
-                        }
                     }
                 }
 
@@ -255,7 +251,7 @@ class RegisteredCommandRunner
         }
 
         return new RegisteredProcessResult(
-            $exitCode ?? 255,
+            $exitCode,
             $stdout,
             $stderr,
             $processId,
@@ -269,7 +265,10 @@ class RegisteredCommandRunner
         );
     }
 
-    /** @param resource|null $stream @param resource $hash */
+    /**
+     * @param resource|null $stream
+     * @param resource $hash
+     */
     private function persistOutputChunk(mixed $stream, string $chunk, mixed $hash): void
     {
         hash_update($hash, $chunk);

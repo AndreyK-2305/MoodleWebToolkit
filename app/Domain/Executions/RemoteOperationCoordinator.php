@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
 
+/** @phpstan-import-type RegisteredCommandDefinition from RegisteredCommandRegistry */
 class RemoteOperationCoordinator
 {
     public function __construct(
@@ -200,6 +201,10 @@ class RemoteOperationCoordinator
     }
 
     /** @param array<string, string> $parameters */
+    /**
+     * @param array<string, string> $parameters
+     * @param RegisteredCommandDefinition $registeredDefinition
+     */
     public function runDetached(int $operationId, string $commandKey, array $parameters, string $workingDirectory, array $registeredDefinition): RemoteOperation
     {
         $operation = RemoteOperation::query()->with('execution')->findOrFail($operationId);
@@ -235,7 +240,10 @@ class RemoteOperationCoordinator
         return $this->runProcess($operation, $parameters, $workingDirectory, $registeredDefinition);
     }
 
-    /** @param array<string, string> $parameters @return array{RemoteOperation, bool} */
+    /**
+     * @param array<string, string> $parameters
+     * @return array{RemoteOperation, bool}
+     */
     private function createOperation(Execution $execution, string $idempotencyKey, string $commandKey, array $parameters, string $workingDirectory): array
     {
         if (! (bool) config('toolkit.features.local_runner.enabled', false)) {
@@ -286,7 +294,11 @@ class RemoteOperationCoordinator
         });
     }
 
-    /** @param array<string, string> $parameters @param list<array<string, mixed>> $descriptors */
+    /**
+     * @param array<string, string> $parameters
+     * @param list<array<string, mixed>> $descriptors
+     * @param array<string, mixed> $definition
+     */
     private function commandHash(string $commandKey, array $parameters, string $workingDirectory, array $descriptors = [], array $definition = []): string
     {
         ksort($parameters, SORT_STRING);
@@ -306,7 +318,10 @@ class RemoteOperationCoordinator
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
     }
 
-    /** @param array<string, string> $parameters */
+    /**
+     * @param array<string, string> $parameters
+     * @param RegisteredCommandDefinition $registeredDefinition
+     */
     private function runProcess(RemoteOperation $operation, array $parameters, string $workingDirectory, array $registeredDefinition): RemoteOperation
     {
         $execution = $operation->execution;
@@ -592,7 +607,10 @@ class RemoteOperationCoordinator
             && is_string($evidence['started_at'] ?? null);
     }
 
-    /** @param array<string, mixed> $evidence @param array<string, mixed>|null $launch */
+    /**
+     * @param array<string, mixed> $evidence
+     * @param array<string, mixed>|null $launch
+     */
     private function validExitEvidence(RemoteOperation $operation, array $evidence, ?array $launch): bool
     {
         $identityMatches = $operation->process_id === null
@@ -730,12 +748,12 @@ class RemoteOperationCoordinator
             if ($locked->communication_state === RemoteCommunicationState::TERMINATED) {
                 return $locked;
             }
-            if (($locked->evidence['cancellable'] ?? false) !== true) {
+            if (((($locked->evidence ?? [])['cancellable'] ?? false)) !== true) {
                 throw new RuntimeException('La operación registrada no es cancelable; detener el coordinador o el runtime es una acción distinta.');
             }
 
             $now = now()->utc();
-            $cancelAt = $locked->evidence['cancel_requested_at'] ?? $now->toIso8601String();
+            $cancelAt = ($locked->evidence ?? [])['cancel_requested_at'] ?? $now->toIso8601String();
             $fields = [
                 'last_observed_at' => $now,
                 'evidence' => [...($locked->evidence ?? []), 'cancel_requested_at' => $cancelAt],
@@ -771,7 +789,7 @@ class RemoteOperationCoordinator
                 'schema_version' => 'remote-operation-cancel.v1',
                 'operation_uuid' => $operation->operation_uuid,
                 'command_sha256' => $operation->command_sha256,
-                'requested_at' => ($operation->evidence['cancel_requested_at'] ?? now()->utc()->toIso8601String()),
+                'requested_at' => (($operation->evidence ?? [])['cancel_requested_at'] ?? now()->utc()->toIso8601String()),
                 'pid' => $operation->process_id === null ? null : (int) $operation->process_id,
                 'pgid' => $operation->process_group_id,
                 'process_start_identity' => $operation->process_start_identity,

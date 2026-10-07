@@ -15,7 +15,10 @@ class SourcePackageRegistry
 {
     public function __construct(private readonly SensitiveValueRedactor $redactor) {}
 
-    /** @param list<string> $compatibleWorkflows @param array<string, mixed> $capabilities */
+    /**
+     * @param list<string> $compatibleWorkflows
+     * @param array<string, mixed> $capabilities
+     */
     public function register(
         Artifact $artifact,
         string $sourceId,

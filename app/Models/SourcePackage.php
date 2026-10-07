@@ -6,6 +6,29 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use LogicException;
 
+/**
+ * @property int $id
+ * @property string $uuid
+ * @property int $project_id
+ * @property int $producer_execution_id
+ * @property int $artifact_id
+ * @property string $producer_tool_version
+ * @property string $schema_version
+ * @property string $source_id
+ * @property string $name
+ * @property int $size_bytes
+ * @property string $sha256
+ * @property string|null $manifest_sha256
+ * @property string $validation_state
+ * @property \Carbon\CarbonImmutable|null $validated_at
+ * @property array<string, mixed>|null $capabilities
+ * @property array{workflows?: list<string>}|null $compatibility
+ * @property string $sensitivity
+ * @property string $availability
+ * @property \Carbon\CarbonImmutable|null $revoked_at
+ * @property array<string, mixed>|null $evidence
+ * @property-read Artifact|null $artifact
+ */
 class SourcePackage extends Model
 {
     protected $fillable = [
