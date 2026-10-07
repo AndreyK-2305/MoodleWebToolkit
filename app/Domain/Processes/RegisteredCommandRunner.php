@@ -31,9 +31,9 @@ class RegisteredCommandRunner
      * Execute a command key from the administrator-owned registry, with argv (never a shell string)
      * and a working directory constrained to one workspace area.
      *
-     * @param array<string, string> $parameters
-     * @param null|callable(int):void $onStarted
-     * @param null|callable(int):void $onHeartbeat
+     * @param  array<string, string>     $parameters
+     * @param  null|callable(int):void  $onStarted
+     * @param  null|callable(int):void  $onHeartbeat
      */
     public function run(
         Execution $execution,

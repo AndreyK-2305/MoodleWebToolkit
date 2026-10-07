@@ -76,6 +76,7 @@ class ApproveGeneratedRuntimeConfiguration
                 ->first();
             if ($existing !== null) {
                 if (hash_equals($existing->fingerprint, $fingerprint)) {
+
                     return $existing;
                 }
                 throw new ToolOperationBlocked('La configuración aprobada para esta ejecución y versión es inmutable.');
@@ -120,6 +121,7 @@ class ApproveGeneratedRuntimeConfiguration
                 ) {
                     throw new ToolOperationBlocked('No existe un almacén de secretos aprobado; no se guarda ningún secreto en claro.');
                 }
+
                 continue;
             }
             if (is_string($value) && $this->redactor->redactString($value) !== $value) {
@@ -134,9 +136,11 @@ class ApproveGeneratedRuntimeConfiguration
     private function canonicalize(mixed $value): mixed
     {
         if (is_array($value) === false) {
+
             return $value;
         }
         if (array_is_list($value)) {
+
             return array_map(fn (mixed $item): mixed => $this->canonicalize($item), $value);
         }
         ksort($value, SORT_STRING);

@@ -210,10 +210,12 @@ class BindExecutionTool
     private function canonicalize(mixed $value): mixed
     {
         if (is_array($value) === false) {
+
             return $value;
         }
 
         if (array_is_list($value)) {
+
             return array_map(fn (mixed $item): mixed => $this->canonicalize($item), $value);
         }
 
@@ -241,6 +243,7 @@ class BindExecutionTool
                     throw new ToolOperationBlocked('No existe un almacén de secretos aprobado; se bloqueó la configuración con un secreto en claro.');
                 }
                 $safe[$key] = ['secret_ref' => $value['secret_ref'], 'version' => $value['version']];
+
                 continue;
             }
             if (is_string($value) && $this->redactor->redactString($value) !== $value) {
