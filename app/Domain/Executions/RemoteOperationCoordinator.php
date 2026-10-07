@@ -22,13 +22,29 @@ use RuntimeException;
 /** @phpstan-import-type RegisteredCommandDefinition from RegisteredCommandRegistry */
 class RemoteOperationCoordinator
 {
+    private readonly RegisteredCommandRunner $runner;
+
+    private readonly RegisteredCommandRegistry $registry;
+
+    private readonly LocalProcessInspector $inspector;
+
+    private readonly SensitiveValueRedactor $redactor;
+
+    private readonly ExecutionWorkspaceManager $workspaces;
+
     public function __construct(
-        private readonly RegisteredCommandRunner $runner,
-        private readonly RegisteredCommandRegistry $registry,
-        private readonly LocalProcessInspector $inspector,
-        private readonly SensitiveValueRedactor $redactor,
-        private readonly ExecutionWorkspaceManager $workspaces,
-    ) {}
+        RegisteredCommandRunner $runner,
+        RegisteredCommandRegistry $registry,
+        LocalProcessInspector $inspector,
+        SensitiveValueRedactor $redactor,
+        ExecutionWorkspaceManager $workspaces,
+    ) {
+        $this->runner = $runner;
+        $this->registry = $registry;
+        $this->inspector = $inspector;
+        $this->redactor = $redactor;
+        $this->workspaces = $workspaces;
+    }
 
     /** @param array<string, string> $parameters */
     public function execute(Execution $execution, string $idempotencyKey, string $commandKey, array $parameters = [], string $workingDirectory = ''): RemoteOperation

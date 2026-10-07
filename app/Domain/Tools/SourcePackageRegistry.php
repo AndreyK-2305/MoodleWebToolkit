@@ -21,8 +21,8 @@ class SourcePackageRegistry
     }
 
     /**
-     * @param  list<string>            $compatibleWorkflows
-     * @param  array<string, mixed>    $capabilities
+     * @param  list<string>  $compatibleWorkflows
+     * @param  array<string, mixed>  $capabilities
      */
     public function register(
         Artifact $artifact,

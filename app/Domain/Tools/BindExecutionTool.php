@@ -36,7 +36,7 @@ class BindExecutionTool
 
     /**
      * @param  array<string, mixed>  $configuration
-     * @param  list<int>             $sourcePackageIds
+     * @param  list<int>  $sourcePackageIds
      */
     public function bind(
         Execution $execution,

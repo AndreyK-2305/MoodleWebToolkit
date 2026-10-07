@@ -11,10 +11,17 @@ use RuntimeException;
 
 class DeployToolDistribution
 {
+    private readonly ToolDistributionVerifier $verifier;
+
+    private readonly ExecutionWorkspaceManager $workspaces;
+
     public function __construct(
-        private readonly ToolDistributionVerifier $verifier,
-        private readonly ExecutionWorkspaceManager $workspaces,
-    ) {}
+        ToolDistributionVerifier $verifier,
+        ExecutionWorkspaceManager $workspaces,
+    ) {
+        $this->verifier = $verifier;
+        $this->workspaces = $workspaces;
+    }
 
     /** @return array{path: string, evidence: array<string, mixed>} */
     public function deploy(Execution $execution, ToolDistribution $distribution): array
