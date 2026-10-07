@@ -15,7 +15,6 @@ use App\Models\ToolDistribution;
 use App\Models\ToolVersion;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use RuntimeException;
 
 class BindExecutionTool
 {
@@ -23,7 +22,8 @@ class BindExecutionTool
         private readonly ToolDistributionVerifier $verifier,
         private readonly ToolOperationGate $gate,
         private readonly SensitiveValueRedactor $redactor,
-    ) {}
+    )
+    {}
 
     /** @param list<int> $sourcePackageIds @param array<string, mixed> $configuration */
     public function bind(
@@ -35,7 +35,8 @@ class BindExecutionTool
         string $providerKey,
         array $configuration,
         array $sourcePackageIds = [],
-    ): ExecutionToolBinding {
+    ): ExecutionToolBinding
+    {
         if ((int) $distribution->tool_version_id !== (int) $version->getKey()) {
             throw new ToolOperationBlocked('La distribución no pertenece a la versión de herramienta seleccionada.');
         }
@@ -79,8 +80,8 @@ class BindExecutionTool
             $this->gate->assertRunnable($lockedVersion, $workflowKey);
             if ((int) $lockedDistribution->tool_version_id !== (int) $lockedVersion->getKey()
                 || $lockedDistribution->verification_state !== 'VERIFIED'
-                || !hash_equals((string) $lockedVersion->tree_sha256, (string) $lockedDistribution->distribution_sha256)
-                || !hash_equals((string) $lockedDistribution->distribution_sha256, $verified->treeSha256)
+                || ! hash_equals((string) $lockedVersion->tree_sha256, (string) $lockedDistribution->distribution_sha256)
+                || ! hash_equals((string) $lockedDistribution->distribution_sha256, $verified->treeSha256)
             ) {
                 throw new ToolOperationBlocked('El catálogo cambió durante la creación del binding; vuelve a verificar la distribución.');
             }
@@ -103,15 +104,15 @@ class BindExecutionTool
                     || $package->availability !== 'AVAILABLE'
                     || $package->revoked_at !== null
                     || $package->artifact?->category !== 'SOURCE_PACKAGE'
-                    || !hash_equals($package->sha256, (string) $package->artifact?->sha256)
-                    || !in_array($workflowKey, $package->compatibility['workflows'] ?? [], true)
+                    || ! hash_equals($package->sha256, (string) $package->artifact?->sha256)
+                    || ! in_array($workflowKey, $package->compatibility['workflows'] ?? [], true)
                 ) {
                     throw new ToolOperationBlocked('El paquete fuente no pertenece al proyecto, no está vigente o no es compatible con el flujo.');
                 }
                 $artifactPath = Storage::disk($package->artifact->disk)->path($package->artifact->path);
-                $currentHash = is_file($artifactPath) && !is_link($artifactPath) ? hash_file('sha256', $artifactPath) : false;
-                $currentSize = is_file($artifactPath) && !is_link($artifactPath) ? filesize($artifactPath) : false;
-                if (!is_string($currentHash) || !hash_equals($package->sha256, $currentHash) || $currentSize !== $package->size_bytes) {
+                $currentHash = is_file($artifactPath) && ! is_link($artifactPath) ? hash_file('sha256', $artifactPath) : false;
+                $currentSize = is_file($artifactPath) && ! is_link($artifactPath) ? filesize($artifactPath) : false;
+                if (! is_string($currentHash) || ! hash_equals($package->sha256, $currentHash) || $currentSize !== $package->size_bytes) {
                     throw new ToolOperationBlocked('El paquete fuente cambió después de su validación.');
                 }
                 $sourceHashes[(string) $sourcePackageId] = $package->sha256;
@@ -177,7 +178,7 @@ class BindExecutionTool
                     && (int) $existing->capacity_approval_id === (int) $capacity->getKey()
                     && $existing->runtime_configuration_id === $runtimeConfiguration?->getKey();
 
-                if (!$same) {
+                if (! $same) {
                     throw new ToolOperationBlocked('La ejecución ya está fijada a otra combinación inmutable de herramienta.');
                 }
 
@@ -200,7 +201,7 @@ class BindExecutionTool
 
     private function canonicalize(mixed $value): mixed
     {
-        if (!is_array($value)) {
+        if (! is_array($value)) {
             return $value;
         }
 
@@ -223,8 +224,8 @@ class BindExecutionTool
         $safe = [];
         foreach ($configuration as $key => $value) {
             if ($this->redactor->isSensitiveKeyName((string) $key)) {
-                if (!is_array($value) || array_diff(array_keys($value), ['secret_ref', 'version']) !== []
-                    || !is_string($value['secret_ref'] ?? null) || !is_string($value['version'] ?? null)
+                if (! is_array($value) || array_diff(array_keys($value), ['secret_ref', 'version']) !== []
+                    || ! is_string($value['secret_ref'] ?? null) || ! is_string($value['version'] ?? null)
                     || $value['secret_ref'] === '' || $value['version'] === ''
                     || $this->redactor->redactString($value['secret_ref']) !== $value['secret_ref']
                     || $this->redactor->redactString($value['version']) !== $value['version']

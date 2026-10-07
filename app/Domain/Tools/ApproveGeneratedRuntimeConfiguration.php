@@ -3,13 +3,13 @@
 namespace App\Domain\Tools;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\AuditLog;
 use App\Models\Execution;
 use App\Models\ExecutionRuntimeConfiguration;
 use App\Models\ToolVersion;
 use App\Models\User;
-use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -24,7 +24,8 @@ class ApproveGeneratedRuntimeConfiguration
     public function __construct(
         private readonly ExecutionWorkspaceManager $workspaces,
         private readonly SensitiveValueRedactor $redactor,
-    ) {}
+    )
+    {}
 
     /** @param array<string, mixed> $configuration */
     public function approve(Execution $execution, ToolVersion $version, array $configuration, string $schemaVersion, string $source, User $actor): ExecutionRuntimeConfiguration
@@ -105,8 +106,8 @@ class ApproveGeneratedRuntimeConfiguration
     {
         foreach ($configuration as $key => $value) {
             if ($this->redactor->isSensitiveKeyName((string) $key)) {
-                if (!is_array($value) || array_diff(array_keys($value), ['secret_ref', 'version']) !== []
-                    || !is_string($value['secret_ref'] ?? null) || !is_string($value['version'] ?? null)
+                if (! is_array($value) || array_diff(array_keys($value), ['secret_ref', 'version']) !== []
+                    || ! is_string($value['secret_ref'] ?? null) || ! is_string($value['version'] ?? null)
                     || $value['secret_ref'] === '' || $value['version'] === ''
                     || $this->redactor->redactString($value['secret_ref']) !== $value['secret_ref']
                     || $this->redactor->redactString($value['version']) !== $value['version']
@@ -126,7 +127,7 @@ class ApproveGeneratedRuntimeConfiguration
 
     private function canonicalize(mixed $value): mixed
     {
-        if (!is_array($value)) {
+        if (! is_array($value)) {
             return $value;
         }
         if (array_is_list($value)) {

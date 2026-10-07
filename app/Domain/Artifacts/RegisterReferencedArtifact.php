@@ -3,7 +3,6 @@
 namespace App\Domain\Artifacts;
 
 use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
-use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Enums\ArtifactCategory;
 use App\Models\Artifact;
 use App\Models\Execution;
@@ -16,7 +15,8 @@ class RegisterReferencedArtifact
     public function __construct(
         private readonly ArtifactReferenceStorage $storage,
         private readonly SensitiveValueRedactor $redactor,
-    ) {}
+    )
+    {}
 
     /** @param array<string, mixed> $metadata */
     public function register(
@@ -28,7 +28,8 @@ class RegisterReferencedArtifact
         ?string $expectedSha256 = null,
         ?int $expectedSize = null,
         ?int $remoteOperationId = null,
-    ): Artifact {
+    ): Artifact
+    {
         $operation = $remoteOperationId === null
             ? null
             : RemoteOperation::query()
@@ -37,7 +38,7 @@ class RegisterReferencedArtifact
                 ->where('communication_state', 'TERMINATED')
                 ->first();
         $exitEvidence = $operation?->evidence['exit_evidence'] ?? null;
-        if ($operation === null || $operation->terminated_at === null || !is_array($exitEvidence)
+        if ($operation === null || $operation->terminated_at === null || ! is_array($exitEvidence)
             || ($exitEvidence['operation_uuid'] ?? null) !== $operation->operation_uuid
             || ($exitEvidence['command_sha256'] ?? null) !== $operation->command_sha256
         ) {
