@@ -2,22 +2,24 @@
 
 namespace Tests\Feature\Tools;
 
-use App\Domain\Processes\RegisteredCommandRunner;
-use App\Domain\Processes\RegisteredCommandRegistry;
-use App\Domain\Executions\RemoteOperationCoordinator;
-use App\Jobs\RunRegisteredRemoteOperation;
-use App\Domain\Workspaces\ApproveExecutionCapacity;
-use App\Domain\Executions\LocalProcessInspector;
 use App\Domain\Executions\ExecutionEventRecorder;
+use App\Domain\Executions\LocalProcessInspector;
 use App\Domain\Executions\LocalToolExecutionProvider;
+use App\Domain\Executions\RemoteOperationCoordinator;
+use App\Domain\Processes\RegisteredCommandRegistry;
+use App\Domain\Processes\RegisteredCommandRunner;
+use App\Domain\Workspaces\ApproveExecutionCapacity;
+use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\EventSeverity;
 use App\Enums\LogStream;
+use App\Jobs\RunRegisteredRemoteOperation;
+use App\Models\Execution;
 use App\Models\ExecutionLog;
 use App\Models\RemoteOperation;
-use InvalidArgumentException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use Tests\Feature\Domain\DomainTestCase;
 
 class RegisteredCommandRunnerTest extends DomainTestCase
@@ -295,7 +297,7 @@ class RegisteredCommandRunnerTest extends DomainTestCase
         $operation = $coordinator->schedule($execution, 'exit-evidence-recovery', 'platform_health');
         (new RunRegisteredRemoteOperation((int) $operation->getKey(), 'platform_health', [], ''))->handle($coordinator);
         $operation = $this->waitForTerminal($operation);
-        $exitPath = app(\App\Domain\Workspaces\ExecutionWorkspaceManager::class)
+        $exitPath = app(ExecutionWorkspaceManager::class)
             ->operationEvidencePath($execution, $operation->operation_uuid, 'exit.json');
         $exitEvidence = json_decode((string) file_get_contents($exitPath), true);
         $this->assertIsArray($exitEvidence);
@@ -432,7 +434,7 @@ class RegisteredCommandRunnerTest extends DomainTestCase
         }
     }
 
-    private function approveCapacity(\App\Models\Execution $execution): void
+    private function approveCapacity(Execution $execution): void
     {
         app(ApproveExecutionCapacity::class)->approve($execution, 32 * 1024 * 1024, 10, $execution->creator);
     }
@@ -465,7 +467,7 @@ class RegisteredCommandRunnerTest extends DomainTestCase
         return ($fields[0] ?? null) !== 'Z';
     }
 
-    private function remoteOperation(\App\Models\Execution $execution, string $key): RemoteOperation
+    private function remoteOperation(Execution $execution, string $key): RemoteOperation
     {
         return RemoteOperation::query()->create([
             'execution_id' => $execution->getKey(),

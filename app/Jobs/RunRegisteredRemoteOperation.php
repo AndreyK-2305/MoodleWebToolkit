@@ -10,7 +10,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 
-class RunRegisteredRemoteOperation implements ShouldQueue, ShouldBeEncrypted
+class RunRegisteredRemoteOperation implements ShouldBeEncrypted, ShouldQueue
 {
     use Dispatchable;
     use InteractsWithQueue;
@@ -29,7 +29,8 @@ class RunRegisteredRemoteOperation implements ShouldQueue, ShouldBeEncrypted
         public readonly string $commandKey,
         public readonly array $parameters,
         public readonly string $workingDirectory,
-    ) {}
+    ) {
+    }
 
     public function handle(RemoteOperationCoordinator $operations): void
     {

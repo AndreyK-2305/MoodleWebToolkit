@@ -3,17 +3,18 @@
 namespace App\Domain\Executions;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
-use App\Domain\Processes\RegisteredCommandRunner;
 use App\Domain\Processes\RegisteredCommandRegistry;
+use App\Domain\Processes\RegisteredCommandRunner;
+use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\LogStream;
 use App\Enums\RemoteCommunicationState;
 use App\Enums\RemoteFunctionalState;
+use App\Jobs\RunRegisteredRemoteOperation;
+use App\Models\AuditLog;
 use App\Models\Execution;
 use App\Models\ExecutionLog;
-use App\Models\AuditLog;
 use App\Models\RemoteOperation;
-use App\Domain\Workspaces\ExecutionWorkspaceManager;
-use App\Jobs\RunRegisteredRemoteOperation;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -788,7 +789,7 @@ class RemoteOperationCoordinator
         return $operation->refresh();
     }
 
-    public function requestManualReconciliation(RemoteOperation $operation, \App\Models\User $actor, string $reason): RemoteOperation
+    public function requestManualReconciliation(RemoteOperation $operation, User $actor, string $reason): RemoteOperation
     {
         if (trim($reason) === '') {
             throw new RuntimeException('La reconciliación manual requiere un motivo auditable.');

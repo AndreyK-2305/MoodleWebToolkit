@@ -2,13 +2,14 @@
 
 namespace Tests\Feature\Tools;
 
-use App\Domain\Tools\ToolDistributionVerifier;
 use App\Domain\Tools\BindExecutionTool;
+use App\Domain\Tools\ToolDistributionVerifier;
+use App\Domain\Tools\ToolOperationGate;
+use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Enums\ToolCompatibilityStatus;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Tool;
 use App\Models\ToolDistribution;
-use App\Domain\Workspaces\ApproveExecutionCapacity;
 use Database\Seeders\ToolCatalogSeeder;
 use RuntimeException;
 use Tests\Feature\Domain\DomainTestCase;
@@ -107,6 +108,6 @@ class ToolCatalogTest extends DomainTestCase
         config(['toolkit.features.recolector_742.enabled' => true]);
 
         $this->expectException(ToolOperationBlocked::class);
-        app(\App\Domain\Tools\ToolOperationGate::class)->assertRunnable($version, 'moodle.source.export');
+        app(ToolOperationGate::class)->assertRunnable($version, 'moodle.source.export');
     }
 }

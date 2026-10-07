@@ -2,8 +2,8 @@
 
 namespace App\Providers;
 
-use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
+use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\LocalArtifactStorage;
 use App\Domain\Executions\Contracts\ExecutionProvider;
 use App\Domain\Executions\FakeExecutionProvider;

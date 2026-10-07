@@ -37,7 +37,7 @@ class RegisterReferencedArtifact
                 ->where('communication_state', 'TERMINATED')
                 ->first();
         $exitEvidence = $operation?->evidence['exit_evidence'] ?? null;
-        if ($operation === null || $operation->terminated_at === null || ! is_array($exitEvidence)
+        if ($operation === null || $operation->terminated_at === null || !is_array($exitEvidence)
             || ($exitEvidence['operation_uuid'] ?? null) !== $operation->operation_uuid
             || ($exitEvidence['command_sha256'] ?? null) !== $operation->command_sha256
         ) {

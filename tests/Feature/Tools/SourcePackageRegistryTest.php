@@ -2,20 +2,22 @@
 
 namespace Tests\Feature\Tools;
 
+use App\Domain\Artifacts\RegisterReferencedArtifact;
 use App\Domain\Tools\BindExecutionTool;
 use App\Domain\Tools\SourcePackageRegistry;
-use App\Domain\Artifacts\RegisterReferencedArtifact;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Enums\ArtifactCategory;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Artifact;
+use App\Models\Execution;
 use App\Models\RemoteOperation;
 use App\Models\Tool;
 use Database\Seeders\ToolCatalogSeeder;
-use InvalidArgumentException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use Tests\Feature\Domain\DomainTestCase;
 
 class SourcePackageRegistryTest extends DomainTestCase
@@ -61,7 +63,7 @@ class SourcePackageRegistryTest extends DomainTestCase
         $this->assertSame([$package->getKey()], $binding->source_package_ids);
         $this->assertSame($package->sha256, $binding->source_package_hashes[(string) $package->getKey()]);
         $this->assertSame($project->getKey(), $binding->project_id);
-        $this->assertSame(1, \Illuminate\Support\Facades\DB::table('execution_tool_binding_sources')->where('execution_tool_binding_id', $binding->getKey())->count());
+        $this->assertSame(1, DB::table('execution_tool_binding_sources')->where('execution_tool_binding_id', $binding->getKey())->count());
     }
 
     public function test_package_from_another_project_is_rejected(): void
@@ -183,7 +185,7 @@ class SourcePackageRegistryTest extends DomainTestCase
         return [$version, $version->distributions()->firstOrFail()];
     }
 
-    private function sourceArtifact(\App\Models\Execution $execution, ArtifactCategory $category = ArtifactCategory::SOURCE_PACKAGE): Artifact
+    private function sourceArtifact(Execution $execution, ArtifactCategory $category = ArtifactCategory::SOURCE_PACKAGE): Artifact
     {
         $relative = $this->fixturePrefix.'/'.Str::uuid().'.bin';
         $absolute = Storage::disk('local')->path($relative);

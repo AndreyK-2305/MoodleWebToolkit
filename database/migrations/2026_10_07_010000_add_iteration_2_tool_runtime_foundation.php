@@ -123,22 +123,22 @@ return new class extends Migration
         });
 
         if (DB::getDriverName() === 'pgsql') {
-            DB::statement("ALTER TABLE tool_versions ADD CONSTRAINT tool_versions_identity_check CHECK (archive_sha256 IS NOT NULL OR tree_sha256 IS NOT NULL)");
-            DB::statement("ALTER TABLE tool_distributions ADD CONSTRAINT tool_distributions_kind_check CHECK (kind IN ('TREE', 'ARCHIVE'))");
-            DB::statement("ALTER TABLE tool_distributions ADD CONSTRAINT tool_distributions_state_check CHECK (verification_state IN ('UNVERIFIED', 'VERIFIED', 'REVOKED'))");
-            DB::statement("ALTER TABLE tool_distributions ADD CONSTRAINT tool_distributions_sha_check CHECK (distribution_sha256 ~ '^[0-9a-f]{64}$' AND (manifest_sha256 IS NULL OR manifest_sha256 ~ '^[0-9a-f]{64}$'))");
+            DB::statement('ALTER TABLE tool_versions ADD CONSTRAINT tool_versions_identity_check CHECK (archive_sha256 IS NOT NULL OR tree_sha256 IS NOT NULL)');
+            DB::statement('ALTER TABLE tool_distributions ADD CONSTRAINT tool_distributions_kind_check CHECK (kind IN (\'TREE\', \'ARCHIVE\'))');
+            DB::statement('ALTER TABLE tool_distributions ADD CONSTRAINT tool_distributions_state_check CHECK (verification_state IN (\'UNVERIFIED\', \'VERIFIED\', \'REVOKED\'))');
+            DB::statement('ALTER TABLE tool_distributions ADD CONSTRAINT tool_distributions_sha_check CHECK (distribution_sha256 ~ \'^[0-9a-f]{64}$\' AND (manifest_sha256 IS NULL OR manifest_sha256 ~ \'^[0-9a-f]{64}$\'))');
             DB::statement('ALTER TABLE tool_distributions ADD CONSTRAINT tool_distributions_file_count_check CHECK (file_count > 0)');
-            DB::statement("ALTER TABLE tool_capabilities ADD CONSTRAINT tool_capabilities_state_check CHECK (support_state IN ('SUPPORTED', 'PARTIAL', 'UNSUPPORTED', 'UNKNOWN'))");
-            DB::statement("ALTER TABLE tool_capabilities ADD CONSTRAINT tool_capabilities_evidence_check CHECK (evidence_level IN ('CODE', 'DOC', 'TEST', 'INFERRED'))");
-            DB::statement("ALTER TABLE tool_compatibilities ADD CONSTRAINT tool_compatibilities_status_check CHECK (status IN ('AVAILABLE', 'EXPERIMENTAL', 'LABORATORY', 'BLOCKED', 'INCOMPATIBLE', 'RETIRED'))");
-            DB::statement("ALTER TABLE execution_workspaces ADD CONSTRAINT execution_workspaces_status_check CHECK (status IN ('READY', 'ACTIVE', 'CLEANING', 'CLEANED', 'FAILED'))");
+            DB::statement('ALTER TABLE tool_capabilities ADD CONSTRAINT tool_capabilities_state_check CHECK (support_state IN (\'SUPPORTED\', \'PARTIAL\', \'UNSUPPORTED\', \'UNKNOWN\'))');
+            DB::statement('ALTER TABLE tool_capabilities ADD CONSTRAINT tool_capabilities_evidence_check CHECK (evidence_level IN (\'CODE\', \'DOC\', \'TEST\', \'INFERRED\'))');
+            DB::statement('ALTER TABLE tool_compatibilities ADD CONSTRAINT tool_compatibilities_status_check CHECK (status IN (\'AVAILABLE\', \'EXPERIMENTAL\', \'LABORATORY\', \'BLOCKED\', \'INCOMPATIBLE\', \'RETIRED\'))');
+            DB::statement('ALTER TABLE execution_workspaces ADD CONSTRAINT execution_workspaces_status_check CHECK (status IN (\'READY\', \'ACTIVE\', \'CLEANING\', \'CLEANED\', \'FAILED\'))');
             DB::statement('ALTER TABLE execution_workspaces ADD CONSTRAINT execution_workspaces_quota_check CHECK (quota_bytes > 0 AND usage_bytes >= 0)');
-            DB::statement("ALTER TABLE remote_operations ADD CONSTRAINT remote_operations_communication_check CHECK (communication_state IN ('CONNECTED', 'DEGRADED', 'UNREACHABLE', 'RECONCILING', 'TERMINATED'))");
-            DB::statement("ALTER TABLE remote_operations ADD CONSTRAINT remote_operations_functional_check CHECK (functional_state IN ('PREPARING', 'STARTING', 'RUNNING', 'WAITING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'UNKNOWN'))");
-            DB::statement("ALTER TABLE remote_operations ADD CONSTRAINT remote_operations_command_sha_check CHECK (command_sha256 ~ '^[0-9a-f]{64}$')");
-            DB::statement("ALTER TABLE artifacts ADD CONSTRAINT artifacts_storage_mode_check CHECK (storage_mode IN ('MANAGED', 'REFERENCE'))");
-            DB::statement("ALTER TABLE execution_tool_bindings ADD CONSTRAINT execution_tool_bindings_hash_check CHECK (distribution_sha256 ~ '^[0-9a-f]{64}$' AND configuration_sha256 ~ '^[0-9a-f]{64}$')");
-            DB::statement("ALTER TABLE artifacts ADD CONSTRAINT artifacts_category_check CHECK (category IS NULL OR category IN ('REPORT', 'LOG', 'MANIFEST', 'SOURCE_PACKAGE', 'COURSE_PACKAGE', 'FULL_BACKUP', 'TECHNICAL_EVIDENCE'))");
+            DB::statement('ALTER TABLE remote_operations ADD CONSTRAINT remote_operations_communication_check CHECK (communication_state IN (\'CONNECTED\', \'DEGRADED\', \'UNREACHABLE\', \'RECONCILING\', \'TERMINATED\'))');
+            DB::statement('ALTER TABLE remote_operations ADD CONSTRAINT remote_operations_functional_check CHECK (functional_state IN (\'PREPARING\', \'STARTING\', \'RUNNING\', \'WAITING\', \'SUCCEEDED\', \'FAILED\', \'CANCELLED\', \'UNKNOWN\'))');
+            DB::statement('ALTER TABLE remote_operations ADD CONSTRAINT remote_operations_command_sha_check CHECK (command_sha256 ~ \'^[0-9a-f]{64}$\')');
+            DB::statement('ALTER TABLE artifacts ADD CONSTRAINT artifacts_storage_mode_check CHECK (storage_mode IN (\'MANAGED\', \'REFERENCE\'))');
+            DB::statement('ALTER TABLE execution_tool_bindings ADD CONSTRAINT execution_tool_bindings_hash_check CHECK (distribution_sha256 ~ \'^[0-9a-f]{64}$\' AND configuration_sha256 ~ \'^[0-9a-f]{64}$\')');
+            DB::statement('ALTER TABLE artifacts ADD CONSTRAINT artifacts_category_check CHECK (category IS NULL OR category IN (\'REPORT\', \'LOG\', \'MANIFEST\', \'SOURCE_PACKAGE\', \'COURSE_PACKAGE\', \'FULL_BACKUP\', \'TECHNICAL_EVIDENCE\'))');
             DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION reject_execution_tool_binding_change() RETURNS trigger AS $$
                 BEGIN

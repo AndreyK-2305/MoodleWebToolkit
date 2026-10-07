@@ -2,7 +2,7 @@
 
 namespace App\Domain\Executions\Contracts;
 
-use App\Domain\Executions\Contracts\ExecutionProvider;
+use App\Models\Artifact;
 use App\Models\Execution;
 use App\Models\RemoteOperation;
 use App\Models\ToolDistribution;
@@ -37,7 +37,7 @@ interface ExecutionRuntimeProvider extends ExecutionProvider
 
     public function stopRuntime(RemoteOperation $operation): RemoteOperation;
 
-    /** @return list<\App\Models\Artifact> */
+    /** @return list<Artifact> */
     public function collectArtifacts(RemoteOperation $operation): array;
 
     public function verifyTermination(RemoteOperation $operation): bool;

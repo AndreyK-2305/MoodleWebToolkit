@@ -5,10 +5,14 @@ namespace Tests\Feature\Tools;
 use App\Domain\Tools\DeployToolDistribution;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
+use App\Models\Execution;
 use App\Models\ToolDistribution;
 use Database\Seeders\ToolCatalogSeeder;
+use FilesystemIterator;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 use Tests\Feature\Domain\DomainTestCase;
 
 class ToolDistributionDeploymentTest extends DomainTestCase
@@ -26,9 +30,9 @@ class ToolDistributionDeploymentTest extends DomainTestCase
     protected function tearDown(): void
     {
         if (isset($this->workspaceRoot) && is_dir($this->workspaceRoot)) {
-            $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($this->workspaceRoot, \FilesystemIterator::SKIP_DOTS),
-                \RecursiveIteratorIterator::SELF_FIRST,
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($this->workspaceRoot, FilesystemIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::SELF_FIRST,
             );
             foreach ($iterator as $entry) {
                 @chmod($entry->getPathname(), $entry->isDir() ? 0700 : 0600);
@@ -83,7 +87,7 @@ class ToolDistributionDeploymentTest extends DomainTestCase
         $this->assertFalse($result['evidence']['runtime_configuration_approved']);
     }
 
-    private function approveCapacity(\App\Models\Execution $execution): void
+    private function approveCapacity(Execution $execution): void
     {
         app(ApproveExecutionCapacity::class)->approve($execution, 512 * 1024 * 1024, 10, $execution->creator);
     }

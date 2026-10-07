@@ -3,7 +3,9 @@
 namespace App\Domain\Executions;
 
 use App\Domain\Artifacts\RegisterReferencedArtifact;
+use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Executions\Contracts\ExecutionRuntimeProvider;
+use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\DeployToolDistribution;
 use App\Domain\Tools\ToolDistributionVerifier;
 use App\Domain\Tools\ToolOperationGate;
@@ -12,13 +14,17 @@ use App\Enums\ArtifactCategory;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Artifact;
 use App\Models\Execution;
+use App\Models\ExecutionCapacityApproval;
 use App\Models\ExecutionCommand;
 use App\Models\ExecutionLog;
+use App\Models\ExecutionRuntimeConfiguration;
+use App\Models\ExecutionToolBinding;
 use App\Models\RemoteOperation;
 use App\Models\ToolDistribution;
-use App\Models\ExecutionCapacityApproval;
-use App\Models\ExecutionRuntimeConfiguration;
-use App\Domain\Tools\Contracts\ToolAdapter;
+use FilesystemIterator;
+use Illuminate\Support\Str;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 use RuntimeException;
 use SplFileInfo;
 
@@ -91,7 +97,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         }
 
         $this->gate->assertRunnable($binding->toolVersion, $binding->workflow_key);
-        $distributionSlug = \Illuminate\Support\Str::slug($binding->distribution->key);
+        $distributionSlug = Str::slug($binding->distribution->key);
         $toolDirectory = $this->workspaces->resolve($execution, 'tools', $distributionSlug);
         $deploymentEvidencePath = $this->workspaces->resolve($execution, 'state', 'distribution-'.$distributionSlug.'.json');
         $deploymentEvidence = is_file($deploymentEvidencePath)
@@ -147,15 +153,15 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
             'step_key' => $event->step_key,
             'severity' => $event->severity->value,
             'progress' => $event->progress,
-            'message' => app(\App\Domain\Artifacts\SensitiveValueRedactor::class)->redactString((string) $event->message),
-            'payload' => app(\App\Domain\Artifacts\SensitiveValueRedactor::class)->redact($event->payload),
+            'message' => app(SensitiveValueRedactor::class)->redactString((string) $event->message),
+            'payload' => app(SensitiveValueRedactor::class)->redact($event->payload),
             'created_at' => $event->created_at?->toIso8601String(),
         ])->all();
     }
 
     public function readLogs(RemoteOperation $operation, int $afterId = 0): array
     {
-        $redactor = app(\App\Domain\Artifacts\SensitiveValueRedactor::class);
+        $redactor = app(SensitiveValueRedactor::class);
 
         return ExecutionLog::query()
             ->where('execution_id', $operation->execution_id)
@@ -220,9 +226,9 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
             $declared[$relative] = $descriptor;
         }
         $actual = [];
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::SELF_FIRST,
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST,
         );
 
         foreach ($iterator as $item) {
@@ -297,7 +303,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         $this->workspaces->cleanup($execution);
     }
 
-    private function assertApprovedV8RuntimeConfiguration(Execution $execution, \App\Models\ExecutionToolBinding $binding): void
+    private function assertApprovedV8RuntimeConfiguration(Execution $execution, ExecutionToolBinding $binding): void
     {
         if ($binding->runtime_configuration_id === null) {
             throw new ToolOperationBlocked('V8 no puede iniciar sin configuración runtime generada y aprobada.');

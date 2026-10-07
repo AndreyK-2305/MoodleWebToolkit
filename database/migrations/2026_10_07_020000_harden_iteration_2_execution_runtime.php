@@ -171,15 +171,15 @@ return new class extends Migration
                     BEFORE UPDATE ON remote_operations
                     FOR EACH ROW EXECUTE FUNCTION protect_remote_process_identity();
                 SQL);
-            DB::statement("ALTER TABLE remote_operations ADD CONSTRAINT remote_operations_reconcile_attempts_check CHECK (reconcile_attempts >= 0)");
-            DB::statement("ALTER TABLE source_packages ADD CONSTRAINT source_packages_hash_check CHECK (sha256 ~ '^[0-9a-f]{64}$' AND (manifest_sha256 IS NULL OR manifest_sha256 ~ '^[0-9a-f]{64}$'))");
-            DB::statement("ALTER TABLE source_packages ADD CONSTRAINT source_packages_state_check CHECK (validation_state IN ('REGISTERED', 'VALIDATING', 'VALID', 'INVALID', 'REVOKED'))");
-            DB::statement("ALTER TABLE source_packages ADD CONSTRAINT source_packages_sensitivity_check CHECK (sensitivity IN ('PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'))");
-            DB::statement("ALTER TABLE source_packages ADD CONSTRAINT source_packages_availability_check CHECK (availability IN ('AVAILABLE', 'UNAVAILABLE', 'REVOKED'))");
-            DB::statement("ALTER TABLE execution_capacity_approvals ADD CONSTRAINT execution_capacity_positive_check CHECK (estimate_bytes > 0 AND approved_quota_bytes > 0 AND available_bytes_observed >= 0 AND margin_percent <= 500)");
-            DB::statement("ALTER TABLE execution_capacity_approvals ADD CONSTRAINT execution_capacity_fingerprint_check CHECK (fingerprint ~ '^[0-9a-f]{64}$')");
-            DB::statement("ALTER TABLE execution_runtime_configurations ADD CONSTRAINT execution_runtime_configuration_hash_check CHECK (content_sha256 ~ '^[0-9a-f]{64}$' AND fingerprint ~ '^[0-9a-f]{64}$')");
-            DB::statement("ALTER TABLE execution_runtime_configurations ADD CONSTRAINT execution_runtime_configuration_state_check CHECK (approval_state IN ('APPROVED', 'REVOKED'))");
+            DB::statement('ALTER TABLE remote_operations ADD CONSTRAINT remote_operations_reconcile_attempts_check CHECK (reconcile_attempts >= 0)');
+            DB::statement('ALTER TABLE source_packages ADD CONSTRAINT source_packages_hash_check CHECK (sha256 ~ \'^[0-9a-f]{64}$\' AND (manifest_sha256 IS NULL OR manifest_sha256 ~ \'^[0-9a-f]{64}$\'))');
+            DB::statement('ALTER TABLE source_packages ADD CONSTRAINT source_packages_state_check CHECK (validation_state IN (\'REGISTERED\', \'VALIDATING\', \'VALID\', \'INVALID\', \'REVOKED\'))');
+            DB::statement('ALTER TABLE source_packages ADD CONSTRAINT source_packages_sensitivity_check CHECK (sensitivity IN (\'PUBLIC\', \'INTERNAL\', \'CONFIDENTIAL\', \'RESTRICTED\'))');
+            DB::statement('ALTER TABLE source_packages ADD CONSTRAINT source_packages_availability_check CHECK (availability IN (\'AVAILABLE\', \'UNAVAILABLE\', \'REVOKED\'))');
+            DB::statement('ALTER TABLE execution_capacity_approvals ADD CONSTRAINT execution_capacity_positive_check CHECK (estimate_bytes > 0 AND approved_quota_bytes > 0 AND available_bytes_observed >= 0 AND margin_percent <= 500)');
+            DB::statement('ALTER TABLE execution_capacity_approvals ADD CONSTRAINT execution_capacity_fingerprint_check CHECK (fingerprint ~ \'^[0-9a-f]{64}$\')');
+            DB::statement('ALTER TABLE execution_runtime_configurations ADD CONSTRAINT execution_runtime_configuration_hash_check CHECK (content_sha256 ~ \'^[0-9a-f]{64}$\' AND fingerprint ~ \'^[0-9a-f]{64}$\')');
+            DB::statement('ALTER TABLE execution_runtime_configurations ADD CONSTRAINT execution_runtime_configuration_state_check CHECK (approval_state IN (\'APPROVED\', \'REVOKED\'))');
             DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION reject_immutable_capacity_approval_change() RETURNS trigger AS $$
                 BEGIN

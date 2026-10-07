@@ -17,19 +17,19 @@ class RunDetachedRemoteOperation extends Command
     public function handle(RemoteOperationCoordinator $operations, ExecutionWorkspaceManager $workspaces): int
     {
         $requestPath = (string) $this->argument('requestPath');
-        if (is_link($requestPath) || ! is_file($requestPath)) {
+        if (is_link($requestPath) || !is_file($requestPath)) {
             $this->error('No se encontró el descriptor privado de la operación.');
             return self::FAILURE;
         }
 
         $payload = json_decode((string) file_get_contents($requestPath), true);
-        if (! is_array($payload) || ! is_int($payload['operation_id'] ?? null)) {
+        if (!is_array($payload) || !is_int($payload['operation_id'] ?? null)) {
             $this->error('El descriptor privado de la operación no es válido.');
             return self::FAILURE;
         }
         $operation = RemoteOperation::query()->with('execution')->find($payload['operation_id']);
         if ($operation === null || $operation->operation_uuid !== ($payload['operation_uuid'] ?? null)
-            || ! hash_equals($operation->command_sha256, (string) ($payload['command_sha256'] ?? ''))
+            || !hash_equals($operation->command_sha256, (string) ($payload['command_sha256'] ?? ''))
         ) {
             $this->error('La identidad del descriptor no coincide con la operación durable.');
             return self::FAILURE;
@@ -39,7 +39,7 @@ class RunDetachedRemoteOperation extends Command
             $this->error('El descriptor está fuera del área privada de estado de la ejecución.');
             return self::FAILURE;
         }
-        if (! unlink($requestPath)) {
+        if (!unlink($requestPath)) {
             throw new RuntimeException('No se pudo retirar el descriptor de lanzamiento de un solo uso.');
         }
 

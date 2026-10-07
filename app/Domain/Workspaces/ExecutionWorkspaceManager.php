@@ -5,10 +5,14 @@ namespace App\Domain\Workspaces;
 use App\Enums\WorkspaceStatus;
 use App\Models\Artifact;
 use App\Models\Execution;
-use App\Models\ExecutionWorkspace;
 use App\Models\ExecutionCapacityApproval;
+use App\Models\ExecutionWorkspace;
+use FilesystemIterator;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 use RuntimeException;
 
 class ExecutionWorkspaceManager
@@ -314,9 +318,9 @@ class ExecutionWorkspaceManager
         }
 
         $total = 0;
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::SELF_FIRST,
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST,
         );
 
         foreach ($iterator as $entry) {
@@ -334,7 +338,7 @@ class ExecutionWorkspaceManager
     /** @return array<string, true> */
     private function protectedPaths(Execution $execution): array
     {
-        $disk = \Illuminate\Support\Facades\Storage::disk('local');
+        $disk = Storage::disk('local');
         $diskRoot = realpath($disk->path(''));
         $protected = [];
 
