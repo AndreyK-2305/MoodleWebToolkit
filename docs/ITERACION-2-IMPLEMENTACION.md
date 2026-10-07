@@ -2,7 +2,7 @@
 
 ## Estado
 
-Las correcciones del plan de cierre se implementan sobre `refactor-v8`, partiendo del SHA revisado `aebe1bca846f16e0336601fbefe17b498ff76ce8`. Esta rama no se considera aprobada hasta que las puertas de calidad se ejecuten sobre su SHA publicado. El trabajo se limita a infraestructura: no se inicia la integración funcional del Recolector, Consolidador ni Integrador, y no se hace merge.
+Las correcciones del plan de cierre se implementan sobre `refactor-v8`, partiendo del SHA revisado `aebe1bca846f16e0336601fbefe17b498ff76ce8`. El commit de código, pruebas y documentación es `19c4b66` (`fix: harden iteration 2 execution infrastructure`); los metadatos del SHA final de la rama y el resultado de CI se informarán después de publicar. Esta rama no se considera aprobada hasta que las puertas de calidad se ejecuten sobre su SHA publicado. El trabajo se limita a infraestructura: no se inicia la integración funcional del Recolector, Consolidador ni Integrador, y no se hace merge.
 
 La BaseLine debe conservar 423 archivos y el SHA-256 canónico `d2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221`. No se modifican sus distribuciones. Recolector 7.4.2 sigue en `LABORATORY`, Consolidador V8 RC12 en `BLOCKED` e Integrador 1.1.5 en `INCOMPATIBLE`; todas las versiones y flags reales permanecen deshabilitados. El catálogo de comandos reales sigue vacío, Fake continúa como proveedor predeterminado y los servicios no montan el socket Docker.
 
