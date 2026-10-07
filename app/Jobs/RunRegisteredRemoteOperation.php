@@ -29,8 +29,7 @@ class RunRegisteredRemoteOperation implements ShouldBeEncrypted, ShouldQueue
         public readonly string $commandKey,
         public readonly array $parameters,
         public readonly string $workingDirectory,
-    )
-    {}
+    ) {}
 
     public function handle(RemoteOperationCoordinator $operations): void
     {

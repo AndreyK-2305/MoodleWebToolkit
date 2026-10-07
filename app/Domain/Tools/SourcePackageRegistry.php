@@ -25,8 +25,7 @@ class SourcePackageRegistry
         array $compatibleWorkflows,
         array $capabilities = [],
         string $sensitivity = 'INTERNAL',
-    ): SourcePackage
-    {
+    ): SourcePackage {
         $artifact->loadMissing('execution.project');
         $execution = $artifact->execution;
         if ($artifact->category !== ArtifactCategory::SOURCE_PACKAGE->value || $execution === null) {
@@ -37,7 +36,7 @@ class SourcePackageRegistry
             ->where('communication_state', 'TERMINATED')
             ->first();
         $exitEvidence = $producerOperation?->evidence['exit_evidence'] ?? null;
-        if ($producerOperation === null || $producerOperation->terminated_at === null || ! is_array($exitEvidence)
+        if ($producerOperation === null || $producerOperation->terminated_at === null || is_array($exitEvidence) === false
             || ($exitEvidence['operation_uuid'] ?? null) !== $producerOperation->operation_uuid
             || ($exitEvidence['command_sha256'] ?? null) !== $producerOperation->command_sha256
         ) {
@@ -46,9 +45,9 @@ class SourcePackageRegistry
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/D', $sourceId) !== 1 || $producerToolVersion === '' || $schemaVersion === '' || $name === '') {
             throw new ToolOperationBlocked('La identidad y el esquema del paquete fuente son obligatorios.');
         }
-        if (! in_array($sensitivity, ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'], true)
-            || ! array_is_list($compatibleWorkflows)
-            || array_filter($compatibleWorkflows, fn (mixed $workflow): bool => ! is_string($workflow)
+        if (in_array($sensitivity, ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'], true) === false
+            || array_is_list($compatibleWorkflows) === false
+            || array_filter($compatibleWorkflows, fn (mixed $workflow): bool => is_string($workflow) === false
                 || preg_match('/^[a-z][a-z0-9._:-]{1,119}$/D', $workflow) !== 1) !== []
         ) {
             throw new ToolOperationBlocked('La sensibilidad o los flujos compatibles del paquete fuente no son válidos.');
@@ -95,16 +94,16 @@ class SourcePackageRegistry
         if ($package->validation_state === 'REVOKED' || $package->availability !== 'AVAILABLE'
             || $artifact === null || $artifact->category !== ArtifactCategory::SOURCE_PACKAGE->value
             || (int) $artifact->execution_id !== (int) $package->producer_execution_id
-            || ! hash_equals($package->sha256, $artifact->sha256)
+            || hash_equals($package->sha256, $artifact->sha256) === false
             || (int) $package->size_bytes !== (int) $artifact->size
         ) {
             throw new ToolOperationBlocked('El artefacto fuente dejó de coincidir con su registro inmutable.');
         }
 
         $path = Storage::disk($artifact->disk)->path($artifact->path);
-        $hash = is_file($path) && ! is_link($path) ? hash_file('sha256', $path) : false;
-        $size = is_file($path) && ! is_link($path) ? filesize($path) : false;
-        if (! is_string($hash) || ! hash_equals($package->sha256, $hash) || $size !== $package->size_bytes) {
+        $hash = is_file($path) && is_link($path) === false ? hash_file('sha256', $path) : false;
+        $size = is_file($path) && is_link($path) === false ? filesize($path) : false;
+        if (is_string($hash) === false || hash_equals($package->sha256, $hash) === false || $size !== $package->size_bytes) {
             throw new ToolOperationBlocked('El contenido del paquete fuente cambió desde su registro.');
         }
 

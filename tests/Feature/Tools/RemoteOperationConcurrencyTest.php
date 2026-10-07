@@ -125,7 +125,7 @@ class RemoteOperationConcurrencyTest extends TestCase
     /** @param list<\Closure():mixed> $jobs */
     private function runConcurrently(array $jobs, string $label): void
     {
-        if (! function_exists('pcntl_fork') || ! function_exists('stream_socket_pair')) {
+        if (function_exists('pcntl_fork') === false || function_exists('stream_socket_pair') === false) {
             $this->markTestSkipped('Las regresiones concurrentes requieren pcntl y sockets UNIX.');
         }
         DB::purge();
@@ -223,11 +223,11 @@ class RemoteOperationConcurrencyTest extends TestCase
 
     private function requireLinuxProcessSupport(): void
     {
-        if (PHP_OS_FAMILY === 'Windows' || ! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+        if (PHP_OS_FAMILY === 'Windows' || function_exists('pcntl_fork') === false || function_exists('posix_kill') === false) {
             $this->markTestSkipped('La prueba multiproceso requiere Linux, pcntl y señales POSIX.');
         }
         $setsid = (string) config('toolkit.runner.session_wrapper', '/usr/bin/setsid');
-        if (! is_file($setsid) || ! is_executable($setsid)) {
+        if (is_file($setsid) === false || is_executable($setsid) === false) {
             $this->markTestSkipped('La prueba multiproceso requiere setsid.');
         }
     }

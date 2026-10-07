@@ -32,10 +32,10 @@ class ExecutionWorkspaceManager
         $capacity = ExecutionCapacityApproval::query()->where('execution_id', $execution->getKey())->first();
         $bindingQuota = $execution->toolBinding()->value('approved_quota_bytes');
         $approvedQuota = $bindingQuota !== null ? (int) $bindingQuota : $capacity?->approved_quota_bytes;
-        if ($quotaBytes !== null && ! app()->environment('testing')) {
+        if ($quotaBytes !== null && app()->environment('testing') === false) {
             throw new RuntimeException('El runtime no acepta cuotas arbitrarias; requiere una aprobación de capacidad persistida.');
         }
-        if ($approvedQuota === null && ! (app()->environment('testing') && $existingWorkspace !== null)) {
+        if ($approvedQuota === null && (app()->environment('testing') && $existingWorkspace !== null) === false) {
             throw new RuntimeException('No se prepara un workspace sin estimación y aprobación explícita de capacidad.');
         }
         if ($capacity !== null && $bindingQuota !== null && (int) $capacity->approved_quota_bytes !== (int) $bindingQuota) {
@@ -74,7 +74,7 @@ class ExecutionWorkspaceManager
 
     public function resolve(Execution $execution, string $area, string $relativePath = ''): string
     {
-        if (! in_array($area, self::AREAS, true)) {
+        if (in_array($area, self::AREAS, true) === false) {
             throw new InvalidArgumentException('El área del workspace no está permitida.');
         }
 
@@ -115,7 +115,7 @@ class ExecutionWorkspaceManager
     public function writeOperationEvidence(Execution $execution, string $operationUuid, string $name, array $state): string
     {
         if (preg_match('/^[a-f0-9-]{36}$/Di', $operationUuid) !== 1
-            || ! in_array($name, ['launch.json', 'heartbeat.json', 'exit.json', 'cancel.json'], true)
+            || in_array($name, ['launch.json', 'heartbeat.json', 'exit.json', 'cancel.json'], true) === false
         ) {
             throw new InvalidArgumentException('La identidad del archivo de evidencia de operación no es válida.');
         }
@@ -135,7 +135,7 @@ class ExecutionWorkspaceManager
     public function operationEvidencePath(Execution $execution, string $operationUuid, string $name): string
     {
         if (preg_match('/^[a-f0-9-]{36}$/Di', $operationUuid) !== 1
-            || ! in_array($name, ['launch.json', 'heartbeat.json', 'exit.json', 'cancel.json', 'request.json'], true)
+            || in_array($name, ['launch.json', 'heartbeat.json', 'exit.json', 'cancel.json', 'request.json'], true) === false
         ) {
             throw new InvalidArgumentException('La ruta de evidencia de operación no es válida.');
         }
@@ -147,7 +147,7 @@ class ExecutionWorkspaceManager
 
     public function operationLogPath(Execution $execution, string $operationUuid, string $stream): string
     {
-        if (preg_match('/^[a-f0-9-]{36}$/Di', $operationUuid) !== 1 || ! in_array($stream, ['stdout', 'stderr'], true)) {
+        if (preg_match('/^[a-f0-9-]{36}$/Di', $operationUuid) !== 1 || in_array($stream, ['stdout', 'stderr'], true) === false) {
             throw new InvalidArgumentException('La ruta del log de operación no es válida.');
         }
         $path = $this->resolve($execution, 'logs', 'remote-operations/'.$operationUuid.'/'.$stream.'.log');
@@ -178,7 +178,7 @@ class ExecutionWorkspaceManager
                 }
                 $offset += $written;
             }
-            if (! fflush($handle) || (function_exists('fsync') && ! fsync($handle))) {
+            if (fflush($handle) === false || (function_exists('fsync') && fsync($handle) === false)) {
                 throw new RuntimeException('No se pudo sincronizar el estado del workspace.');
             }
             fclose($handle);
@@ -186,7 +186,7 @@ class ExecutionWorkspaceManager
 
             @chmod($temporary, 0600);
 
-            if (! rename($temporary, $target)) {
+            if (rename($temporary, $target) === false) {
                 throw new RuntimeException('No se pudo actualizar el estado del workspace de forma atómica.');
             }
             $temporary = null;
@@ -266,7 +266,7 @@ class ExecutionWorkspaceManager
             throw new RuntimeException('No se permiten enlaces simbólicos en el árbol de workspaces.');
         }
 
-        if (! is_dir($path) && ! mkdir($path, 0700, true) && ! is_dir($path)) {
+        if (is_dir($path) === false && mkdir($path, 0700, true) === false && is_dir($path) === false) {
             throw new RuntimeException('No se pudo crear un directorio privado de workspace.');
         }
 
@@ -289,7 +289,7 @@ class ExecutionWorkspaceManager
             throw new RuntimeException('No se pudo abrir el lock de capacidad del workspace.');
         }
         @chmod($lockPath, 0600);
-        if (! flock($lock, LOCK_EX)) {
+        if (flock($lock, LOCK_EX) === false) {
             fclose($lock);
             throw new RuntimeException('No se pudo serializar la escritura contra la cuota del workspace.');
         }
@@ -313,7 +313,7 @@ class ExecutionWorkspaceManager
 
     private function directoryBytes(string $root): int
     {
-        if (! is_dir($root)) {
+        if (is_dir($root) === false) {
             return 0;
         }
 
@@ -357,7 +357,7 @@ class ExecutionWorkspaceManager
 
             if ($candidate !== false && str_starts_with($candidate, $diskRoot.DIRECTORY_SEPARATOR)) {
                 $protected[$candidate] = true;
-            } elseif ($relative !== '' && ! str_contains($relative, '..')) {
+            } elseif ($relative !== '' && str_contains($relative, '..') === false) {
                 $protected[$absolute] = true;
             }
         }
@@ -374,13 +374,13 @@ class ExecutionWorkspaceManager
 
         if (is_file($path)) {
             $real = realpath($path) ?: $path;
-            if ($path !== $root && ! isset($protected[$real])) {
+            if ($path !== $root && isset($protected[$real]) === false) {
                 unlink($path);
             }
             return;
         }
 
-        if (! is_dir($path)) {
+        if (is_dir($path) === false) {
             return;
         }
 

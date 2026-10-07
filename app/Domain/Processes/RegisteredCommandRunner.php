@@ -39,10 +39,10 @@ class RegisteredCommandRunner
         ?array $registeredDefinition = null,
     ): RegisteredProcessResult
     {
-        if (! (bool) config('toolkit.features.local_runner.enabled', false)) {
+        if ((bool) config('toolkit.features.local_runner.enabled', false) === false) {
             throw new RuntimeException('El runner local está deshabilitado por feature flag.');
         }
-        if (PHP_OS_FAMILY === 'Windows' || ! function_exists('posix_kill')) {
+        if (PHP_OS_FAMILY === 'Windows' || function_exists('posix_kill') === false) {
             throw new RuntimeException('El runner de operaciones requiere Linux con soporte de grupos de procesos.');
         }
 
@@ -57,7 +57,7 @@ class RegisteredCommandRunner
         $argv = $definition['argv'];
         if ((bool) config('toolkit.runner.enforce_os_limits', true)) {
             $wrapper = (string) config('toolkit.runner.limit_wrapper', '/usr/bin/prlimit');
-            if (! str_starts_with($wrapper, DIRECTORY_SEPARATOR) || ! is_file($wrapper) || ! is_executable($wrapper)) {
+            if (str_starts_with($wrapper, DIRECTORY_SEPARATOR) === false || is_file($wrapper) === false || is_executable($wrapper) === false) {
                 throw new RuntimeException('El runner requiere el limitador de recursos del sistema operativo.');
             }
             $limits = config('toolkit.runner.limits', []);
@@ -72,14 +72,14 @@ class RegisteredCommandRunner
             ];
         }
         $sessionWrapper = (string) config('toolkit.runner.session_wrapper', '/usr/bin/setsid');
-        if (! str_starts_with($sessionWrapper, DIRECTORY_SEPARATOR) || ! is_file($sessionWrapper) || ! is_executable($sessionWrapper)) {
+        if (str_starts_with($sessionWrapper, DIRECTORY_SEPARATOR) === false || is_file($sessionWrapper) === false || is_executable($sessionWrapper) === false) {
             throw new RuntimeException('El runner requiere setsid para aislar y cancelar el grupo de procesos.');
         }
         $argv = [$sessionWrapper, ...$argv];
         $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
         $process = proc_open($argv, $descriptors, $pipes, $cwd, $environment, ['bypass_shell' => true]);
 
-        if (! is_resource($process)) {
+        if (is_resource($process) === false) {
             throw new RuntimeException('No se pudo iniciar el proceso local registrado.');
         }
 
@@ -124,7 +124,7 @@ class RegisteredCommandRunner
 
                 foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $streamName) {
                     $chunk = stream_get_contents($pipes[$index]);
-                    if (! is_string($chunk) || $chunk === '') {
+                    if (is_string($chunk) === false || $chunk === '') {
                         continue;
                     }
                     $chunk = $this->redactor->redactString($chunk);
@@ -148,7 +148,7 @@ class RegisteredCommandRunner
                     }
                 }
 
-                if (! $status['running']) {
+                if ($status['running'] === false) {
                     $exitCode ??= (int) $status['exitcode'];
                     break;
                 }
@@ -157,7 +157,7 @@ class RegisteredCommandRunner
                     $timedOut = true;
                     $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
                     $exitCode = 124;
-                    if (! $status['running']) {
+                    if ($status['running'] === false) {
                         break;
                     }
                 }
@@ -177,7 +177,7 @@ class RegisteredCommandRunner
                         $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
                         $exitCode = 125;
                         $stderr .= "\n[Proceso terminado al superar la cuota o fallar la inspección del workspace.]";
-                        if (! $status['running']) {
+                        if ($status['running'] === false) {
                             break;
                         }
                     }
@@ -265,7 +265,7 @@ class RegisteredCommandRunner
     private function persistOutputChunk(mixed $stream, string $chunk, mixed $hash): void
     {
         hash_update($hash, $chunk);
-        if (! is_resource($stream)) {
+        if (is_resource($stream) === false) {
             return;
         }
         $offset = 0;
@@ -276,20 +276,20 @@ class RegisteredCommandRunner
             }
             $offset += $written;
         }
-        if (! fflush($stream) || (function_exists('fsync') && ! fsync($stream))) {
+        if (fflush($stream) === false || (function_exists('fsync') && fsync($stream) === false)) {
             throw new RuntimeException('No se pudo sincronizar la salida de la operación.');
         }
     }
 
     private function terminateProcessGroup(int $pid, bool $forceAfterGrace = false): void
     {
-        if ($pid < 2 || ! function_exists('posix_kill')) {
+        if ($pid < 2 || function_exists('posix_kill') === false) {
             return;
         }
         @posix_kill(-$pid, SIGTERM);
         $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.cancel_grace_seconds', 3)));
         do {
-            if (! @posix_kill(-$pid, 0)) {
+            if (@posix_kill(-$pid, 0) === false) {
                 return;
             }
             usleep(100_000);
