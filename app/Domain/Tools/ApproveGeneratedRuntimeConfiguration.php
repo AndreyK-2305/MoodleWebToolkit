@@ -21,10 +21,17 @@ class ApproveGeneratedRuntimeConfiguration
         'benchmark-operator',
     ];
 
+    private readonly ExecutionWorkspaceManager $workspaces;
+
+    private readonly SensitiveValueRedactor $redactor;
+
     public function __construct(
-        private readonly ExecutionWorkspaceManager $workspaces,
-        private readonly SensitiveValueRedactor $redactor,
-    ) {}
+        ExecutionWorkspaceManager $workspaces,
+        SensitiveValueRedactor $redactor,
+    ) {
+        $this->workspaces = $workspaces;
+        $this->redactor = $redactor;
+    }
 
     /** @param array<string, mixed> $configuration */
     public function approve(Execution $execution, ToolVersion $version, array $configuration, string $schemaVersion, string $source, User $actor): ExecutionRuntimeConfiguration

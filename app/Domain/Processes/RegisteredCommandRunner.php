@@ -11,11 +11,21 @@ use Throwable;
 
 class RegisteredCommandRunner
 {
+    private readonly RegisteredCommandRegistry $registry;
+
+    private readonly ExecutionWorkspaceManager $workspaces;
+
+    private readonly SensitiveValueRedactor $redactor;
+
     public function __construct(
-        private readonly RegisteredCommandRegistry $registry,
-        private readonly ExecutionWorkspaceManager $workspaces,
-        private readonly SensitiveValueRedactor $redactor,
-    ) {}
+        RegisteredCommandRegistry $registry,
+        ExecutionWorkspaceManager $workspaces,
+        SensitiveValueRedactor $redactor,
+    ) {
+        $this->registry = $registry;
+        $this->workspaces = $workspaces;
+        $this->redactor = $redactor;
+    }
 
     /**
      * Execute a command key from the administrator-owned registry, with argv (never a shell string)

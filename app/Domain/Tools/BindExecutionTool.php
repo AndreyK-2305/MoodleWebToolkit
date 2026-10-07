@@ -18,11 +18,21 @@ use Illuminate\Support\Facades\Storage;
 
 class BindExecutionTool
 {
+    private readonly ToolDistributionVerifier $verifier;
+
+    private readonly ToolOperationGate $gate;
+
+    private readonly SensitiveValueRedactor $redactor;
+
     public function __construct(
-        private readonly ToolDistributionVerifier $verifier,
-        private readonly ToolOperationGate $gate,
-        private readonly SensitiveValueRedactor $redactor,
-    ) {}
+        ToolDistributionVerifier $verifier,
+        ToolOperationGate $gate,
+        SensitiveValueRedactor $redactor,
+    ) {
+        $this->verifier = $verifier;
+        $this->gate = $gate;
+        $this->redactor = $redactor;
+    }
 
     /** @param list<int> $sourcePackageIds @param array<string, mixed> $configuration */
     public function bind(
