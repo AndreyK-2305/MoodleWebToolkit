@@ -141,7 +141,7 @@ return new class extends Migration
         }
 
         if (DB::getDriverName() === 'pgsql') {
-            DB::statement(<<<'SQL'
+            DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION protect_remote_process_identity() RETURNS trigger AS $$
                 BEGIN
                     IF (OLD.process_group_id IS NOT NULL AND NEW.process_group_id IS DISTINCT FROM OLD.process_group_id)
@@ -165,7 +165,7 @@ return new class extends Migration
             DB::statement("ALTER TABLE execution_capacity_approvals ADD CONSTRAINT execution_capacity_fingerprint_check CHECK (fingerprint ~ '^[0-9a-f]{64}$')");
             DB::statement("ALTER TABLE execution_runtime_configurations ADD CONSTRAINT execution_runtime_configuration_hash_check CHECK (content_sha256 ~ '^[0-9a-f]{64}$' AND fingerprint ~ '^[0-9a-f]{64}$')");
             DB::statement("ALTER TABLE execution_runtime_configurations ADD CONSTRAINT execution_runtime_configuration_state_check CHECK (approval_state IN ('APPROVED', 'REVOKED'))");
-            DB::statement(<<<'SQL'
+            DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION reject_immutable_capacity_approval_change() RETURNS trigger AS $$
                 BEGIN
                     RAISE EXCEPTION 'Execution capacity approvals are immutable' USING ERRCODE = '23514';
@@ -175,7 +175,7 @@ return new class extends Migration
                     BEFORE UPDATE OR DELETE ON execution_capacity_approvals
                     FOR EACH ROW EXECUTE FUNCTION reject_immutable_capacity_approval_change();
                 SQL);
-            DB::statement(<<<'SQL'
+            DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION protect_source_package_identity() RETURNS trigger AS $$
                 BEGIN
                     IF TG_OP = 'DELETE' THEN
@@ -197,7 +197,7 @@ return new class extends Migration
                     BEFORE UPDATE OR DELETE ON source_packages
                     FOR EACH ROW EXECUTE FUNCTION protect_source_package_identity();
                 SQL);
-            DB::statement(<<<'SQL'
+            DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION protect_execution_runtime_configuration() RETURNS trigger AS $$
                 BEGIN
                     IF TG_OP = 'DELETE' THEN
@@ -215,7 +215,7 @@ return new class extends Migration
                     BEFORE UPDATE OR DELETE ON execution_runtime_configurations
                     FOR EACH ROW EXECUTE FUNCTION protect_execution_runtime_configuration();
                 SQL);
-            DB::statement(<<<'SQL'
+            DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION reject_execution_tool_binding_source_change() RETURNS trigger AS $$
                 BEGIN
                     RAISE EXCEPTION 'Execution tool binding source snapshots are immutable' USING ERRCODE = '23514';

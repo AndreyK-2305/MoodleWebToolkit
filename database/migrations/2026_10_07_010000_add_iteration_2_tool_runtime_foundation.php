@@ -139,7 +139,7 @@ return new class extends Migration
             DB::statement("ALTER TABLE artifacts ADD CONSTRAINT artifacts_storage_mode_check CHECK (storage_mode IN ('MANAGED', 'REFERENCE'))");
             DB::statement("ALTER TABLE execution_tool_bindings ADD CONSTRAINT execution_tool_bindings_hash_check CHECK (distribution_sha256 ~ '^[0-9a-f]{64}$' AND configuration_sha256 ~ '^[0-9a-f]{64}$')");
             DB::statement("ALTER TABLE artifacts ADD CONSTRAINT artifacts_category_check CHECK (category IS NULL OR category IN ('REPORT', 'LOG', 'MANIFEST', 'SOURCE_PACKAGE', 'COURSE_PACKAGE', 'FULL_BACKUP', 'TECHNICAL_EVIDENCE'))");
-            DB::statement(<<<'SQL'
+            DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION reject_execution_tool_binding_change() RETURNS trigger AS $$
                 BEGIN
                     RAISE EXCEPTION 'Execution tool bindings are immutable' USING ERRCODE = '23514';
@@ -149,7 +149,7 @@ return new class extends Migration
                     BEFORE UPDATE OR DELETE ON execution_tool_bindings
                     FOR EACH ROW EXECUTE FUNCTION reject_execution_tool_binding_change();
                 SQL);
-            DB::statement(<<<'SQL'
+            DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION protect_remote_operation_identity() RETURNS trigger AS $$
                 BEGIN
                     IF NEW.execution_id IS DISTINCT FROM OLD.execution_id
