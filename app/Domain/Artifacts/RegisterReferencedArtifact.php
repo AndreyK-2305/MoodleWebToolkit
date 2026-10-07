@@ -15,8 +15,7 @@ class RegisterReferencedArtifact
     public function __construct(
         private readonly ArtifactReferenceStorage $storage,
         private readonly SensitiveValueRedactor $redactor,
-    )
-    {}
+    ) {}
 
     /** @param array<string, mixed> $metadata */
     public function register(
@@ -28,8 +27,7 @@ class RegisterReferencedArtifact
         ?string $expectedSha256 = null,
         ?int $expectedSize = null,
         ?int $remoteOperationId = null,
-    ): Artifact
-    {
+    ): Artifact {
         $operation = $remoteOperationId === null
             ? null
             : RemoteOperation::query()

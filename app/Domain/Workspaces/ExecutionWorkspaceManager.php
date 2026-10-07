@@ -109,6 +109,7 @@ class ExecutionWorkspaceManager
         }
 
         $contents = json_encode($state, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
         return $this->writeAtomic($execution, 'state', $name, $contents);
     }
 
@@ -377,6 +378,7 @@ class ExecutionWorkspaceManager
             if ($path !== $root && isset($protected[$real]) === false) {
                 unlink($path);
             }
+
             return;
         }
 

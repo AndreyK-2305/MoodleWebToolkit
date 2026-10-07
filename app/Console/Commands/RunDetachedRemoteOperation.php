@@ -19,12 +19,14 @@ class RunDetachedRemoteOperation extends Command
         $requestPath = (string) $this->argument('requestPath');
         if (is_link($requestPath) || is_file($requestPath) === false) {
             $this->error('No se encontró el descriptor privado de la operación.');
+
             return self::FAILURE;
         }
 
         $payload = json_decode((string) file_get_contents($requestPath), true);
         if (is_array($payload) === false || is_int($payload['operation_id'] ?? null) === false) {
             $this->error('El descriptor privado de la operación no es válido.');
+
             return self::FAILURE;
         }
         $operation = RemoteOperation::query()->with('execution')->find($payload['operation_id']);
@@ -32,11 +34,13 @@ class RunDetachedRemoteOperation extends Command
             || hash_equals($operation->command_sha256, (string) ($payload['command_sha256'] ?? '')) === false
         ) {
             $this->error('La identidad del descriptor no coincide con la operación durable.');
+
             return self::FAILURE;
         }
         $expected = $workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, 'request.json');
         if (realpath($requestPath) === false || realpath($expected) !== realpath($requestPath)) {
             $this->error('El descriptor está fuera del área privada de estado de la ejecución.');
+
             return self::FAILURE;
         }
         if (unlink($requestPath) === false) {

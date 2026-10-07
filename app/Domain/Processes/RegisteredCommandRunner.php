@@ -15,8 +15,7 @@ class RegisteredCommandRunner
         private readonly RegisteredCommandRegistry $registry,
         private readonly ExecutionWorkspaceManager $workspaces,
         private readonly SensitiveValueRedactor $redactor,
-    )
-    {}
+    ) {}
 
     /**
      * Execute a command key from the administrator-owned registry, with argv (never a shell string)
@@ -37,8 +36,7 @@ class RegisteredCommandRunner
         ?callable $onHeartbeat = null,
         ?string $commandSha256 = null,
         ?array $registeredDefinition = null,
-    ): RegisteredProcessResult
-    {
+    ): RegisteredProcessResult {
         if ((bool) config('toolkit.features.local_runner.enabled', false) === false) {
             throw new RuntimeException('El runner local está deshabilitado por feature flag.');
         }
