@@ -1,0 +1,7 @@
+Este directorio almacena los artefactos generados durante la ejecución.
+
+Incluye planes, inventarios, mapas, checkpoints, evidencias, resultados de
+verificación y paquetes de cierre. Su contenido se genera automáticamente y no
+debe copiarse desde ejecuciones anteriores al iniciar una consolidación nueva.
+
+Conserve este archivo para mantener la estructura esperada del paquete.

@@ -1,0 +1,5 @@
+8.0.0-linux-rc12
+Estado: candidata final de cierre técnico; arranque background independiente del bit ejecutable del wrapper
+Origen: 8.0.0-linux-rc11 + ejecución explícita del wrapper mediante bash en systemd y nohup
+Fuentes para aceptación: posgrados-2025-05-02-directo y pregrado-2026-03-04-directo
+RC12 conserva íntegramente restore, scheduler, workers, checkpoints, heartbeat y lógica académica de RC11

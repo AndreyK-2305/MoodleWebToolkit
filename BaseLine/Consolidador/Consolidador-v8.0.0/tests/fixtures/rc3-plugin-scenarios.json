@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "case": "Moodle 5.2: BigBlueButton, VPL y Nuevo2 pueden cubrirse con otros componentes y distinto número de plugins",
+  "sources": [
+    {"source_id": "origen_a", "inventory": {"moodle_version": 2025041400, "used_activity_modules": ["bigbluebuttonbn", "vpl"], "plugins": [
+      {"component": "mod_bigbluebuttonbn", "type": "mod", "name": "bigbluebuttonbn", "source": "additional", "version_disk": 2024010100, "release": "4.0"},
+      {"component": "mod_vpl", "type": "mod", "name": "vpl", "source": "additional", "version_disk": 2024010100, "release": "4.0"},
+      {"component": "local_nuevo2", "type": "local", "name": "nuevo2", "source": "additional", "version_disk": 2024010100, "release": "1.0"}
+    ]}}
+  ],
+  "before": {
+    "schema_version": "1.1", "target_id": "target", "target_wwwroot": "https://moodle.example.edu", "moodle_version": 2025041400, "moodle_release": "5.2", "approved_plugins_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "approved_plugins": [],
+    "plugins": [{"component": "mod_quiz", "type": "mod", "name": "quiz", "version_db": 2025041400, "version_disk": 2025041400, "release": "5.2", "source": "standard", "enabled": true, "installation_status": "uptodate", "root_path": "/var/www/html/mod/quiz", "tree_sha256": "", "approved_commit": "", "approved_path": "", "dependencies": {}, "version_file_valid": true}],
+    "activity_modules": [{"name": "quiz", "visible": 1}]
+  },
+  "replacement_plugins": [
+    {"component": "mod_zoom", "type": "mod", "name": "zoom", "version_db": 2026010100, "version_disk": 2026010100, "release": "5.2-compatible", "source": "additional", "enabled": true, "installation_status": "uptodate", "root_path": "/var/www/html/mod/zoom", "tree_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "approved_commit": "", "approved_path": "", "dependencies": {}, "version_file_valid": true},
+    {"component": "mod_vpl2", "type": "mod", "name": "vpl2", "version_db": 2026010200, "version_disk": 2026010200, "release": "5.2-compatible", "source": "additional", "enabled": true, "installation_status": "uptodate", "root_path": "/var/www/html/mod/vpl2", "tree_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "approved_commit": "", "approved_path": "", "dependencies": {}, "version_file_valid": true}
+  ]
+}

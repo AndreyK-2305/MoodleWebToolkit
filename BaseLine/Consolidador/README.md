@@ -1,383 +1,240 @@
-# Consolidador Moodle UFPS — Linux
+# Consolidador Moodle UFPS — 8.0.0-linux-rc12
 
-Versión `7.3.0-linux` para consolidar entre 2 y 32 paquetes de origen
-sellados en un Moodle 5.2.1 nuevo sobre Linux/Ubuntu.
+Herramienta CLI para consolidar entre **2 y 32 paquetes Moodle de origen** en un Moodle **5.2.1 nuevo**, con conciliación de identidades, validación OAuth2, compatibilidad de plugins, preservación de themes, restauración paralela, checkpoints y verificación académica.
 
-Esta distribución contiene únicamente la herramienta de consolidación. No
-contiene utilidades ni documentación para producir los paquetes de origen.
+## Estado de la versión
 
-Esta es la versión estable de la línea 7.3.0. Conserva el contrato de entrada
-del Recolector 7.4.1 y fue promovida después de completar una consolidación de
-laboratorio de extremo a extremo con cero diferencias.
-
-## Mejoras y correcciones de 7.3.0
-
-- Empaqueta `scripts/` con permiso de recorrido `0755` y sus archivos de
-  lectura con `0644`; el lanzador normaliza esos permisos al preparar o
-  reanudar para que `www-data` pueda leer `/opt/consolidator`.
-- Recupera automáticamente la propiedad de `exports/phase5` y
-  `exports/phase6` después de una interrupción, sin borrar planes ni
-  checkpoints aprobados.
-- Devuelve al anfitrión la propiedad de `apply_preflight.json` antes de leerlo
-  y concede nuevamente escritura al contenedor solo al aplicar el lote.
-- Acepta la reasignación técnica de archivos cuyo origen declara
-  `source_user_id=0`, pero conserva la comparación estricta de entregas y
-  archivos realmente asociados a usuarios.
-- Conserva el runtime completo de fase 6: matrículas, roles efectivos, rol
-  seguro `personalizado`, normalización de la extracción y comparación
-  académica del lote.
-- Verifica explícitamente que `www-data` pueda abrir `target-plugins.php` antes
-  de inventariar los plugins del destino.
-
-## Mejoras de rendimiento de 7.3.0
-
-- Restaura cursos con un pool dinámico de procesos PHP. `--workers=auto` usa
-  `min(CPU lógicas disponibles, 4)`; `--workers=1..4` fija la concurrencia.
-- Ordena los cursos por peso estimado y asigna el siguiente pendiente al worker
-  que quede libre. El orden no reduce el trabajo total, pero evita una cola
-  residual dominada por un curso grande.
-- Cada `.mbz` se extrae una sola vez, directamente en el directorio temporal
-  que consume `restore_controller`.
-- Normaliza `users.xml` y `roles.xml` dentro de esa extracción. Ya no crea una
-  copia `raw`, un segundo árbol extraído ni un `.mbz` normalizado intermedio.
-- Confía en el SHA-256 sellado por el Recolector y aceptado por el contrato de
-  importación. En fase 6 comprueba referencia y tamaño, sin volver a recorrer
-  hasta ocho veces cada archivo grande.
-- Genera un trabajo liviano por curso con solo el plan, los usuarios, roles,
-  matrículas y convergencias necesarios. Cada worker evita recargar los planes
-  e inventarios de todos los demás cursos.
-- La verificación exhaustiva de contenido se realiza inmediatamente después de
-  restaurar cada curso y queda en un checkpoint atómico. La verificación final
-  reutiliza esa evidencia y no reconstruye por segunda vez todo el inventario.
-- Elimina la consulta N+1 usada para obtener el nombre de cada actividad; ahora
-  consulta en lote por tipo de módulo.
-- Monta `scripts/` una sola vez en `/opt/consolidator:ro`; las etapas ya no
-  ejecutan `docker compose cp` para cada script PHP.
-- Reduce cambios recursivos de propietario durante la fase paralela y escribe
-  JSON/CSV críticos mediante archivo temporal y renombrado atómico.
-- La copia integral final usa `pigz` y streaming para la base de datos, código
-  y `moodledata`; no conserva un SQL plano temporal y reutiliza los hashes ya
-  calculados para construir `checksums.sha256`.
-- El retraso automático entre etapas es `0` por defecto. Puede restaurarse con
-  `CONSOLIDATION_AUTO_DELAY_SECONDS` cuando se requiera una pausa operativa.
-
-## Reanudación de la fase paralela
-
-Cada curso terminado conserva un checkpoint independiente. Si el asistente o
-uno de sus workers se detiene de forma forzada, repita el mismo comando:
-
-```bash
-./INICIAR-SEGUNDO-PLANO.sh
+```text
+Versión: 8.0.0-linux-rc12
+Estado: candidata final de cierre técnico
+Base: 8.0.0-linux-rc11
+Destino: Moodle 5.2.1
 ```
 
-El preflight valida los checkpoints, elimina de forma segura el directorio de
-restauración temporal registrado por un curso interrumpido y, si quedó un curso
-contenedor incompleto, lo retira antes de reintentarlo. No es necesario borrar
-artefactos manualmente. Los cursos con checkpoint válido se reutilizan.
+RC12 deriva exclusivamente del artefacto RC11 congelado.
 
-## Cambios heredados de 7.2.1-rc6
+El cambio funcional de RC12 es deliberadamente pequeño: el wrapper de ejecución en segundo plano se invoca explícitamente mediante `/usr/bin/env bash` tanto en `systemd` como en el fallback `nohup`. De esta forma el handoff ya no depende del bit ejecutable de `scripts/run-background-with-progress.sh`.
 
-- Corrige la planificación masiva de fase 6: interpreta `siteadmin_required`
-  mediante una utilidad propia y validada, sin llamar a la función inexistente
-  `p5_bool()`. El plan conserva los administradores aprobados y rechaza valores
-  booleanos ambiguos en lugar de degradarlos silenciosamente.
-- Trata únicamente `assignfeedback_editpdf/combined`, `pages` y `partial`
-  como derivados regenerables al comparar Moodle 4.5 con 5.x. Los conteos y
-  las relaciones aplican el mismo filtro; `stamps`, `submission_files` y las
-  demás áreas continúan verificándose estrictamente, tanto en el piloto como
-  en el lote masivo.
-- Conserva y reanuda un curso piloto ya restaurado pero aún sin marcador si la
-  finalización se interrumpió por esta diferencia de compatibilidad; no crea
-  una copia adicional del curso.
-- Fusiona automáticamente cuentas entre instancias por el correo normalizado
-  cuando el Recolector confirma el vínculo del mismo emisor OAuth. La llave es
-  `emisor + correo`; un correo nunca se inventa ni se guarda como `google_sub`.
-- Conserva `siteadmin` como privilegio de sitio, sin generar una revisión
-  imposible de aprobar en `identity_resolutions.csv`, y nunca retira
-  administradores que ya existan en el destino.
-- Normaliza estudiantes como `student`, docentes como `editingteacher`,
-  administradores como `manager` y cualquier rol no estándar como
-  `personalizado`, con un perfil seguro de solo lectura en cursos.
-- Propaga las decisiones de identidad y roles a los planes, restauraciones y
-  verificaciones posteriores, incluida la convergencia de matrículas de cuentas
-  fusionadas por correo OAuth.
-- Conserva el nombre de los cursos cuando es único. Si dos cursos comparten el
-  mismo nombre, usa `[Instancia de origen] Nombre original` y audita el nombre
-  objetivo en `exports/phase6/course_plan.csv`.
-- Administra temporalmente los permisos de `exports/phase3` a `exports/phase6`
-  entre el contenedor Moodle (`www-data`) y el operador, evitando los fallos de
-  escritura y lectura observados desde las fases intermedias en adelante.
-- Corrige la preparación de `exports/oauth2`: el comando enviado a `sh -lc`
-  viaja como un único argumento y ya no se divide después de `&&`.
-- Corrige los permisos de la fase 2: Moodle genera su inventario como
-  `www-data` y, antes de crear los informes de compatibilidad, la herramienta
-  devuelve `exports/phase2` al UID/GID del operador.
-- Fija el proyecto Compose `moodle-consolidation-production` en todas las rutas
-  Bash y PowerShell. Una variable `COMPOSE_PROJECT_NAME` heredada de otro
-  despliegue ya no puede mezclar el destino con una instancia de origen.
-- Solicita por separado el correo remitente autorizado por el proveedor SMTP;
-  ya no se deduce del correo del administrador ni requiere editar `.env`.
-- Al finalizar `CONFIGURAR.sh`, permite ejecutar inmediatamente Preparar destino
-  o muestra `./PREPARAR-DESTINO.sh` como siguiente comando.
-- El gestor comprueba directamente la misma referencia de imagen que construye
-  Compose, aunque todavía no exista un contenedor asociado.
-- Exige `identidades.json` 1.2 del Recolector y rechaza el campo obsoleto
-  `google_sub_candidate`.
-- Distingue un `google_sub` comprobado de un correo almacenado realmente por
-  Moodle en `auth_oauth2_linked_login.username`.
-- Usa el correo OAuth confirmado como llave secundaria para cualquier dominio;
-  los dominios institucionales siguen declarados para trazabilidad de política.
-- Incorpora una etapa obligatoria para configurar manualmente Google OAuth2 en
-  el panel administrativo del Moodle destino.
-- Valida el proveedor, obtiene su `issuerid` y crea los vínculos nativos usando
-  exactamente el identificador externo comprobado: `sub` o correo OAuth.
-- Bloquea las fases posteriores si existen identificadores OAuth duplicados,
-  enlaces a otro usuario, mapeos incompatibles o vínculos no verificados.
-- La importación confía en el contrato del paquete sellado. Conserva las
-  defensas de ZIP, rutas, manifiesto y estructura, pero no recalcula todos los
-  SHA-256 internos ni vuelve a auditar cada `.mbz` recibido.
-- Elimina los topes artificiales de bytes por curso, entrada ZIP y paquete.
-  Siguen aplicando la capacidad real de disco, filesystem, Docker y Moodle.
-- Puede continuar automáticamente en segundo plano después de cada etapa
-  aprobada, con un retraso configurable.
-- Puede enviar correos al completar una etapa, al fallar o cuando se requiere
-  intervención manual. Un fallo SMTP se registra, pero no altera el resultado
-  de la consolidación.
-- Registra el bloqueo de paquetes antes de la primera escritura en el destino.
-- La publicación exige OAuth2 verificado y la copia integral de fase 8 sellada.
-- Incorpora `GESTIONAR-CONFIG.sh` como utilidad autónoma, distribuida e
-  integrada con el mismo despliegue, pero fuera de las 16 etapas de migración.
-- Los ajustes posteriores de `config.php` se declaran en JSON, se compilan de
-  forma determinista, se versionan y se montan desde el host en solo lectura.
-- La aplicación reinicia únicamente Moodle y cron, comprueba el healthcheck,
-  purga cachés y revierte automáticamente a la versión anterior si falla.
-- `config.php` y su copia de ajustes quedan `root:www-data` con modo `0640`; el
-  proceso web puede leerlas, pero no modificarlas.
+RC12 **no modifica** la lógica académica de:
+
+- restore;
+- scheduler;
+- workers;
+- checkpoints;
+- reconciliación de identidades;
+- plugins;
+- themes;
+- heartbeat;
+- verificación de Fase 13.
+
+La prueba E2E final confirmó el handoff a segundo plano, el procesamiento masivo, la reanudación de cursos pendientes, la verificación global y el cierre funcional.
+
+## Paquete actual del repositorio
+
+```text
+Consolidador/Consolidador-v8.0.0-linux.zip
+Consolidador/Consolidador-v8.0.0/
+```
+
+El `VERSION.txt` interno identifica el runtime como `8.0.0-linux-rc12`.
+
+## Qué hace
+
+El Consolidador:
+
+1. importa paquetes sellados de múltiples Moodles;
+2. valida compatibilidad del destino;
+3. prepara plugins y themes;
+4. configura y valida Google OAuth2;
+5. concilia identidades;
+6. normaliza roles y matrículas;
+7. crea usuarios canónicos;
+8. restaura un piloto;
+9. planifica el lote completo;
+10. procesa cursos en paralelo;
+11. verifica cada curso;
+12. reanuda desde checkpoints;
+13. consolida evidencias;
+14. puede generar una copia integral final del sitio.
 
 ## Requisitos
 
 - Linux/Ubuntu de 64 bits.
-- Docker Engine operativo.
+- Docker Engine.
 - Docker Compose v2 (`docker compose`).
-- `flock` de `util-linux` para impedir ejecuciones simultáneas.
+- `flock` de `util-linux`.
 - Usuario autorizado para utilizar Docker.
-- Espacio suficiente para los ZIP, Moodle, MariaDB, temporales de una extracción
-  por worker y la copia integral final. La fase 6 ya no duplica cada `.mbz`.
-- Salida a Internet durante la construcción inicial de las imágenes.
-- Dominio final y acceso administrativo al proyecto Google Cloud que proveerá
-  el inicio de sesión institucional.
-- SMTP accesible desde el servidor, solo si se activarán notificaciones.
-- Un directorio persistente y protegido en el host para
-  `MOODLE_MANAGED_CONFIG_DIR`; no debe ubicarse dentro de un volumen Docker.
+- Acceso a Internet durante la construcción inicial de imágenes.
+- Espacio suficiente para:
+  - paquetes fuente;
+  - Moodle destino;
+  - MariaDB;
+  - extracción temporal por worker;
+  - crecimiento de `moodledata`;
+  - copia integral de Fase 16 si se desea publicar mediante `PUBLICAR-SITIO.sh`.
+- Dominio final y acceso al proyecto Google Cloud para OAuth2.
+- SMTP accesible si se habilitan notificaciones.
+- Directorio persistente en el host para `MOODLE_MANAGED_CONFIG_DIR`.
 
-La advertencia de menos de 20 GiB en el preflight es informativa. No representa
-un límite de la herramienta. Dimensione el servidor para el volumen completo,
-incluidas copias temporales y crecimiento de la base de datos.
+No existe un límite artificial de tamaño por curso o por ZIP. La restricción real es la capacidad del host, Docker, filesystem y Moodle.
 
-## Estructura
+## Paquetes de entrada
+
+La versión recomendada del productor es:
 
 ```text
-copias/                      Paquetes ZIP sellados de entrada
-config/                      Políticas y resoluciones manuales auditables
-config-manager/              Motor y plantilla del gestor de config.php
-docker/                      Moodle destino y runtime del asistente
-scripts/                     Motor de las 16 etapas
-exports/                     Resultados, checkpoints y copia integral
-reports/                     Estado, logs e instrucciones de intervención
-moodle-consolidation.sh      Comando principal
-GESTIONAR-CONFIG.sh          Utilidad autónoma de mantenimiento posterior
+Recolector 7.4.2-linux
 ```
+
+V8 utiliza su metadata de themes mediante:
+
+```text
+capabilities.theme_inventory=1.0
+```
+
+Paquetes válidos de Recolector `7.4.1-linux` todavía pueden importarse como legacy, pero no contienen toda la metadata visual requerida por V8. En ese caso el asistente exige una decisión explícita y no inventa themes ni perfiles.
+
+Cada fuente debe incluir:
+
+```text
+nombre.zip
+nombre.zip.sha256
+```
+
+Copie los pares en:
+
+```text
+copias/
+```
+
+El ZIP debe declarar el contrato `moodle-consolidation-source`, estar sellado y conservar sus manifiestos, inventarios, identidades, plugins, checkpoints y MBZ.
 
 ## Preparación
 
-Desde la raíz del paquete:
+Desde:
+
+```bash
+cd Consolidador/Consolidador-v8.0.0
+```
+
+habilite los lanzadores:
 
 ```bash
 chmod +x ./*.sh
+```
+
+Verifique la distribución:
+
+```bash
 ./moodle-consolidation.sh verificar
+```
+
+Configure el entorno:
+
+```bash
 ./CONFIGURAR.sh
 ```
 
-`CONFIGURAR.sh` crea `.env` con permisos `600`, solicita la URL pública,
-genera las claves de base de datos y ofrece configurar las notificaciones por
-correo, incluido el remitente autorizado por el proveedor SMTP. También solicita
-la ruta persistente de la configuración administrada. El archivo no se
-sobrescribe si ya existe. Al finalizar pregunta si debe ejecutar de inmediato
-Preparar destino; si se responde que no, continúe después con:
+`CONFIGURAR.sh` crea `.env`, solicita los parámetros del destino y puede configurar SMTP.
+
+Prepare el Moodle destino:
 
 ```bash
 ./PREPARAR-DESTINO.sh
 ```
 
-`PREPARAR-DESTINO.sh` construye las imágenes e inicializa automáticamente la
-primera versión declarativa antes de arrancar Moodle. Si `target_code` se
-elimina y después se prepara o inicia nuevamente el destino, `config.php` se
-regenera desde `.env` y vuelve a incluir la última versión conservada en el
-host.
-
-Cuando la URL es HTTPS, Moodle escucha localmente en `127.0.0.1:8090` y espera
-un proxy TLS institucional. Ese loopback no se usa como URL pública.
-
-## Paquetes de entrada
-
-Coloque todos los ZIP de una misma ejecución en `copias/`. Cada paquete debe:
-
-- ser legible y declarar `package_status=sealed`;
-- conservar el contrato `moodle-consolidation-source` versión `1.0`;
-- tener un `source_id` válido, único y diferente del destino;
-- incluir manifiesto, lista de hashes, identidades, inventario, plugins y los
-  tres artefactos declarados por curso;
-- usar `identity_scope=all` en modo producción.
-
-La etapa 1 comprueba esas precondiciones, las rutas seguras y la correspondencia
-exacta entre rutas y manifiesto. Calcula una sola vez el SHA-256 del ZIP para
-vincular la ejecución, pero deliberadamente no relee el contenido completo para
-repetir la auditoría interna de la fase previa.
-
-No existe un máximo artificial de bytes por curso o por paquete. Permanece un
-máximo configurable de cantidad de entradas ZIP (`100000`) como defensa de
-estructura; no limita el tamaño de los anexos.
-
-Después de la primera intención de escritura, no añada, quite ni reemplace ZIP.
-La herramienta lo impedirá mediante `reports/destination-write.lock.json`.
+El proyecto Compose utilizado por el Consolidador es independiente de los despliegues origen.
 
 ## Ejecución interactiva
 
 ```bash
 ./INICIAR-CONSOLIDACION.sh
+```
+
+o limitando workers:
+
+```bash
 ./INICIAR-CONSOLIDACION.sh --workers=2
 ```
 
-En cada etapa están disponibles:
+Acciones interactivas disponibles según la etapa:
 
 ```text
-continuar | reintentar | abrir | salir
+continuar
+reintentar
+abrir
+salir
 ```
 
-`salir` conserva los checkpoints. El mismo comando reanuda desde la primera
-etapa que no esté aprobada.
+`salir` conserva los checkpoints. Al ejecutar nuevamente el mismo lanzador, el asistente reanuda desde la primera etapa no aprobada.
 
 ## Ejecución en segundo plano
 
 ```bash
-./INICIAR-SEGUNDO-PLANO.sh
+./INICIAR-SEGUNDO-PLANO.sh --workers=auto
+```
+
+También puede usarse:
+
+```bash
+./INICIAR-SEGUNDO-PLANO.sh --workers=1
+./INICIAR-SEGUNDO-PLANO.sh --workers=2
+./INICIAR-SEGUNDO-PLANO.sh --workers=3
 ./INICIAR-SEGUNDO-PLANO.sh --workers=4
 ```
 
-Si se omite el parámetro, `--workers=auto` es el valor efectivo. Use un valor
-explícito para limitar presión sobre MariaDB, I/O o memoria. El estado agregado
-de los workers queda en `reports/fase-6-workers-status.json` y cada proceso
-conserva su log bajo `reports/fase-6-workers/`.
+`auto` selecciona la concurrencia de acuerdo con el runtime, con un máximo de cuatro workers para la ruta masiva actual.
 
-El lanzador usa una unidad de usuario de `systemd` cuando está disponible y
-recurre a `nohup` en los demás casos. En modo automático:
+RC12 usa:
 
-- una etapa solo habilita la siguiente si su prueba de éxito queda aprobada;
-- el retraso se toma de `CONSOLIDATION_AUTO_DELAY_SECONDS` (0 segundos por
-  defecto, entre 0 y 3600);
-- los conflictos o fallos detienen la ejecución con estado `blocked`;
-- la etapa OAuth2 se detiene con estado `waiting_manual` cuando falta
-  configuración;
-- después de corregir la causa, vuelva a ejecutar
-  `./INICIAR-SEGUNDO-PLANO.sh`; los checkpoints aprobados se reutilizan.
+- `systemd-run --user` cuando está disponible y el contrato de persistencia es válido;
+- `nohup` como ruta alternativa;
+- ejecución explícita mediante Bash para el wrapper de progreso.
+
+Cuando se utiliza `systemd --user`, RC9 y posteriores comprueban que `Linger=yes`. Si no está habilitado, el asistente bloquea antes de iniciar una unidad que podría morir al cerrar SSH.
 
 Supervisión:
 
 ```bash
 ./ESTADO.sh
 ./moodle-consolidation.sh logs
+```
+
+Detención controlada:
+
+```bash
 ./DETENER.sh
 ```
 
-`DETENER.sh` intenta detener también el proceso en segundo plano y conserva
-volúmenes, ZIP, resultados y checkpoints.
+## Notificaciones y heartbeat
 
-## Notificaciones por correo
+Las notificaciones por correo son opcionales.
 
-`CONFIGURAR.sh` solicita por separado el destinatario, el remitente autorizado
-por el proveedor y el servidor SMTP, con TLS/STARTTLS opcional. El remitente no
-se toma del correo administrativo del Moodle. Se notifican:
+RC10 añadió heartbeat periódico para procesos largos y RC11 completó su ciclo de vida tanto en modo interactivo como durante el handoff a segundo plano.
 
-- inicio o reanudación del asistente;
-- terminación correcta de cada etapa;
-- fallo o conflicto bloqueante;
-- necesidad de configuración manual OAuth2;
-- cierre completo de la consolidación.
+Variables principales:
 
-Las credenciales SMTP, si se usan, se codifican en base64 dentro del `.env`
-protegido con permisos `600`. Base64 no es cifrado: el archivo debe permanecer
-restringido y fuera de respaldos o repositorios no autorizados. Las credenciales
-no se incluyen en los reportes ni en la copia integral.
-
-## Gestor autónomo de config.php
-
-La utilidad se entrega en el mismo ZIP para conservar compatibilidad con la
-imagen y `compose.yaml`, pero no es una etapa del consolidador. Continúa siendo
-utilizable durante toda la vida del Moodle publicado:
-
-```bash
-./GESTIONAR-CONFIG.sh ver
-./GESTIONAR-CONFIG.sh editar
-./GESTIONAR-CONFIG.sh aplicar --motivo "Ajustar sesiones institucionales"
-./GESTIONAR-CONFIG.sh historial
-./GESTIONAR-CONFIG.sh restaurar 20260805T160000Z-0123456789ab
-./GESTIONAR-CONFIG.sh verificar
+```text
+CONSOLIDATION_EMAIL_ENABLED
+CONSOLIDATION_EMAIL_TO
+CONSOLIDATION_EMAIL_FROM
+CONSOLIDATION_SMTP_HOST
+CONSOLIDATION_SMTP_PORT
+CONSOLIDATION_SMTP_USE_TLS
+CONSOLIDATION_PROGRESS_EMAIL_ENABLED
+CONSOLIDATION_PROGRESS_EMAIL_INTERVAL_MINUTES
 ```
 
-`editar` abre `pending.json` con `$EDITOR`. El documento admite propiedades
-`$CFG` con valores y estructuras JSON. Las variables de conexión, rutas,
-URL y proxy administradas por `.env` están reservadas y no pueden sobrescribirse
-desde este mecanismo.
+El intervalo de progreso predeterminado de la línea actual es de 15 minutos.
 
-`aplicar` exige un motivo, crea una versión completa en `history/`, conmuta el
-enlace `active` atómicamente y, si el sitio está levantado, reinicia únicamente
-`moodle-target` y `moodle-cron`. Si Moodle no recupera salud o no puede purgar
-sus cachés, reactiva la versión anterior y envía el correo correspondiente.
+El correo es **fail-open**: un fallo SMTP se registra, pero no cambia el resultado académico de la consolidación.
 
-El archivo `audit.jsonl` conserva fecha, operador, motivo, nombres de ajustes y
-hashes, pero no sus valores. Los correos tampoco incluyen valores. El origen se
-monta en `/run/moodle-config` como solo lectura; al iniciar, el contenedor
-verifica el manifiesto y copia la versión activa con permisos no escribibles por
-`www-data`.
+Snapshots observacionales:
 
-El directorio indicado por `MOODLE_MANAGED_CONFIG_DIR` no depende de
-`target_code`, `target_data` ni `db_data`. Debe incluirse en el respaldo seguro
-del servidor. La copia integral de fase 8 incorpora únicamente
-`managed-config-manifest.json` para identificar su versión y hashes; no incluye
-los valores declarados ni secretos.
-
-## Configuración manual de Google OAuth2
-
-La etapa 3 crea instrucciones en
-`reports/oauth2-configuracion-manual.txt` y pausa cuando el servicio aún no está
-listo. El administrador debe:
-
-1. Registrar en Google Cloud la URI exacta mostrada por la herramienta:
-   `https://dominio-final/admin/oauth2callback.php`.
-2. Abrir en Moodle `Administración del sitio > Servidor > Servicios OAuth 2`.
-3. Crear o editar el servicio Google institucional, introducir `Client ID` y
-   `Client secret`, habilitarlo y mostrarlo en la página de acceso.
-4. Habilitar el método en `Plugins > Autenticación > Gestionar autenticación`.
-5. Reanudar el consolidador.
-
-La herramienta no solicita, lee ni guarda esas credenciales. Si existe más de
-un servicio Google, escriba el ID elegido en `config/oauth2.json`; nunca escriba
-secretos allí.
-
-Cuando se aplican usuarios, la herramienta utiliza el `issuerid` del destino y
-el mismo tipo de identificador comprobado en los orígenes. `google_sub` solo se
-usa cuando `google_sub_verified=true`; si Moodle usa un correo, se conserva como
-`oauth_email` y nunca se escribe en `google_sub`. La fase 7 de usuarios verifica
-cada enlace antes de permitir cursos o matrículas.
-
-`config/identity-policy.json` declara los dominios institucionales autorizados.
-La distribución UFPS incluye `ufps.edu.co`. Si la institución cambia de dominio,
-actualice ese archivo antes de iniciar la etapa 4 de conciliación.
-
-La comprobación automática no sustituye un intercambio OIDC real con Google.
-Antes de publicar un destino institucional, deben iniciar sesión cuentas
-representativas de estudiante, docente y gestor para comprobar el intercambio
-OIDC real y la política aplicada en Google Cloud.
+```text
+reports/fase-1-progress.json
+reports/fase-6-workers-status.json
+```
 
 ## Las 16 etapas
 
@@ -392,110 +249,326 @@ OIDC real y la política aplicada en Google Cloud.
 9. Restaurar el piloto.
 10. Verificar el piloto.
 11. Simular el lote consolidado.
-12. Referenciar los MBZ y crear trabajos/checkpoints livianos, sin copiarlos.
-13. Aplicar el lote mediante workers y una única extracción por curso.
-14. Verificar la consolidación mediante la evidencia incremental sellada.
+12. Crear el manifiesto ligero del lote, validar referencias, permisos, políticas y checkpoints y publicar `BATCH_READY`.
+13. Aplicar el lote mediante workers; cada worker prepara, inspecciona, restaura y verifica su curso.
+14. Verificar la consolidación utilizando la evidencia incremental sellada.
 15. Consolidar evidencias y cerrar.
-16. Generar y sellar la copia integral del sitio.
+16. Generar y sellar la copia integral del sitio consolidado.
 
-Las validaciones de planes, transformaciones XML, restauraciones y estado del
-destino se conservan porque pertenecen al consolidador. Se elimina la
-reauditoría exhaustiva y la duplicación del material de entrada ya sellado.
+## Identidades
 
-## Conflictos y plugins
+V8 conserva conciliación determinística y una revisión fuzzy opcional.
 
-Los conflictos de identidad se resuelven únicamente en:
+Las fusiones automáticas solo se realizan cuando la evidencia lo permite. Dos `google_sub` diferentes no se fusionan por aproximación.
+
+Las resoluciones explícitas se auditan en:
 
 ```text
 config/identity_resolutions.csv
+config/fuzzy_identity_resolutions.csv
 ```
 
-Cuando el Recolector confirma en dos orígenes el mismo emisor y linked username
-OAuth con forma de correo, la fusión es automática aunque el dominio sea
-personal. `corrected_google_sub` queda vacío: el correo se reutiliza como llave
-OAuth y nunca se convierte en un subject ficticio. Solo las ambigüedades reales
-(por ejemplo, dos cuentas iguales dentro de un mismo origen o evidencias
-incompatibles) requieren una resolución activa con responsable, fecha,
-justificación y referencia de evidencia.
+La revisión fuzzy puede producir:
 
-Un plugin utilizado y ausente bloquea el flujo. Instale una versión compatible
-con Moodle 5.2.1 en `docker/custom-plugins/`, conservando su ruta dentro del
-código Moodle, y repita la preparación y el inicio.
+```text
+exports/identity_candidates.csv
+exports/identity_candidate_review.csv
+```
 
-Los `shortname` no conflictivos se conservan. Las colisiones se desambiguan con
-el identificador del origen. Los nombres completos se conservan cuando son
-únicos y, si colisionan, se convierten en `[Instancia] Nombre original`. Ambas
-decisiones quedan auditadas en `exports/phase6/course_plan.csv`.
+Un `MERGE`, `KEEP_SEPARATE` o `IGNORE` queda sujeto a sus contratos de auditoría.
 
-## Cierre y publicación
+Los roles objetivo se normalizan a las políticas del destino, incluyendo el rol seguro `personalizado` para perfiles no estándar cuando corresponda.
 
-Después de `CONSOLIDATION_ASSISTANT_OK`:
+## Google OAuth2
+
+La configuración del proveedor es una intervención manual deliberada.
+
+El Consolidador:
+
+- valida el proveedor;
+- obtiene el `issuerid`;
+- utiliza únicamente identificadores externos comprobados;
+- diferencia `google_sub` real de un correo almacenado como linked username;
+- bloquea duplicidades o enlaces incompatibles;
+- revalida OAuth2 antes de fases sensibles.
+
+No se inventa un `google_sub`.
+
+## Plugins
+
+La compatibilidad de plugins se valida antes de continuar con la consolidación.
+
+V8 resuelve rutas de plugins según la instalación real y distingue:
+
+- plugin instalado;
+- plugin ausente;
+- componente core;
+- componente retirado;
+- componente desconocido.
+
+Los plugins requeridos y no resueltos bloquean el flujo.
+
+Los pins y árboles instalados se verifican. Si se usa `docker/custom-plugins/`, `approved-plugins.json` conserva la evidencia aprobada.
+
+Las equivalencias funcionales son explícitas; no se deducen solo por nombre.
+
+## Themes
+
+Recolector `7.4.2` incorpora la metadata visual que consume V8.
+
+El Consolidador puede:
+
+- seleccionar theme global;
+- verificar `allowcoursethemes`;
+- preservar o reaplicar themes por curso;
+- resolver plugins `theme_*` mediante el mismo catálogo de compatibilidad;
+- registrar fallback al theme global cuando un theme de origen no es transportable.
+
+Un fallback visual no debe ocultar pérdida académica ni fabricar un theme inexistente.
+
+## Restauración masiva y checkpoints
+
+La Fase 13 utiliza una cola dinámica de workers.
+
+Características principales:
+
+- cursos pesados se priorizan para reducir la cola residual;
+- cada worker carga solo el trabajo de su curso;
+- los MBZ originales permanecen sellados;
+- la extracción temporal se normaliza sin modificar el paquete fuente;
+- `qtype=random` legacy se normaliza de forma conservadora y fail-closed;
+- cada curso exitoso conserva un checkpoint independiente;
+- un curso con fallo aislado puede quedar `WAITING_MANUAL`;
+- los demás workers pueden continuar;
+- un reintento reutiliza los cursos ya aprobados;
+- la verificación académica ocurre inmediatamente después del restore.
+
+No elimine checkpoints manualmente para “desbloquear” una corrida.
+
+## Reanudación
+
+Después de corregir una intervención:
 
 ```bash
-./PUBLICAR-SITIO.sh
+./INICIAR-CONSOLIDACION.sh
 ```
 
-La publicación exige:
+o:
 
-- cierre de fase 7 en estado `evidence_consolidated`;
-- cero linked logins OAuth2 pendientes;
-- copia integral de fase 8 sellada y con SHA-256 correcto;
-- nueva validación en vivo del proveedor OAuth2.
+```bash
+./INICIAR-SEGUNDO-PLANO.sh --workers=auto
+```
 
-Solo entonces se activa el cron normal del Moodle consolidado.
+El sistema reutiliza planes, paquetes, checkpoints y estados todavía válidos.
 
-La copia integral queda en:
+## Cierre funcional y Fase 16
+
+La E2E definitiva confirmó que la consolidación queda aplicada y verificada antes de generar el paquete integral:
+
+```text
+13-aplicar-lote        completed
+13b-themes-lote        completed
+14-verificar-lote      completed
+15-cierre              completed
+```
+
+La Fase 16:
+
+```text
+16-paquete-sitio
+```
+
+genera una copia integral del resultado:
 
 ```text
 exports/phase8/paquete-sitio-consolidado.zip
 ```
 
-Contiene base de datos, código/plugins, `moodledata` y evidencias. Excluye
-`config.php`, los valores de configuración administrada y credenciales de
-conexión. Incluye el manifiesto no sensible de la versión administrada, pero
-sigue conteniendo información institucional sensible y debe protegerse como un
-respaldo completo.
+Incluye base de datos, código/plugins, `moodledata` y evidencias, excluyendo credenciales sensibles declaradas por contrato.
 
-## Evidencia de aceptación de 7.3.0
+### Importante
 
-La línea estable fue promovida después de una ejecución integral de laboratorio
-con dos paquetes sellados del Recolector:
+La Fase 16 **no modifica ni revierte** los cursos ya restaurados y verificados.
 
-| Comprobación | Resultado |
-|---|---:|
-| Fuentes consolidadas | 2 |
-| Cursos verificados | 15 |
-| Curso piloto | 1 |
-| Cursos del lote paralelo | 14 |
-| Diferencias académicas y técnicas | 0 |
-| Cursos fallidos | 0 |
-| Estado de cierre | `evidence_consolidated` |
-| Modo de mantenimiento restaurado | Sí |
-| Tiempo total observado | 9 min 27 s |
-| Copia integral de fase 8 | Generada y sellada |
-
-```text
-CONSOLIDATED_SITE_PACKAGE_OK courses=15 batch=14 failed=0 maintenance_restored=1
-CONSOLIDATION_ASSISTANT_OK
-Cursos verificados: 15 (piloto + 14 del lote). Diferencias: 0.
-Estado: evidence_consolidated.
-```
-
-SHA-256 de la copia integral producida en esa prueba:
-
-```text
-3d4aeb5285e72425f3d057d5a2fd8a98a893f248c8894d67241a92e255c4bb50
-```
-
-## Integridad y alcance de la validación
+Sin embargo, el comportamiento actual de RC12 mantiene la copia integral sellada como requisito de:
 
 ```bash
-./moodle-consolidation.sh verificar
+./PUBLICAR-SITIO.sh
 ```
 
-El comando comprueba `FILES.sha256` y la presencia del motor requerido. Esta
-edición fue sometida a comprobaciones estáticas de Bash, PHP, PowerShell, JSON,
-YAML, permisos del montaje, referencias de archivos e integridad del ZIP. La
-línea 7.3.0 también superó la ejecución integral descrita arriba. Antes de usar
-un destino productivo deben validarse en el entorno institucional OAuth2,
-SMTP, DNS/TLS, capacidad de almacenamiento y el procedimiento de recuperación.
+Por tanto, debe diferenciarse entre:
+
+- **cierre funcional de la consolidación:** Fase 15;
+- **backup integral posterior:** Fase 16;
+- **publicación automatizada:** requiere Fase 16 completa en RC12.
+
+## Benchmark E2E definitivo
+
+Fuentes de aceptación:
+
+```text
+posgrados-2025-05-02-directo
+pregrado-2026-03-04-directo
+```
+
+Resultados:
+
+| Métrica | Resultado |
+|---|---:|
+| Fuentes | 2 |
+| Cursos | **366** |
+| Posgrados | 255 |
+| Pregrado | 111 |
+| Entrada Posgrados | 160.50 GiB |
+| Entrada Pregrado | 5.75 GiB |
+| Entrada total | **166.25 GiB** |
+| CPU | 4 vCPU |
+| RAM | 15 GiB |
+| Tiempo de pared hasta Fase 15 | **3 h 2 min 47 s** |
+| Tiempo activo acumulado de etapas | **2 h 13 min 41 s** |
+| Throughput activo observado | **≈164 cursos/h** |
+| Throughput de entrada observado | **≈74.6 GiB/h** |
+| Fase 13 intento 1 | 1 h 46 min 50 s → `waiting_manual` |
+| Fase 13 reanudación | 9 min 36 s → `completed` |
+| Fase 14 | 16 s |
+| Fase 15 | 1 s |
+
+El tiempo de pared incluye tiempo del operador entre estados y antes del reintento. Para rendimiento técnico debe diferenciarse del tiempo activo acumulado.
+
+### Resultado de Fase 16 en la prueba
+
+La exportación integral se ejecutó durante 39 minutos y terminó con:
+
+```text
+No space left on device
+```
+
+El filesystem raíz disponible para la prueba era de aproximadamente 969 GiB y alcanzó 100 %.
+
+La prueba demostró que el dimensionamiento requerido para **consolidar** y el requerido para **crear posteriormente una copia integral del destino** deben considerarse por separado.
+
+## Evidencias
+
+Durante una ejecución se generan evidencias bajo:
+
+```text
+exports/
+reports/
+```
+
+Entre los artefactos de cierre se encuentran:
+
+```text
+exports/phase7/informe-final-migracion.md
+exports/phase7/closure_summary.json
+```
+
+Los estados y logs no deben publicarse si contienen información institucional sensible.
+
+## Gestor de configuración
+
+V8 incluye:
+
+```bash
+./GESTIONAR-CONFIG.sh ver
+./GESTIONAR-CONFIG.sh editar
+./GESTIONAR-CONFIG.sh aplicar --motivo "Ajuste aprobado"
+./GESTIONAR-CONFIG.sh historial
+./GESTIONAR-CONFIG.sh restaurar VERSION
+./GESTIONAR-CONFIG.sh verificar
+```
+
+La configuración administrada vive fuera del volumen Docker, mantiene historial y puede revertirse si impide arrancar Moodle.
+
+## Integridad
+
+Verifique la distribución con:
+
+```bash
+sha256sum -c FILES.sha256
+```
+
+No modifique artefactos protegidos por `FILES.sha256`.
+
+Los archivos operativos deliberadamente mutables se validan mediante sus contratos propios.
+
+## Seguridad
+
+No distribuya:
+
+```text
+.env
+config.php real
+copias/*.zip institucionales
+exports/ reales
+reports/ reales
+credenciales SMTP
+tokens OAuth
+moodledata
+dump de base de datos sin protección
+```
+
+Los paquetes completos de sitio y los paquetes producidos por el Recolector contienen información institucional sensible.
+
+## Historial reciente de cierre
+
+### RC9
+
+- valida `Linger=yes` antes de utilizar `systemd-run --user`;
+- conserva fallback `nohup`.
+
+### RC10
+
+- agrega heartbeat periódico por correo;
+- Fase 1 publica snapshot observacional;
+- Fase 13 reutiliza el estado de workers existente.
+
+### RC11
+
+- inicia notifier también en modo interactivo;
+- apaga el notifier interactivo antes del handoff;
+- evita notifiers duplicados durante la transición.
+
+### RC12
+
+- invoca `run-background-with-progress.sh` explícitamente mediante Bash;
+- elimina la dependencia del bit ejecutable del wrapper;
+- no cambia Fase 13 ni la lógica académica.
+
+## Diagnóstico rápido
+
+Estado:
+
+```bash
+./ESTADO.sh
+```
+
+Logs:
+
+```bash
+./moodle-consolidation.sh logs
+```
+
+Espacio:
+
+```bash
+df -h
+```
+
+Contenedores:
+
+```bash
+docker compose ps
+```
+
+No borre manualmente cursos, planes, checkpoints o volúmenes antes de revisar la causa registrada por el asistente.
+
+## Documentación de trazabilidad
+
+La distribución conserva archivos `CAMBIOS-*`, pruebas de regresión y evidencias técnicas dentro de `Consolidador-v8.0.0/`.
+
+Para conocer el identificador exacto de la build ejecutada:
+
+```bash
+cat VERSION.txt
+```

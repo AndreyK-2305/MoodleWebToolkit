@@ -1,0 +1,43 @@
+{
+  "course_key": "COURSE-POSGRADOS-2025-05-02-DIRECTO-9DEF55F74A72",
+  "source_id": "posgrados-2025-05-02-directo",
+  "source_course_id": 21,
+  "source_shortname": "2470202A-2023-I",
+  "planned_source_user_ids": [6],
+  "discussion": {
+    "source_user_id": 245,
+    "canonical_id": "CAN-7DBBA0B17EFB",
+    "target_user_id": 3853,
+    "activity_key": "forum|actividad unica unidad iv - blog",
+    "firstpost": 1792,
+    "firstpost_source_user_id": 171
+  },
+  "relations": {
+    "files": [
+      {
+        "source_user_id": 245,
+        "component": "mod_label",
+        "filearea": "intro"
+      },
+      {
+        "source_user_id": 245,
+        "component": "mod_resource",
+        "filearea": "content"
+      }
+    ],
+    "forum_discussions": [
+      {
+        "source_user_id": 245,
+        "activity_key": "forum|actividad unica unidad iv - blog",
+        "subject": "Actividad Unica Unidad IV - Blog"
+      }
+    ],
+    "forum_posts": [
+      {
+        "source_user_id": 171,
+        "activity_key": "forum|actividad unica unidad iv - blog",
+        "subject": "Actividad Unica Unidad IV - Blog"
+      }
+    ]
+  }
+}

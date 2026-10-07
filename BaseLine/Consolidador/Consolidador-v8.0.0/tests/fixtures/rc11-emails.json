@@ -1,0 +1,15 @@
+{
+  "benchmark": {
+    "1090226722": ["diegoa.contrerasb.@colzaga.edu.co", "diegoa.contrerasb@colzaga.edu.co"],
+    "1093814129": ["rodrígueztorresalicec@gmail.com", "rodrigueztorresalicec@gmail.com"],
+    "1092540346": ["salomé.lizarazo@colzaga.edu.co", "salome.lizarazo@colzaga.edu.co"],
+    "1094396422": ["maría.jsuarezf@colzaga.edu.co", "maria.jsuarezf@colzaga.edu.co"],
+    "5267975": ["isa08guillo08.@Gmail.com", "isa08guillo08@gmail.com"]
+  },
+  "valid": "valido@example.com",
+  "outer_spaces": "  spaces@example.com  ",
+  "unrecoverable": "invalid..address@example.com",
+  "collision": ["josé@example.com", "jose@example.com"],
+  "pending_relink": ["péndiente@example.com", "pendiente@example.com"],
+  "shared": "compartido@example.com"
+}

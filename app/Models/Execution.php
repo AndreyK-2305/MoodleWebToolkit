@@ -184,6 +184,24 @@ class Execution extends Model
         return $this->hasMany(Artifact::class);
     }
 
+    /** @return HasOne<ExecutionToolBinding, $this> */
+    public function toolBinding(): HasOne
+    {
+        return $this->hasOne(ExecutionToolBinding::class);
+    }
+
+    /** @return HasOne<ExecutionWorkspace, $this> */
+    public function workspace(): HasOne
+    {
+        return $this->hasOne(ExecutionWorkspace::class);
+    }
+
+    /** @return HasMany<RemoteOperation, $this> */
+    public function remoteOperations(): HasMany
+    {
+        return $this->hasMany(RemoteOperation::class);
+    }
+
     /** @return HasOne<ExecutionFinalization, $this> */
     public function finalization(): HasOne
     {

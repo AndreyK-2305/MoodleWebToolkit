@@ -1,0 +1,7 @@
+Este directorio almacena reportes y registros generados durante la ejecución.
+
+Los archivos producidos aquí sirven para seguimiento, diagnóstico y auditoría.
+No reutilice reportes de una ejecución anterior como evidencia de una nueva
+consolidación.
+
+Conserve este archivo para mantener la estructura esperada del paquete.

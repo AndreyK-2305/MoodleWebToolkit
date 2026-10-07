@@ -1,0 +1,269 @@
+<?php
+
+namespace App\Domain\Tools;
+
+use App\Domain\Tools\DTOs\VerifiedDistribution;
+use App\Domain\Workspaces\ExecutionWorkspaceManager;
+use App\Models\Execution;
+use App\Models\ToolDistribution;
+use Illuminate\Support\Str;
+use RuntimeException;
+
+class DeployToolDistribution
+{
+    public function __construct(
+        private readonly ToolDistributionVerifier $verifier,
+        private readonly ExecutionWorkspaceManager $workspaces,
+    ) {}
+
+    /** @return array{path: string, evidence: array<string, mixed>} */
+    public function deploy(Execution $execution, ToolDistribution $distribution): array
+    {
+        $verified = $this->verifier->verify($distribution);
+        $this->workspaces->prepare($execution);
+        $slug = Str::slug($distribution->key);
+
+        if ($slug === '' || strlen($slug) > 160) {
+            throw new RuntimeException('La clave de distribución no puede convertirse en una ruta segura.');
+        }
+
+        $toolsRoot = $this->workspaces->resolve($execution, 'tools');
+        $target = $this->workspaces->resolve($execution, 'tools', $slug);
+        $staging = $toolsRoot.DIRECTORY_SEPARATOR.'.staging-'.$slug.'-'.Str::uuid();
+
+        if (file_exists($target) || is_link($target)) {
+            $evidence = $this->verifyDeployedTree($target, $verified, (string) $distribution->manifest_name);
+            $overlayEvidence = $this->deployMutableOverlays($execution, $distribution, $verified, $slug);
+            $fullEvidence = $this->deploymentEvidence($distribution, $verified, $target, [...$evidence, 'workspace_overlays' => $overlayEvidence]);
+            $this->workspaces->writeState($execution, 'distribution-'.$slug.'.json', $fullEvidence);
+
+            return ['path' => $target, 'evidence' => $fullEvidence];
+        }
+
+        if (! mkdir($staging, 0700)) {
+            throw new RuntimeException('No se pudo crear un área de staging dentro del workspace.');
+        }
+
+        try {
+            $files = $verified->manifestFiles;
+            $files[$distribution->manifest_name] = $verified->manifestSha256;
+            ksort($files, SORT_STRING);
+
+            foreach ($files as $relative => $expectedHash) {
+                $source = $verified->sourceRoot.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relative);
+                $destination = $staging.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relative);
+                $this->ensureParentDirectory($staging, dirname($destination));
+                $this->copyVerifiedFile($source, $destination, $expectedHash);
+            }
+
+            $overlayEvidence = $this->deployMutableOverlays($execution, $distribution, $verified, $slug);
+
+            $deployedEvidence = $this->verifyDeployedTree($staging, $verified, (string) $distribution->manifest_name);
+            $this->sealTree($staging);
+
+            if (! rename($staging, $target)) {
+                throw new RuntimeException('No se pudo desplegar atómicamente la distribución verificada.');
+            }
+
+            $this->workspaces->measure($execution);
+            $evidence = $this->deploymentEvidence($distribution, $verified, $target, [...$deployedEvidence, 'workspace_overlays' => $overlayEvidence]);
+            $this->workspaces->writeState($execution, 'distribution-'.$slug.'.json', $evidence);
+
+            return ['path' => $target, 'evidence' => $evidence];
+        } catch (\Throwable $exception) {
+            $this->removeStaging($staging);
+            throw $exception;
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function verifyDeployedTree(string $root, VerifiedDistribution $verified, string $manifestName): array
+    {
+        if (is_link($root) || ! is_dir($root)) {
+            throw new RuntimeException('El destino del despliegue no es un directorio normal.');
+        }
+
+        $expected = $verified->manifestFiles;
+        $expected[$manifestName] = $verified->manifestSha256;
+        ksort($expected, SORT_STRING);
+        $actual = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST,
+        );
+
+        foreach ($iterator as $item) {
+            if ($item->isLink()) {
+                throw new RuntimeException('El staging desplegado contiene un enlace simbólico.');
+            }
+            if (! $item->isFile()) {
+                continue;
+            }
+            $relative = str_replace('\\', '/', substr($item->getPathname(), strlen($root) + 1));
+            $actual[$relative] = hash_file('sha256', $item->getPathname());
+        }
+        ksort($actual, SORT_STRING);
+
+        if (array_keys($actual) !== array_keys($expected)) {
+            throw new RuntimeException('El árbol copiado tiene archivos diferentes al paquete inmutable declarado.');
+        }
+        foreach ($expected as $path => $hash) {
+            if (! is_string($actual[$path]) || ! hash_equals($hash, $actual[$path])) {
+                throw new RuntimeException("La copia desplegada falló su revalidación en [{$path}].");
+            }
+        }
+
+        return [
+            'deployed_tree_sha256' => $this->verifier->treeHash($actual),
+            'deployed_file_count' => count($actual),
+        ];
+    }
+
+    private function copyVerifiedFile(string $source, string $destination, string $expectedHash): void
+    {
+        if (is_link($source) || ! is_file($source)) {
+            throw new RuntimeException('El origen de una copia del paquete no es un archivo regular.');
+        }
+
+        $input = fopen($source, 'rb');
+        $output = fopen($destination, 'xb');
+        if ($input === false || $output === false) {
+            if (is_resource($input)) {
+                fclose($input);
+            }
+            if (is_resource($output)) {
+                fclose($output);
+            }
+            throw new RuntimeException('No se pudo copiar un archivo al staging privado.');
+        }
+
+        try {
+            $hash = hash_init('sha256');
+            while (! feof($input)) {
+                $chunk = fread($input, 65_536);
+                if ($chunk === false) {
+                    throw new RuntimeException('No se pudo leer una parte de la distribución.');
+                }
+                if ($chunk !== '') {
+                    hash_update($hash, $chunk);
+                    if (fwrite($output, $chunk) !== strlen($chunk)) {
+                        throw new RuntimeException('No se pudo escribir una parte del staging.');
+                    }
+                }
+            }
+            if (! fflush($output) || ! hash_equals($expectedHash, hash_final($hash))) {
+                throw new RuntimeException('La copia del archivo no pasó la comprobación SHA-256.');
+            }
+        } finally {
+            fclose($input);
+            fclose($output);
+        }
+
+        @chmod($destination, str_ends_with(strtolower($destination), '.sh') ? 0500 : 0400);
+    }
+
+    /** @return array<string, array{path: string, sha256: string}> */
+    private function deployMutableOverlays(Execution $execution, ToolDistribution $distribution, VerifiedDistribution $verified, string $slug): array
+    {
+        $evidence = [];
+        foreach ($verified->mutableFiles as $relative => $hash) {
+            $source = $verified->sourceRoot.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relative);
+            $workspaceRelative = 'overlays/'.$slug.'/'.$relative;
+            $target = $this->workspaces->resolve($execution, 'state', $workspaceRelative);
+            $this->ensureParentDirectory($this->workspaces->resolve($execution, 'state'), dirname($target));
+            if (is_link($target)) {
+                throw new RuntimeException('El overlay de workspace no puede ser un enlace simbólico.');
+            }
+            if (! file_exists($target)) {
+                $this->copyVerifiedFile($source, $target, $hash);
+                @chmod($target, 0600);
+            }
+            if (! is_file($target) || ! is_string($workspaceHash = hash_file('sha256', $target))) {
+                throw new RuntimeException('No se pudo verificar un overlay operativo del workspace.');
+            }
+            $evidence[$relative] = ['path' => $target, 'source_sha256' => $hash, 'workspace_sha256' => $workspaceHash];
+        }
+
+        return $evidence;
+    }
+
+    private function sealTree(string $root): void
+    {
+        $directories = [$root];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST,
+        );
+
+        foreach ($iterator as $entry) {
+            if ($entry->isLink()) {
+                throw new RuntimeException('No se sella una distribución que contenga enlaces simbólicos.');
+            }
+            if ($entry->isDir()) {
+                $directories[] = $entry->getPathname();
+            } elseif ($entry->isFile() && ! str_ends_with(strtolower($entry->getFilename()), '.sh')) {
+                @chmod($entry->getPathname(), 0400);
+            }
+        }
+
+        usort($directories, fn (string $left, string $right): int => strlen($right) <=> strlen($left));
+        foreach ($directories as $directory) {
+            @chmod($directory, 0500);
+        }
+    }
+
+    private function ensureParentDirectory(string $root, string $directory): void
+    {
+        $normalizedRoot = rtrim(str_replace('\\', '/', $root), '/');
+        $normalizedDirectory = str_replace('\\', '/', $directory);
+        if (! str_starts_with($normalizedDirectory.'/', $normalizedRoot.'/')) {
+            throw new RuntimeException('El destino de copia intentó escapar del staging.');
+        }
+        if (is_link($directory)) {
+            throw new RuntimeException('Se rechazó un enlace simbólico en staging.');
+        }
+        if (! is_dir($directory) && ! mkdir($directory, 0700, true) && ! is_dir($directory)) {
+            throw new RuntimeException('No se pudo crear un directorio del staging.');
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function deploymentEvidence(ToolDistribution $distribution, VerifiedDistribution $verified, string $target, array $deployed): array
+    {
+        return [
+            'distribution_key' => $distribution->key,
+            'tool_version_id' => $distribution->tool_version_id,
+            'source_tree_sha256' => $verified->treeSha256,
+            'manifest_sha256' => $verified->manifestSha256,
+            'source_file_count' => $verified->fileCount,
+            'deployed_path' => $target,
+            ...$deployed,
+            'excluded_mutable_overlays' => $verified->mutableFiles,
+            'verified_at' => now()->utc()->toIso8601String(),
+        ];
+    }
+
+    private function removeStaging(string $path): void
+    {
+        if (! is_dir($path) || is_link($path)) {
+            return;
+        }
+        @chmod($path, 0700);
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+        foreach ($iterator as $entry) {
+            if ($entry->isLink()) {
+                throw new RuntimeException('No se limpia staging que contenga enlaces simbólicos.');
+            }
+            if ($entry->isDir()) {
+                @chmod($entry->getPathname(), 0700);
+                rmdir($entry->getPathname());
+            } else {
+                unlink($entry->getPathname());
+            }
+        }
+        rmdir($path);
+    }
+}

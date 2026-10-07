@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "source_id": "posgrados-2025-05-02-directo",
+  "course_key": "COURSE-POSGRADOS-2025-05-02-DIRECTO-118250964A6A",
+  "source_course_id": 58,
+  "source_course_idnumber": "Tesis-Cohorte-I-2024-I",
+  "source_shortname": "Tesis-Cohorte-I-2024-I",
+  "target_category_id": 1,
+  "selection": "highest_evidence_score"
+}

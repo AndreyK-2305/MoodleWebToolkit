@@ -15,5 +15,6 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         // La cuenta inicial se crea explícitamente con `artisan app:create-admin`.
+        $this->call(ToolCatalogSeeder::class);
     }
 }

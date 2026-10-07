@@ -1,0 +1,29 @@
+{
+    "course_key": "COURSE-POSGRADOS-2025-05-02-DIRECTO-C92E6FE96A26",
+    "source_id": "posgrados-2025-05-02-directo",
+    "planned_source_user_ids": [6, 78, 210, 211, 1317],
+    "relations": {
+        "files": [
+            {
+                "source_user_id": 24,
+                "activity_key": "label|introduccion",
+                "component": "mod_label",
+                "filearea": "intro",
+                "filename": "intro.png"
+            },
+            {
+                "source_user_id": 25,
+                "activity_key": "folder|material",
+                "component": "mod_folder",
+                "filearea": "content",
+                "filename": "guia.pdf"
+            }
+        ],
+        "course_completions": [
+            {
+                "source_user_id": 77,
+                "completed": false
+            }
+        ]
+    }
+}

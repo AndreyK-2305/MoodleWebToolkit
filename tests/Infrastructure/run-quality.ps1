@@ -12,7 +12,12 @@ $env:COMPOSE_PROJECT_NAME = $ProjectName
 
 function New-QualitySecret {
     $bytes = New-Object byte[] 32
-    [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($bytes)
+    } finally {
+        $generator.Dispose()
+    }
     return [Convert]::ToBase64String($bytes)
 }
 $env:QUALITY_APP_KEY = 'base64:' + (New-QualitySecret)
@@ -44,11 +49,11 @@ try {
     Invoke-QualityCompose create app
     Invoke-QualityCompose up -d --wait --wait-timeout 300
     $services = @(& docker compose ps --format json | ForEach-Object { $_ | ConvertFrom-Json })
-    if ($services.Count -ne 10 -or @($services | Where-Object { $_.Health -ne 'healthy' }).Count -gt 0) {
-        throw 'Los diez servicios deben estar saludables simultáneamente.'
+    if ($services.Count -ne 11 -or @($services | Where-Object { $_.Health -ne 'healthy' }).Count -gt 0) {
+        throw 'Los once servicios deben estar saludables simultáneamente.'
     }
     $services | Select-Object Service, State, Health | ConvertTo-Json | Set-Content quality-results/health.json
-    Write-Host 'Instalación limpia: diez servicios saludables; dependencias incorporadas en imágenes, sin montajes del código local.'
+    Write-Host 'Instalación limpia: once servicios saludables; dependencias incorporadas en imágenes, sin montajes del código local.'
     Invoke-QualityCompose exec -T --user www-data app php artisan migrate:fresh --force --no-interaction
     Invoke-QualityCompose exec -T app composer lint:check
     Invoke-QualityCompose exec -T app composer types:check

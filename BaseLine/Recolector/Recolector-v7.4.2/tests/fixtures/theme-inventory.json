@@ -1,0 +1,73 @@
+{
+  "themes": {
+    "schema_version": "1.0",
+    "inventory_complete": true,
+    "global_theme": "academi",
+    "global_theme_state": "complete",
+    "site": {
+      "global_theme": "academi",
+      "global_theme_state": "complete",
+      "global_theme_source": "core_config"
+    },
+    "policies": {
+      "allow_course_themes": {"state": "complete", "value": true},
+      "allow_user_themes": {"state": "complete", "value": false},
+      "allow_category_themes": {"state": "not_supported"}
+    },
+    "profiles": {
+      "academi": {
+        "component": "theme_academi",
+        "state": "complete",
+        "settings": {
+          "preset": {"state": "config_value", "value": "default.scss"}
+        },
+        "settings_count": 1
+      },
+      "almondb": {
+        "component": "theme_almondb",
+        "state": "empty",
+        "settings": {},
+        "settings_count": 0
+      },
+      "boost": {
+        "component": "theme_boost",
+        "state": "empty",
+        "settings": {},
+        "settings_count": 0
+      }
+    },
+    "states": {
+      "global_theme": "complete",
+      "course_assignments": "complete",
+      "profiles": "complete",
+      "installed_themes": "complete"
+    }
+  },
+  "theme_assignments": {
+    "schema_version": "1.0",
+    "inventory_complete": true,
+    "courses": [
+      {"source_course_id": 2, "theme": "almondb"}
+    ],
+    "users": [],
+    "categories": [],
+    "cohorts": [],
+    "states": {
+      "courses": "complete",
+      "users": "not_supported",
+      "categories": "not_supported",
+      "cohorts": "not_supported"
+    }
+  },
+  "courses": [
+    {"source_course_id": 1, "shortname": "SIN-THEME", "theme": ""},
+    {"source_course_id": 2, "shortname": "CON-THEME", "theme": "almondb"}
+  ],
+  "plugins": {
+    "plugins": [
+      {"type": "theme", "component": "theme_boost"},
+      {"type": "theme", "component": "theme_academi"},
+      {"type": "theme", "component": "theme_almondb"}
+    ]
+  }
+}

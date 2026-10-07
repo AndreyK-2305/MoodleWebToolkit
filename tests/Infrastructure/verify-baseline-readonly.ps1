@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$services = @('app', 'queue-worker', 'scheduler', 'reverb', 'vite', 'nginx')
+$services = @('app', 'queue-worker', 'tool-runner', 'scheduler', 'reverb', 'vite', 'nginx')
 $baselineDirectory = '/var/www/html/BaseLine'
 $probe = "$baselineDirectory/.readonly-probe"
 

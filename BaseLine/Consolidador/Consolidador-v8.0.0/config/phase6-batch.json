@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "batch_id": "package-batch-7b00ee0433c7",
+  "target_parent_category_id": 1,
+  "exclude_verified_phase5_pilot": true,
+  "sources": [
+    "posgrados-2025-05-02-directo",
+    "pregrado-2026-03-04-directo"
+  ],
+  "selection": {
+    "mode": "all_non_site_courses",
+    "include_hidden": true
+  },
+  "role_policy": {
+    "student": "student",
+    "teacher": "editingteacher",
+    "editingteacher": "editingteacher",
+    "manager": "manager",
+    "fallback": "personalizado",
+    "preserve_site_admins_separately": true,
+    "personalizado_safety": {
+      "assignable_context": "course_only",
+      "profile": "student_readonly",
+      "allow_content_view": true,
+      "deny_content_mutation": true,
+      "deny_grading": true,
+      "deny_enrolment_and_roles": true,
+      "deny_backup_restore": true,
+      "deny_configuration": true
+    }
+  }
+}

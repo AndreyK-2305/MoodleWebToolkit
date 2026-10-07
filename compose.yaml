@@ -82,6 +82,37 @@ services:
             retries: 5
             start_period: 15s
 
+    tool-runner:
+        <<: *laravel-service
+        user: www-data
+        command: >-
+            php artisan queue:work redis-tool-runs
+            --queue=tool-runs --sleep=1 --tries=1 --timeout=86400
+        stop_grace_period: 30s
+        mem_limit: 12g
+        cpus: 4.0
+        pids_limit: 256
+        depends_on:
+            app:
+                condition: service_healthy
+        volumes:
+            - ./:/var/www/html:ro
+            - ./storage:/var/www/html/storage
+            - ./bootstrap/cache:/var/www/html/bootstrap/cache
+            - ./BaseLine:/var/www/html/BaseLine:ro
+            - vendor:/var/www/html/vendor:ro
+        healthcheck:
+            test:
+                [
+                    'CMD-SHELL',
+                    "grep -aq 'artisan' /proc/1/cmdline && grep -aq 'queue:work' /proc/1/cmdline && grep -aq 'redis-tool-runs' /proc/1/cmdline",
+                ]
+            interval: 15s
+            timeout: 5s
+            retries: 5
+            start_period: 15s
+        restart: unless-stopped
+
     reverb:
         <<: *laravel-service
         command:

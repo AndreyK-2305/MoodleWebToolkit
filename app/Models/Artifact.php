@@ -20,6 +20,8 @@ class Artifact extends Model
         'size',
         'sha256',
         'metadata',
+        'category',
+        'storage_mode',
     ];
 
     /** @return BelongsTo<Execution, $this> */

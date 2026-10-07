@@ -1,0 +1,17 @@
+{
+  "shared_email_values": 77,
+  "identities_per_value": 2,
+  "existing_target_email": "josefranciscocc@ufps.edu.co",
+  "real_case": {
+    "email": "josefranciscocc@ufps.edu.co",
+    "identities": [
+      {"canonical_id": "CAN-01C84BA1326F", "username": "1093750216"},
+      {"canonical_id": "CAN-09C4EF0432CE", "username": "josefranciscocc@ufps.edu.co"}
+    ]
+  },
+  "pending_relink_pair": 2,
+  "same_source_pair": 3,
+  "oauth_manual_pair": 4,
+  "normalized_collision": ["anómalo@example.com", "anomalo@example.com"],
+  "policy": "allowaccountssameemail=1"
+}

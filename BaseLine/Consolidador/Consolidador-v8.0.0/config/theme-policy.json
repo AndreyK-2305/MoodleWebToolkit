@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "assignment_policy": "preserve_course_assignments",
+  "global_theme": "boost",
+  "global_theme_selection": "",
+  "selection_source": "",
+  "theme_inventory_legacy_accepted": false,
+  "legacy_accepted_sources": [],
+  "safe_fallback_theme": "boost",
+  "install_all_compatible_themes": true,
+  "apply_course_themes": true,
+  "apply_user_themes": false,
+  "apply_category_themes": false,
+  "incompatible_visual_theme_is_blocking": false
+}

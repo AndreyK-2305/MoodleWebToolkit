@@ -1,0 +1,15 @@
+{
+  "enabled": false,
+  "host": "smtp.example.org",
+  "port": 587,
+  "encryption": "tls",
+  "auth": true,
+  "username": "usuario-smtp",
+  "password": "CAMBIAR",
+  "from_email": "moodle@example.org",
+  "from_name": "Recolector Moodle",
+  "to": [
+    "administrador@example.org"
+  ],
+  "timeout_seconds": 10
+}

@@ -1,0 +1,67 @@
+{
+    "tool_contract_version": "1.0.0",
+    "tool": "consolidator",
+    "tool_version": "8.0.0-linux-rc12",
+    "distribution_hash": "74d976c5290724ff52452d6abe117aa34876b1daab36d624c5e7adc353ab3ab7",
+    "operation_id": "eb44c80b-b923-4e70-b29e-f494b100f536",
+    "remote_execution_id": null,
+    "state": "RUNNING",
+    "stage": null,
+    "substage": null,
+    "progress": 50,
+    "progress_units": [
+        {
+            "metric": "courses_completed",
+            "value": 5,
+            "total": 10,
+            "unit": "course",
+            "scope": "execution",
+            "work_item_id": null,
+            "observed_at": "2026-10-07T17:00:00Z"
+        }
+    ],
+    "work_items": [
+        {
+            "id": "source-a:course-42",
+            "kind": "course",
+            "source_id": "source-a",
+            "source_status": "WAITING_MANUAL",
+            "state": "WAITING_USER_ACTION",
+            "category": "SOURCE_DATA_DEFECT",
+            "stage": null,
+            "progress": null,
+            "observed_at": "2026-10-07T17:00:00Z"
+        }
+    ],
+    "warnings": [],
+    "errors": [],
+    "interventions": [
+        {
+            "id": "intervention:source-a:course-42",
+            "type": "course_restore",
+            "status": "OPEN",
+            "scope": "course",
+            "work_item_id": "source-a:course-42",
+            "source_code": "SOURCE_DATA_DEFECT",
+            "choices": null,
+            "evidence_refs": [],
+            "opened_at": "2026-10-07T17:00:00Z",
+            "resolved_at": null
+        }
+    ],
+    "checkpoints": [],
+    "artifacts": [],
+    "heartbeat": null,
+    "started_at": "2026-10-07T16:00:00Z",
+    "observed_at": "2026-10-07T17:00:00Z",
+    "finished_at": null,
+    "exit_code": null,
+    "terminal_result": null,
+    "allowed_actions": null,
+    "source_observation": {
+        "format": "consolidator_course_worker_json",
+        "schema_version": "1.0",
+        "source_status": "WAITING_MANUAL",
+        "sha256": null
+    }
+}
