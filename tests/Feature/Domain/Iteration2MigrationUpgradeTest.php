@@ -54,9 +54,61 @@ class Iteration2MigrationUpgradeTest extends TestCase
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
+            $userId = DB::table('users')->insertGetId([
+                'name' => 'Migration test operator',
+                'email' => 'iteration-2-migration@example.test',
+                'password' => 'not-used',
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $projectId = DB::table('projects')->insertGetId([
+                'uuid' => (string) Str::uuid(),
+                'name' => 'Migration backfill project',
+                'type' => 'COLLECT',
+                'created_by' => $userId,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $executionId = DB::table('executions')->insertGetId([
+                'project_id' => $projectId,
+                'uuid' => (string) Str::uuid(),
+                'attempt' => 1,
+                'created_by' => $userId,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $distributionSha256 = hash('sha256', 'tree distribution');
+            $distributionId = DB::table('tool_distributions')->insertGetId([
+                'tool_version_id' => $treeVersionId,
+                'key' => 'tree-distribution',
+                'kind' => 'TREE',
+                'source_path' => 'BaseLine/Recolector',
+                'distribution_sha256' => $distributionSha256,
+                'file_count' => 1,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            DB::table('execution_tool_bindings')->insert([
+                'execution_id' => $executionId,
+                'tool_version_id' => $treeVersionId,
+                'tool_distribution_id' => $distributionId,
+                'workflow_key' => 'collect',
+                'adapter_key' => 'recolector',
+                'provider_key' => 'fake',
+                'distribution_sha256' => $distributionSha256,
+                'configuration_sha256' => hash('sha256', 'configuration'),
+                'capabilities_snapshot' => '[]',
+                'created_at' => $now,
+            ]);
             $runtime->up();
 
             $this->assertTrue(Schema::hasTable('source_packages'));
+            $this->assertSame((int) $projectId, (int) DB::table('execution_tool_bindings')->where('execution_id', $executionId)->value('project_id'));
+            $this->assertSame(1, DB::table('pg_trigger')
+                ->where('tgname', 'execution_tool_bindings_append_only')
+                ->whereRaw('tgrelid = ?::regclass', ['execution_tool_bindings'])
+                ->where('tgenabled', '<>', 'D')
+                ->count());
             $this->assertSame(2, DB::table('tool_versions')->count());
             DB::transaction(function () use ($runtime, $foundation): void {
                 $runtime->down();

@@ -27,9 +27,24 @@ return new class extends Migration
             $table->unsignedBigInteger('runtime_configuration_id')->nullable();
         });
 
-        DB::table('execution_tool_bindings')
-            ->join('executions', 'executions.id', '=', 'execution_tool_bindings.execution_id')
-            ->update(['execution_tool_bindings.project_id' => DB::raw('executions.project_id')]);
+        $hasAppendOnlyBindingTrigger = DB::getDriverName() === 'pgsql';
+        if ($hasAppendOnlyBindingTrigger) {
+            DB::statement('DROP TRIGGER IF EXISTS execution_tool_bindings_append_only ON execution_tool_bindings');
+        }
+
+        try {
+            DB::table('execution_tool_bindings')->update([
+                'project_id' => DB::raw('(SELECT project_id FROM executions WHERE executions.id = execution_tool_bindings.execution_id)'),
+            ]);
+        } finally {
+            if ($hasAppendOnlyBindingTrigger) {
+                DB::statement(<<<'SQL'
+                    CREATE TRIGGER execution_tool_bindings_append_only
+                        BEFORE UPDATE OR DELETE ON execution_tool_bindings
+                        FOR EACH ROW EXECUTE FUNCTION reject_execution_tool_binding_change()
+                    SQL);
+            }
+        }
         Schema::table('execution_tool_bindings', function (Blueprint $table): void {
             $table->unsignedBigInteger('project_id')->nullable(false)->change();
             $table->unique(['id', 'project_id'], 'execution_tool_bindings_id_project_unique');
