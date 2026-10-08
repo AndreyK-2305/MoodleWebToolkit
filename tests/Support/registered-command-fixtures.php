@@ -3,6 +3,13 @@
 // This versioned registry is available only to an explicitly opted-in testing
 // runtime. Request descriptors never define or replace its executable argv.
 return [
+    'platform_streaming' => [
+        'executable' => PHP_BINARY,
+        'fixed_arguments' => [base_path('tests/Support/stream-output-fixture.php')],
+        'parameters' => ['scenario' => ['pattern' => '/^[a-z-]{1,40}$/D']],
+        'timeout' => 30,
+        'cancellable' => true,
+    ],
     'platform_health' => [
         'executable' => PHP_BINARY,
         'fixed_arguments' => ['-r', 'fwrite(STDOUT, "pass"."word="."private-value");'],
