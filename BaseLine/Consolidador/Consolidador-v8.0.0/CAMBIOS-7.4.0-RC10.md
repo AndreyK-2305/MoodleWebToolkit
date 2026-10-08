@@ -1,0 +1,12 @@
+# Consolidador 7.4.0-linux-rc10
+
+Candidata basada en RC9. Los cambios se limitan a los bloqueos observados en Fase 2.
+
+- Revalidar R y el reintento de la etapa recalculan bindings y usan el mismo contrato. Cuando cambian pins, orígenes, destino, configuración o equivalencias, el checkpoint anterior y sus artefactos sellados se archivan en `exports/phase2/history/`; Discover genera un nuevo BEFORE y R obtiene AFTER/diff/validación en la misma sesión. Sin cambios se conserva el contrato. Un APPROVED válido permanece intacto. Una aprobación invalidada exige una nueva decisión manual.
+- `release` del pin es `null` u omitido solamente si `version.php` no declara `$plugin->release`. Si lo declara, el valor debe coincidir exactamente. El inventario del destino preserva `null` y mantiene la comprobación estricta del hash del árbol.
+- Se admiten checkouts Git independientes anidados con rutas registradas y pins propios. El árbol y el estado Git del padre excluyen únicamente los subárboles hijos declarados; cada hijo sigue verificando commit, árbol, versión y submodules. La copia a Moodle excluye `.git` de ambos. La ruta de customcertelement_daterange es `public/mod/customcert/element/daterange`; el commit upstream aportado para revisión es `dba041707207b825dcfd955d5fd4fe017e5d6c14`. No se distribuye el plugin ni se inventa su tree_sha256.
+- `mod_chat` core de origen, utilizado y ausente del destino se muestra como `removed_core_component`. La validación bloquea aprobación y equivalencias ficticias como `mod_openchat`. **Sigue siendo un impedimento para el benchmark con actividades Chat** hasta disponer de una transformación o preservación académica verificable.
+- Un checkout institucional Git para `mod_evoting` puede usar un origin local y debe tener `provenance` sellada (source, origin, responsible, reviewed_at) en el pin. Commit, árbol, version.php, versión, upgrade y aprobación manual siguen siendo obligatorios. Si falta el pin o el destino es anterior a `2024042302` del origen, Fase 2 bloquea. No se descargan versiones antiguas.
+- Identificadores e imágenes runtime actualizados a RC10; tests de tags bloquean RC1–RC9. Se mantienen pruebas heredadas de RC2 a RC9.
+
+No se incluyen checkouts de terceros, respaldos, `.env`, credenciales ni archivos de benchmark. Las pruebas de integración simulan Docker y Moodle; la revalidación real debe efectuarse en la instalación de destino. No hay checkout Git en el paquete base extraído, así que el ZIP no representa por sí mismo un commit descendiente del SHA Git indicado por el operador.

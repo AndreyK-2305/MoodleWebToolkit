@@ -1,0 +1,42 @@
+{
+    "tool_contract_version": "1.0.0",
+    "tool": "recolector",
+    "tool_version": "7.4.2-linux",
+    "distribution_hash": "4daaa16d278991f098b7f9c85361f7800193c4825e1f8cb6cb2c4b2870103c2e",
+    "operation_id": "9cc2b5d6-5f9c-4d32-b196-d83e39a1cc44",
+    "remote_execution_id": null,
+    "state": "COMPLETED",
+    "stage": "completed",
+    "substage": null,
+    "progress": 100,
+    "progress_units": [
+        {
+            "metric": "courses_completed",
+            "value": 10,
+            "total": 10,
+            "unit": "course",
+            "scope": "execution",
+            "work_item_id": null,
+            "observed_at": "2026-10-07T17:00:00Z"
+        }
+    ],
+    "work_items": [],
+    "warnings": [],
+    "errors": [],
+    "interventions": [],
+    "checkpoints": [],
+    "artifacts": [],
+    "heartbeat": null,
+    "started_at": "2026-10-07T16:30:00Z",
+    "observed_at": "2026-10-07T17:00:00Z",
+    "finished_at": "2026-10-07T17:00:00Z",
+    "exit_code": 0,
+    "terminal_result": "SUCCESS",
+    "allowed_actions": [],
+    "source_observation": {
+        "format": "collector_status_json",
+        "schema_version": "1.0",
+        "source_status": "success",
+        "sha256": null
+    }
+}

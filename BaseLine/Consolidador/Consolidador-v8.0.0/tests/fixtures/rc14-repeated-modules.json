@@ -1,0 +1,18 @@
+{
+  "source_id": "posgrados",
+  "source_course_id": 77,
+  "modules": [
+    {"source_module_id": 101, "modname": "label", "instance": 1001, "idnumber": "", "name": "Etiqueta"},
+    {"source_module_id": 102, "modname": "label", "instance": 1002, "idnumber": "", "name": "Etiqueta"},
+    {"source_module_id": 103, "modname": "label", "instance": 1003, "idnumber": "", "name": "Etiqueta"},
+    {"source_module_id": 104, "modname": "resource", "instance": 1004, "idnumber": "", "name": "Plantilla"},
+    {"source_module_id": 105, "modname": "resource", "instance": 1005, "idnumber": "", "name": "Plantilla"},
+    {"source_module_id": 106, "modname": "bigbluebuttonbn", "instance": 1006, "idnumber": "", "name": "Sesión"},
+    {"source_module_id": 107, "modname": "bigbluebuttonbn", "instance": 1007, "idnumber": "", "name": "Sesión"},
+    {"source_module_id": 108, "modname": "assign", "instance": 1008, "idnumber": "", "name": "Entrega"},
+    {"source_module_id": 109, "modname": "assign", "instance": 1009, "idnumber": "", "name": "Entrega"},
+    {"source_module_id": 110, "modname": "forum", "instance": 1010, "idnumber": "", "name": "Foro"},
+    {"source_module_id": 111, "modname": "forum", "instance": 1011, "idnumber": "", "name": "Foro"},
+    {"source_module_id": 112, "modname": "quiz", "instance": 1012, "idnumber": "QUIZ-INSTITUCIONAL", "name": "Evaluación"}
+  ]
+}

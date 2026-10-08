@@ -1,0 +1,12 @@
+Coloque aquí únicamente los paquetes ZIP sellados de la ejecución.
+
+El consolidador comprueba el contrato mínimo, las rutas seguras, el manifiesto y
+la estructura declarada. Confía en la auditoría interna ya sellada y no vuelve a
+calcular todos los SHA-256 ni relee cada .mbz durante la importación.
+
+No existe un tope artificial de bytes por curso o paquete. Asegure capacidad de
+disco suficiente para extracción, copias de trabajo y respaldo integral.
+
+Cada ejecución requiere entre 2 y 32 ZIP con source_id internos únicos. El
+nombre externo puede variar. No coloque aquí la copia integral de fase 8 y no
+añada, quite ni reemplace paquetes después de la primera intención de escritura.

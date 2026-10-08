@@ -7,6 +7,20 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use LogicException;
 
+/**
+ * @property int $id
+ * @property int|null $actor_id
+ * @property int|null $project_id
+ * @property int|null $execution_id
+ * @property string $action
+ * @property string|null $auditable_type
+ * @property int|null $auditable_id
+ * @property string|null $ip_address
+ * @property string|null $user_agent
+ * @property array<string, mixed>|null $old_values
+ * @property array<string, mixed>|null $new_values
+ * @property array<string, mixed>|null $payload
+ */
 class AuditLog extends Model
 {
     public const UPDATED_AT = null;

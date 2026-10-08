@@ -9,6 +9,10 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
+ * @property int $id
+ * @property int $execution_id
+ * @property int|null $remote_operation_id
+ * @property int|null $execution_step_id
  * @property LogStream $stream
  * @property string $level
  * @property string $message
@@ -21,6 +25,7 @@ class ExecutionLog extends Model
 
     protected $fillable = [
         'execution_id',
+        'remote_operation_id',
         'execution_step_id',
         'stream',
         'level',

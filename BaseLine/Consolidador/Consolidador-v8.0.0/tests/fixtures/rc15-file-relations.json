@@ -1,0 +1,14 @@
+{
+  "source_id": "posgrados",
+  "source_course_id": 77,
+  "modules": [
+    {"source_module_id": 101, "modname": "assign", "instance": 1001, "idnumber": "", "name": "Entrega", "context_id": 9001},
+    {"source_module_id": 102, "modname": "assign", "instance": 1002, "idnumber": "", "name": "Entrega", "context_id": 9002},
+    {"source_module_id": 103, "modname": "assign", "instance": 1003, "idnumber": "", "name": "Entrega", "context_id": 9003}
+  ],
+  "files": [
+    {"id": 501, "module": 101, "context_id": 9001, "source_user_id": 0, "component": "mod_assign", "filearea": "intro", "filename": "guia.pdf", "resolution": "file_id"},
+    {"id": 502, "module": 102, "context_id": 9002, "source_user_id": 0, "component": "mod_assign", "filearea": "intro", "filename": "guia.pdf", "resolution": "file_id"},
+    {"id": 503, "module": 103, "context_id": 9003, "source_user_id": 0, "component": "mod_assign", "filearea": "intro", "filename": "rubrica.pdf", "resolution": "contextid"}
+  ]
+}

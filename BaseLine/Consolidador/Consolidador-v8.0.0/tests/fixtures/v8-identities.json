@@ -1,0 +1,58 @@
+{
+  "documents": [
+    {
+      "metadata": {"source": "origen_a"},
+      "users": [
+        {
+          "source": "origen_a",
+          "source_user_id": 10,
+          "username": "kevin.a",
+          "firstname": "Kévin Andrey",
+          "lastname": "Jaimes Cristancho",
+          "email": "kevinandreyjc@ufps.edu.co",
+          "idnumber": "",
+          "google_sub": "sub-a",
+          "google_sub_verified": true
+        },
+        {
+          "source": "origen_a",
+          "source_user_id": 11,
+          "username": "historico",
+          "firstname": "Kevin Andrey",
+          "lastname": "Jaimes Cristancho",
+          "email": "historico@example.invalid",
+          "deleted": 1,
+          "google_sub": "",
+          "google_sub_verified": false
+        }
+      ]
+    },
+    {
+      "metadata": {"source": "origen_b"},
+      "users": [
+        {
+          "source": "origen_b",
+          "source_user_id": 20,
+          "username": "kevin.b",
+          "firstname": "Kevin Andrey",
+          "lastname": "Jaimes Cristancho",
+          "email": "kevinandreyjaimes1@gmail.com",
+          "idnumber": "",
+          "google_sub": "sub-b",
+          "google_sub_verified": true
+        },
+        {
+          "source": "origen_b",
+          "source_user_id": 21,
+          "username": "otra",
+          "firstname": "Persona",
+          "lastname": "Distinta",
+          "email": "otra@example.com",
+          "idnumber": "",
+          "google_sub": "",
+          "google_sub_verified": false
+        }
+      ]
+    }
+  ]
+}

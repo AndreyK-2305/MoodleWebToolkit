@@ -6,6 +6,7 @@ use App\Enums\ExecutionStatus;
 use App\Exceptions\InvalidStateTransition;
 use App\Models\Concerns\HasPublicUuid;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -17,6 +18,7 @@ use LogicException;
  * @property int $id
  * @property int $project_id
  * @property string $uuid
+ * @property string $workspace_key
  * @property int $attempt
  * @property ExecutionStatus $status
  * @property int|null $progress
@@ -25,10 +27,16 @@ use LogicException;
  * @property int|null $validated_proposal_version
  * @property string|null $validated_fingerprint
  * @property int $last_event_sequence
+ * @property int|null $created_by
+ * @property int|null $finalized_by
+ * @property int|null $resumed_from_execution_id
+ * @property int|null $resume_checkpoint_id
+ * @property CarbonImmutable|null $cancel_requested_at
  * @property CarbonImmutable|null $started_at
  * @property CarbonImmutable|null $finished_at
  * @property array<string, mixed>|null $completion_summary
  * @property-read Project $project
+ * @property-read Collection<int, RemoteOperation> $remoteOperations
  */
 class Execution extends Model
 {
@@ -182,6 +190,30 @@ class Execution extends Model
     public function artifacts(): HasMany
     {
         return $this->hasMany(Artifact::class);
+    }
+
+    /** @return HasOne<ExecutionToolBinding, $this> */
+    public function toolBinding(): HasOne
+    {
+        return $this->hasOne(ExecutionToolBinding::class);
+    }
+
+    /** @return HasOne<ExecutionWorkspace, $this> */
+    public function workspace(): HasOne
+    {
+        return $this->hasOne(ExecutionWorkspace::class);
+    }
+
+    /** @return HasOne<ExecutionCapacityApproval, $this> */
+    public function capacityApproval(): HasOne
+    {
+        return $this->hasOne(ExecutionCapacityApproval::class);
+    }
+
+    /** @return HasMany<RemoteOperation, $this> */
+    public function remoteOperations(): HasMany
+    {
+        return $this->hasMany(RemoteOperation::class);
     }
 
     /** @return HasOne<ExecutionFinalization, $this> */

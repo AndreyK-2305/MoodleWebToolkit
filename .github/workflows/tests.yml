@@ -37,14 +37,16 @@ jobs:
             test -n "$PR_BASE_SHA"
             git cat-file -e "${PR_BASE_SHA}^{commit}"
             echo "Checking PR range: ${PR_BASE_SHA}...HEAD"
-            git diff --check "${PR_BASE_SHA}...HEAD"
+            # BaseLine contains source-owned trailing blank lines; preserve its
+            # bytes and verify it with the dedicated canonical integrity gate.
+            git diff --check "${PR_BASE_SHA}...HEAD" -- . ':(exclude)BaseLine/**'
           elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
             git cat-file -e "${BEFORE_SHA}^{commit}"
             echo "Checking push range: ${BEFORE_SHA}..${CURRENT_SHA}"
-            git diff --check "${BEFORE_SHA}..${CURRENT_SHA}"
+            git diff --check "${BEFORE_SHA}..${CURRENT_SHA}" -- . ':(exclude)BaseLine/**'
           else
             echo "Checking current commit: ${CURRENT_SHA}"
-            git show --check --format= --no-renames "$CURRENT_SHA"
+            git show --check --format= --no-renames "$CURRENT_SHA" -- . ':(exclude)BaseLine/**'
           fi
 
       - name: Clean installation and all quality gates including Playwright
@@ -58,6 +60,19 @@ jobs:
           name: quality-failure-${{ github.sha }}
           path: quality-results/
           retention-days: 3
+
+      - name: Preserve successful validation with exact published SHA
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: iteration2-validation-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            quality-results/iteration2-validation.json
+            quality-results/health.json
+            quality-results/phpunit.xml
+            quality-results/playwright.xml
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Ensure isolated stack is stopped even after interruption
         if: always()

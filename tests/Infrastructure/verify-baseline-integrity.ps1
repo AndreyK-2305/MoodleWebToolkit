@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$expectedFileCount = 131
-$expectedFingerprint = '5a996439d8432e13abecbc4ebf57f12654d15e14afef8b1160fe55dcf82ae1d3'
+$expectedFileCount = 423
+$expectedFingerprint = 'd2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221'
 $baselineRoot = (Resolve-Path -LiteralPath 'BaseLine').Path
 
 $paths = New-Object 'System.Collections.Generic.List[string]'
@@ -38,4 +38,4 @@ if ($fingerprint -ne $expectedFingerprint) {
     throw "La huella de BaseLine no coincide. Actual: $fingerprint."
 }
 
-Write-Host "BaseLine intacta: $expectedFileCount archivos; SHA-256 canónico $fingerprint."
+Write-Host "BaseLine verificada: $expectedFileCount archivos; SHA-256 canónico $fingerprint."

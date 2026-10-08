@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\LocalArtifactStorage;
 use App\Domain\Executions\Contracts\ExecutionProvider;
@@ -24,6 +25,7 @@ class AppServiceProvider extends ServiceProvider
         $this->app->bind(ToolAdapter::class, FakeToolAdapter::class);
         $this->app->bind(ExecutionProvider::class, FakeExecutionProvider::class);
         $this->app->bind(ArtifactStorage::class, LocalArtifactStorage::class);
+        $this->app->bind(ArtifactReferenceStorage::class, LocalArtifactStorage::class);
     }
 
     /**

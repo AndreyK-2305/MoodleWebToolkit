@@ -1,0 +1,19 @@
+version: 1
+project_name: "consolidacion-moodle-paquetes"
+mode: production
+
+sources:
+  - id: posgrados-2025-05-02-directo
+    name: "posgrados-2025-05-02-directo"
+    service: package-posgrados-2025-05-02-directo
+    url: "http://3.148.188.11:8092"
+  - id: pregrado-2026-03-04-directo
+    name: "pregrado-2026-03-04-directo"
+    service: package-pregrado-2026-03-04-directo
+    url: "http://3.147.7.217:8080"
+
+target:
+  id: target
+  name: "Moodle consolidado UFPS"
+  service: moodle-target
+  url: "https://moodle-test.cuadre.click"

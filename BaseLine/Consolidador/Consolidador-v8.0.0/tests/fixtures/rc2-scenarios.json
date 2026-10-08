@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "accounts_without_strong_identity": 206,
+  "special_accounts": {
+    "oauth_without_google_sub": 1,
+    "shared_email": [2, 3],
+    "invalid_email": 4,
+    "siteadmin_with_academic_role": 5
+  },
+  "plugin_cases": [
+    "missing", "installed_disabled", "enabled", "incompatible",
+    "older_version", "wrong_or_unpinned_version", "submodule"
+  ],
+  "restore_cases": {
+    "resume": "restored_pending_verification",
+    "verification_failed": "verification_failed",
+    "sealed_artifact_modified": "same_size_different_content",
+    "workers": 2,
+    "sendmail_disabled": true
+  }
+}

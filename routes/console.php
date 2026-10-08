@@ -11,3 +11,7 @@ Artisan::command('inspire', function () {
 Schedule::command('executions:recover-dispatches --stale=5')
     ->everyMinute()
     ->withoutOverlapping();
+
+Schedule::command('executions:reconcile-remote-operations --limit=100')
+    ->everyMinute()
+    ->withoutOverlapping();

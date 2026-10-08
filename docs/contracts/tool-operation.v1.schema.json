@@ -1,0 +1,383 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://moodlewebtoolkit.invalid/contracts/tool-operation/1.0.0.schema.json",
+    "title": "MoodleWebToolkit normalized tool operation snapshot",
+    "description": "Proposed Fase 0 bridge contract. It represents only structured, observed data; it does not define a command protocol or expose secrets.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "tool_contract_version",
+        "tool",
+        "tool_version",
+        "distribution_hash",
+        "operation_id",
+        "remote_execution_id",
+        "state",
+        "stage",
+        "substage",
+        "progress",
+        "progress_units",
+        "work_items",
+        "warnings",
+        "errors",
+        "interventions",
+        "checkpoints",
+        "artifacts",
+        "heartbeat",
+        "started_at",
+        "observed_at",
+        "finished_at",
+        "exit_code",
+        "terminal_result",
+        "allowed_actions",
+        "source_observation"
+    ],
+    "properties": {
+        "tool_contract_version": { "const": "1.0.0" },
+        "tool": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$" },
+        "tool_version": { "type": "string", "minLength": 1 },
+        "distribution_hash": { "$ref": "#/$defs/sha256" },
+        "operation_id": { "type": "string", "format": "uuid" },
+        "remote_execution_id": {
+            "description": "Opaque provider-owned identity. Null until the provider has reconciled a real remote process or service unit.",
+            "type": ["string", "null"],
+            "minLength": 1
+        },
+        "state": {
+            "enum": [
+                "QUEUED",
+                "STARTING",
+                "RUNNING",
+                "WAITING_USER_ACTION",
+                "PAUSED",
+                "CANCELLING",
+                "CANCELLED",
+                "FAILED",
+                "VERIFYING",
+                "REVIEW",
+                "COMPLETED",
+                "UNKNOWN"
+            ]
+        },
+        "stage": { "type": ["string", "null"], "minLength": 1 },
+        "substage": { "type": ["string", "null"], "minLength": 1 },
+        "progress": {
+            "description": "A normalized percentage only when the source provides a valid denominator. Null means unknown, never zero.",
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 100
+        },
+        "progress_units": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/progressUnit" }
+        },
+        "work_items": {
+            "description": "Optional per-source or per-course states. A waiting course does not imply the whole operation is waiting.",
+            "type": "array",
+            "items": { "$ref": "#/$defs/workItem" }
+        },
+        "warnings": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/notice" }
+        },
+        "errors": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/notice" }
+        },
+        "interventions": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/intervention" }
+        },
+        "checkpoints": {
+            "description": "Checkpoint metadata only. Resume tokens and credentials must remain in protected storage and never appear here.",
+            "type": "array",
+            "items": { "$ref": "#/$defs/checkpoint" }
+        },
+        "artifacts": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/artifact" }
+        },
+        "heartbeat": { "$ref": "#/$defs/nullableDateTime" },
+        "started_at": { "$ref": "#/$defs/nullableDateTime" },
+        "observed_at": { "type": "string", "format": "date-time" },
+        "finished_at": { "$ref": "#/$defs/nullableDateTime" },
+        "exit_code": { "type": ["integer", "null"] },
+        "terminal_result": {
+            "type": ["string", "null"],
+            "enum": [
+                "SUCCESS",
+                "WARNING",
+                "FAILURE",
+                "CANCELLED",
+                "UNKNOWN",
+                null
+            ]
+        },
+        "allowed_actions": {
+            "description": "Null means actions are not established by evidence and policy; an empty array means none are currently allowed.",
+            "type": ["array", "null"],
+            "uniqueItems": true,
+            "items": {
+                "enum": [
+                    "resume",
+                    "retry",
+                    "cancel",
+                    "pause",
+                    "resolve_intervention",
+                    "stop_runtime",
+                    "backup",
+                    "publish"
+                ]
+            }
+        },
+        "source_observation": { "$ref": "#/$defs/sourceObservation" }
+    },
+    "$defs": {
+        "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+        },
+        "nullableDateTime": {
+            "type": ["string", "null"],
+            "format": "date-time"
+        },
+        "progressUnit": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "metric",
+                "value",
+                "total",
+                "unit",
+                "scope",
+                "observed_at"
+            ],
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+                },
+                "value": { "type": "number", "minimum": 0 },
+                "total": { "type": ["number", "null"], "minimum": 0 },
+                "unit": {
+                    "enum": [
+                        "count",
+                        "course",
+                        "file",
+                        "byte",
+                        "second",
+                        "worker",
+                        "phase",
+                        "unknown"
+                    ]
+                },
+                "scope": { "enum": ["execution", "source", "phase", "course"] },
+                "work_item_id": { "type": ["string", "null"], "minLength": 1 },
+                "observed_at": { "type": "string", "format": "date-time" }
+            }
+        },
+        "workItem": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "id",
+                "kind",
+                "source_id",
+                "source_status",
+                "state",
+                "category",
+                "stage",
+                "progress",
+                "observed_at"
+            ],
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "kind": { "enum": ["course", "source", "phase", "other"] },
+                "source_id": { "type": ["string", "null"], "minLength": 1 },
+                "source_status": { "type": ["string", "null"], "minLength": 1 },
+                "state": {
+                    "enum": [
+                        "PENDING",
+                        "RUNNING",
+                        "WAITING_USER_ACTION",
+                        "SUCCEEDED",
+                        "WARNING",
+                        "FAILED",
+                        "CANCELLED",
+                        "UNKNOWN"
+                    ]
+                },
+                "category": { "type": ["string", "null"], "minLength": 1 },
+                "stage": { "type": ["string", "null"], "minLength": 1 },
+                "progress": {
+                    "type": ["number", "null"],
+                    "minimum": 0,
+                    "maximum": 100
+                },
+                "observed_at": { "type": "string", "format": "date-time" }
+            }
+        },
+        "notice": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "code",
+                "severity",
+                "message",
+                "source_code",
+                "work_item_id",
+                "observed_at"
+            ],
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "pattern": "^[A-Z][A-Z0-9_.-]{1,95}$"
+                },
+                "severity": { "enum": ["INFO", "WARNING", "ERROR", "FATAL"] },
+                "message": { "type": "string", "maxLength": 2000 },
+                "source_code": { "type": ["string", "null"], "minLength": 1 },
+                "work_item_id": { "type": ["string", "null"], "minLength": 1 },
+                "observed_at": { "type": "string", "format": "date-time" }
+            }
+        },
+        "intervention": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "id",
+                "type",
+                "status",
+                "scope",
+                "work_item_id",
+                "source_code",
+                "choices",
+                "evidence_refs",
+                "opened_at",
+                "resolved_at"
+            ],
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "type": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_.-]{1,95}$"
+                },
+                "status": { "enum": ["OPEN", "RESOLVED", "EXPIRED", "STALE"] },
+                "scope": { "enum": ["execution", "source", "course"] },
+                "work_item_id": { "type": ["string", "null"], "minLength": 1 },
+                "source_code": { "type": ["string", "null"], "minLength": 1 },
+                "choices": {
+                    "description": "Null means a safe, closed choice set is not yet known. Never replace it with free-form shell input.",
+                    "type": ["array", "null"],
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["key", "requires_reason"],
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "pattern": "^[A-Z][A-Z0-9_.-]{1,63}$"
+                            },
+                            "requires_reason": { "type": "boolean" }
+                        }
+                    }
+                },
+                "evidence_refs": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 }
+                },
+                "opened_at": { "type": "string", "format": "date-time" },
+                "resolved_at": { "$ref": "#/$defs/nullableDateTime" }
+            }
+        },
+        "checkpoint": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "id",
+                "stage",
+                "resumable",
+                "evidence_sha256",
+                "created_at"
+            ],
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "stage": { "type": "string", "minLength": 1 },
+                "resumable": { "type": ["boolean", "null"] },
+                "evidence_sha256": {
+                    "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+                },
+                "created_at": { "type": "string", "format": "date-time" }
+            }
+        },
+        "artifact": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "id",
+                "kind",
+                "file_name",
+                "media_type",
+                "storage_ref",
+                "sha256",
+                "size_bytes",
+                "sealed",
+                "created_at"
+            ],
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "kind": {
+                    "enum": [
+                        "package",
+                        "checksum",
+                        "report",
+                        "log",
+                        "backup",
+                        "evidence",
+                        "other"
+                    ]
+                },
+                "file_name": {
+                    "type": "string",
+                    "pattern": "^[^/\\\\]+$",
+                    "minLength": 1
+                },
+                "media_type": { "type": ["string", "null"], "minLength": 1 },
+                "storage_ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Opaque application storage reference, never an absolute host path."
+                },
+                "sha256": {
+                    "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+                },
+                "size_bytes": { "type": ["integer", "null"], "minimum": 0 },
+                "sealed": { "type": "boolean" },
+                "created_at": { "type": "string", "format": "date-time" }
+            }
+        },
+        "sourceObservation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["format", "schema_version", "source_status", "sha256"],
+            "properties": {
+                "format": {
+                    "enum": [
+                        "collector_status_json",
+                        "collector_progress_json",
+                        "consolidator_assistant_state_json",
+                        "consolidator_course_worker_json",
+                        "none"
+                    ]
+                },
+                "schema_version": {
+                    "type": ["string", "null"],
+                    "minLength": 1
+                },
+                "source_status": { "type": ["string", "null"], "minLength": 1 },
+                "sha256": {
+                    "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+                }
+            }
+        }
+    }
+}

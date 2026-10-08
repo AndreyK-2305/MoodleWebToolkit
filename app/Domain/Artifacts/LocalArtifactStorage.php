@@ -2,6 +2,7 @@
 
 namespace App\Domain\Artifacts;
 
+use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
 use App\Domain\Artifacts\Streams\ArtifactReadStream;
@@ -12,7 +13,7 @@ use Illuminate\Support\Str;
 use InvalidArgumentException;
 use RuntimeException;
 
-class LocalArtifactStorage implements ArtifactStorage
+class LocalArtifactStorage implements ArtifactReferenceStorage
 {
     public function __construct(
         private readonly string $disk = 'local',
@@ -227,6 +228,97 @@ class LocalArtifactStorage implements ArtifactStorage
         $this->storage()->delete($path);
     }
 
+    public function referenceExisting(string $sourceAbsolutePath, string $targetPath, ?string $expectedSha256 = null, ?int $expectedSize = null): StoredArtifact
+    {
+        $targetPath = $this->safePath($targetPath);
+        $this->rejectSymbolicLinks($targetPath);
+        $storageRoot = realpath($this->storage()->path(''));
+        $sourceCandidate = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $sourceAbsolutePath);
+
+        if ($storageRoot === false || is_link($sourceAbsolutePath)) {
+            throw new InvalidArgumentException('El archivo de referencia debe existir y no ser un enlace simbólico.');
+        }
+
+        $candidateNormalized = rtrim(str_replace('\\', '/', $sourceCandidate), '/');
+        $rootNormalized = rtrim(str_replace('\\', '/', $storageRoot), '/');
+        if (DIRECTORY_SEPARATOR === '\\') {
+            $candidateNormalized = strtolower($candidateNormalized);
+            $rootNormalized = strtolower($rootNormalized);
+        }
+        if (! str_starts_with($candidateNormalized, $rootNormalized.'/')) {
+            throw new InvalidArgumentException('Solo se permiten referencias dentro del mismo almacenamiento privado.');
+        }
+
+        $this->rejectAbsoluteSymlinks($storageRoot, $sourceCandidate);
+        $source = realpath($sourceCandidate);
+
+        if ($source === false || ! is_file($source)) {
+            throw new InvalidArgumentException('El archivo de referencia debe existir y no ser un enlace simbólico.');
+        }
+
+        $normalizedSource = str_replace('\\', '/', $source);
+        $normalizedRoot = rtrim(str_replace('\\', '/', $storageRoot), '/');
+
+        if (! str_starts_with($normalizedSource, $normalizedRoot.'/')) {
+            throw new InvalidArgumentException('Solo se permiten referencias dentro del mismo almacenamiento privado.');
+        }
+
+        $this->rejectAbsoluteSymlinks($storageRoot, $source);
+        $before = @stat($source);
+        $size = filesize($source);
+        $checksum = hash_file('sha256', $source);
+        $afterHash = @stat($source);
+
+        if (! is_array($before) || ! is_array($afterHash) || ! is_int($size) || ! is_string($checksum)
+            || $before['dev'] !== $afterHash['dev'] || $before['ino'] !== $afterHash['ino']
+            || $before['size'] !== $afterHash['size'] || $before['mtime'] !== $afterHash['mtime']
+        ) {
+            throw new RuntimeException('No se pudo verificar el archivo que se desea referenciar.');
+        }
+
+        if (($expectedSha256 !== null && ! hash_equals(strtolower($expectedSha256), $checksum))
+            || ($expectedSize !== null && $size !== $expectedSize)
+        ) {
+            throw new RuntimeException('El hash esperado del archivo de referencia no coincide.');
+        }
+
+        $target = $this->absolutePath($targetPath);
+        $directory = dirname($target);
+
+        if (! is_dir($directory) && ! mkdir($directory, 0700, true) && ! is_dir($directory)) {
+            throw new RuntimeException('No se pudo crear el directorio para la referencia.');
+        }
+
+        if (@link($source, $target) === false) {
+            throw new RuntimeException('No se pudo crear la referencia sin duplicar el archivo.');
+        }
+
+        if (fileinode($source) !== fileinode($target)) {
+            @unlink($target);
+            throw new RuntimeException('El enlace creado no comparte la identidad del archivo fuente.');
+        }
+
+        clearstatcache(true, $target);
+        clearstatcache(true, $source);
+        $linkedStat = @stat($target);
+        $sourceAfterLink = @stat($source);
+        $linkedChecksum = hash_file('sha256', $target);
+        if (! is_array($linkedStat) || ! is_array($sourceAfterLink)
+            || $linkedStat['dev'] !== $before['dev'] || $linkedStat['ino'] !== $before['ino']
+            || $sourceAfterLink['dev'] !== $before['dev'] || $sourceAfterLink['ino'] !== $before['ino']
+            || $sourceAfterLink['size'] !== $before['size'] || $sourceAfterLink['mtime'] !== $before['mtime']
+            || $linkedStat['size'] !== $size || ! is_string($linkedChecksum) || ! hash_equals($checksum, $linkedChecksum)
+        ) {
+            @unlink($target);
+            throw new RuntimeException('El archivo cambió mientras se creaba su referencia.');
+        }
+
+        // A hard link shares the source inode, so this also makes the producer's file read-only.
+        @chmod($target, 0440);
+
+        return new StoredArtifact($this->disk, $targetPath, $size, $checksum);
+    }
+
     /** @return list<string> */
     public function files(string $prefix = 'executions'): array
     {
@@ -316,6 +408,20 @@ class LocalArtifactStorage implements ArtifactStorage
 
             if (is_link($cursor)) {
                 throw new InvalidArgumentException('No se permiten enlaces simbólicos en rutas de artefactos.');
+            }
+        }
+    }
+
+    private function rejectAbsoluteSymlinks(string $root, string $path): void
+    {
+        $relative = ltrim(substr($path, strlen($root)), DIRECTORY_SEPARATOR);
+        $cursor = rtrim($root, DIRECTORY_SEPARATOR);
+
+        foreach (array_filter(explode(DIRECTORY_SEPARATOR, $relative)) as $segment) {
+            $cursor .= DIRECTORY_SEPARATOR.$segment;
+
+            if (is_link($cursor)) {
+                throw new InvalidArgumentException('No se permiten enlaces simbólicos en el archivo de referencia.');
             }
         }
     }

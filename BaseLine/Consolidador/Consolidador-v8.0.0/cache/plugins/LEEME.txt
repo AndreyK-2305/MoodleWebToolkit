@@ -1,0 +1,5 @@
+La caché física de plugins compatibles es opcional y no forma parte del ZIP.
+
+V8 guarda cada checkout por component/commit y lo reutiliza únicamente después
+de verificar commit, component, version.php, tree SHA256 y submódulos. Una
+entrada alterada se rechaza y se reconstruye desde el repositorio pinneado.

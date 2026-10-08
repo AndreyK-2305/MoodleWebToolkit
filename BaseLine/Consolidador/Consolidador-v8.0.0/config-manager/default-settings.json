@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "settings": {
+    "allowaccountssameemail": 1,
+    "allowcoursethemes": 1,
+    "theme": "boost"
+  }
+}
