@@ -70,7 +70,8 @@ class LocalProcessInspector
             throw new RuntimeException('El runtime no pudo enviar una señal segura al proceso registrado.');
         }
 
-        $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.cancel_grace_seconds', 3)));
+        $grace = (int) ($operation->evidence['execution_policy']['cancellation_grace_seconds'] ?? config('toolkit.runner.cancel_grace_seconds', 3));
+        $deadline = microtime(true) + $grace;
         do {
             usleep(100_000);
             if (! $this->processGroupExists($processGroupId)) {
@@ -78,11 +79,11 @@ class LocalProcessInspector
             }
         } while (microtime(true) < $deadline);
 
-        if ((bool) config('toolkit.runner.allow_force_kill', false)) {
+        if ((bool) ($operation->evidence['execution_policy']['allow_force_kill'] ?? config('toolkit.runner.allow_force_kill', false))) {
             if (! $this->processGroupExists($processGroupId) || ! posix_kill(-$processGroupId, SIGKILL)) {
                 return false;
             }
-            $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.cancel_grace_seconds', 3)));
+            $deadline = microtime(true) + $grace;
             do {
                 usleep(100_000);
                 if (! $this->processGroupExists($processGroupId)) {

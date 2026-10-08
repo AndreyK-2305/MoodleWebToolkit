@@ -15,6 +15,8 @@ return [
     ],
     'runner' => [
         'timeout_seconds' => (int) env('TOOL_RUNNER_TIMEOUT_SECONDS', 3600),
+        'heartbeat_interval_seconds' => env('TOOL_RUNNER_HEARTBEAT_INTERVAL_SECONDS', 10),
+        'stall_timeout_seconds' => env('TOOL_RUNNER_STALL_TIMEOUT_SECONDS'),
         'max_output_bytes' => (int) env('TOOL_RUNNER_MAX_OUTPUT_BYTES', 1048576),
         'durable_log_max_bytes' => env('TOOL_RUNNER_DURABLE_LOG_MAX_BYTES', 1048576),
         'stream_pending_max_bytes' => env('TOOL_RUNNER_STREAM_PENDING_MAX_BYTES', 65536),
@@ -22,7 +24,7 @@ return [
         'limit_wrapper' => env('TOOL_RUNNER_LIMIT_WRAPPER', '/usr/bin/prlimit'),
         'session_wrapper' => env('TOOL_RUNNER_SESSION_WRAPPER', '/usr/bin/setsid'),
         'limits' => [
-            'cpu_seconds' => (int) env('TOOL_RUNNER_CPU_SECONDS', 86400),
+            'cpu_seconds' => env('TOOL_RUNNER_CPU_SECONDS'),
             'memory_bytes' => (int) env('TOOL_RUNNER_MEMORY_BYTES', 8589934592),
             'processes' => (int) env('TOOL_RUNNER_MAX_PROCESSES', 128),
             'file_bytes' => (int) env('TOOL_RUNNER_MAX_FILE_BYTES', 1099511627776),

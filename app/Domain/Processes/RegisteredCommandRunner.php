@@ -69,18 +69,18 @@ class RegisteredCommandRunner
         $environment['MOODLE_OPERATION_ID'] = $operationUuid;
         $environment['MOODLE_COMMAND_SHA256'] = $commandSha256 ?? hash('sha256', json_encode([$commandKey, $definition['argv']], JSON_THROW_ON_ERROR));
         $argv = $definition['argv'];
-        if ((bool) config('toolkit.runner.enforce_os_limits', true)) {
+        if ($definition['enforce_os_limits']) {
             $wrapper = (string) config('toolkit.runner.limit_wrapper', '/usr/bin/prlimit');
             if (str_starts_with($wrapper, DIRECTORY_SEPARATOR) === false || is_file($wrapper) === false || is_executable($wrapper) === false) {
                 throw new RuntimeException('El runner requiere el limitador de recursos del sistema operativo.');
             }
-            $limits = config('toolkit.runner.limits', []);
+            $limits = $definition['resource_limits'];
             $argv = [
                 $wrapper,
-                '--cpu='.max(1, (int) ($limits['cpu_seconds'] ?? 86400)),
-                '--as='.max(134_217_728, (int) ($limits['memory_bytes'] ?? 8_589_934_592)),
-                '--nproc='.max(1, (int) ($limits['processes'] ?? 128)),
-                '--fsize='.max(1_048_576, (int) ($limits['file_bytes'] ?? 1_099_511_627_776)),
+                ...($limits['cpu_seconds'] === null ? [] : ['--cpu='.$limits['cpu_seconds']]),
+                '--as='.$limits['memory_bytes'],
+                '--nproc='.$limits['processes'],
+                '--fsize='.$limits['file_bytes'],
                 '--',
                 ...$argv,
             ];
@@ -99,15 +99,16 @@ class RegisteredCommandRunner
 
         stream_set_blocking($pipes[1], false);
         stream_set_blocking($pipes[2], false);
-        $startedAt = microtime(true);
+        $startedAt = hrtime(true) / 1_000_000_000;
         $lastHeartbeat = $startedAt;
+        $lastActivity = $startedAt;
         $exitCode = null;
         $timedOut = false;
         $resourceLimitExceeded = false;
         $files = [];
         $captures = [];
         try {
-            $processId = $this->awaitProcessReady($process, $pipes[3]);
+            $processId = $this->awaitProcessReady($process, $pipes[3], $definition['startup_timeout_seconds']);
             foreach (['stdout', 'stderr'] as $name) {
                 $path = $this->workspaces->operationLogPath($execution, $operationUuid, $name);
                 $file = @fopen($path, 'xb');
@@ -151,6 +152,7 @@ class RegisteredCommandRunner
                             break;
                         }
                         $captures[$name]->observe($chunk);
+                        $lastActivity = hrtime(true) / 1_000_000_000;
                     }
                 }
                 if (! $status['running']) {
@@ -159,16 +161,18 @@ class RegisteredCommandRunner
                         break;
                     }
                 }
-                if (microtime(true) - $startedAt > $definition['timeout']) {
+                $observedAt = hrtime(true) / 1_000_000_000;
+                if (app(RegisteredExecutionPolicy::class)->expired($definition['wall_timeout_seconds'], $startedAt, $observedAt)
+                    || app(RegisteredExecutionPolicy::class)->expired($definition['stall_timeout_seconds'], $lastActivity, $observedAt)) {
                     $timedOut = true;
-                    $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
+                    $this->terminateProcessGroup($status['pid'], forceAfterGrace: true, graceSeconds: $definition['cancellation_grace_seconds']);
                     $exitCode = 124;
                 }
-                if (microtime(true) - $lastHeartbeat >= 10) {
+                if ($observedAt - $lastHeartbeat >= $definition['heartbeat_interval_seconds']) {
                     if ($onHeartbeat !== null) {
                         $onHeartbeat($processId);
                     }
-                    $lastHeartbeat = microtime(true);
+                    $lastHeartbeat = $observedAt;
                     try {
                         $this->workspaces->measure($execution);
                     } catch (Throwable) {
@@ -234,10 +238,10 @@ class RegisteredCommandRunner
      * @param  resource  $process
      * @param  resource  $readyPipe
      */
-    private function awaitProcessReady(mixed $process, mixed $readyPipe): int
+    private function awaitProcessReady(mixed $process, mixed $readyPipe, int $timeoutSeconds): int
     {
         stream_set_blocking($readyPipe, false);
-        $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.supervisor_start_timeout_seconds', 3)));
+        $deadline = microtime(true) + $timeoutSeconds;
         $ready = '';
         do {
             $chunk = stream_get_contents($readyPipe);
@@ -259,13 +263,13 @@ class RegisteredCommandRunner
         throw new RuntimeException('El proceso registrado no confirmó el arranque antes de capturar su identidad.');
     }
 
-    private function terminateProcessGroup(int $pid, bool $forceAfterGrace = false): void
+    private function terminateProcessGroup(int $pid, bool $forceAfterGrace = false, ?int $graceSeconds = null): void
     {
         if ($pid < 2 || function_exists('posix_kill') === false) {
             return;
         }
         @posix_kill(-$pid, SIGTERM);
-        $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.cancel_grace_seconds', 3)));
+        $deadline = microtime(true) + ($graceSeconds ?? (int) config('toolkit.runner.cancel_grace_seconds', 3));
         do {
             if (@posix_kill(-$pid, 0) === false) {
                 return;

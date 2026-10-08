@@ -10,7 +10,15 @@ use InvalidArgumentException;
  * @phpstan-type RegisteredCommandDefinition array{
  *     argv: list<string>,
  *     environment: array<string, string>,
- *     timeout: int,
+ *     timeout: ?int,
+ *     startup_timeout_seconds: int,
+ *     heartbeat_interval_seconds: int,
+ *     stall_timeout_seconds: ?int,
+ *     wall_timeout_seconds: ?int,
+ *     cancellation_grace_seconds: int,
+ *     resource_limits: array{cpu_seconds: ?int, memory_bytes: int, processes: int, file_bytes: int},
+ *     enforce_os_limits: bool,
+ *     allow_force_kill: bool,
  *     max_output_bytes: int,
  *     durable_log_max_bytes: int,
  *     platform_durable_log_max_bytes: int,
@@ -118,10 +126,15 @@ class RegisteredCommandRegistry
             throw new InvalidArgumentException('El buffer pendiente debe tener al menos 64 bytes.');
         }
 
+        $policy = app(RegisteredExecutionPolicy::class)->resolve($definition);
+
         return [
+            ...$policy,
+            'enforce_os_limits' => (bool) config('toolkit.runner.enforce_os_limits', true),
+            'allow_force_kill' => (bool) config('toolkit.runner.allow_force_kill', false),
             'argv' => $argv,
             'environment' => $environment,
-            'timeout' => min(86400, max(1, (int) ($definition['timeout'] ?? config('toolkit.runner.timeout_seconds', 3600)))),
+            'timeout' => $policy['wall_timeout_seconds'],
             'max_output_bytes' => min(8_388_608, max(1024, (int) config('toolkit.runner.max_output_bytes', 1_048_576))),
             'durable_log_max_bytes' => $commandLimit,
             'platform_durable_log_max_bytes' => $platformLimit,

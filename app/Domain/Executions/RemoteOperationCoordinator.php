@@ -165,8 +165,11 @@ class RemoteOperationCoordinator
             $launcherEnvironment['TOOL_RUNNER_ENFORCE_OS_LIMITS'] = config('toolkit.runner.enforce_os_limits') ? 'true' : 'false';
             $launcherEnvironment['TOOL_RUNNER_LIMIT_WRAPPER'] = (string) config('toolkit.runner.limit_wrapper');
             $launcherEnvironment['TOOL_RUNNER_SESSION_WRAPPER'] = (string) config('toolkit.runner.session_wrapper');
+            $launcherEnvironment['TOOL_SUPERVISOR_START_TIMEOUT_SECONDS'] = (string) config('toolkit.runner.supervisor_start_timeout_seconds', 3);
             $limits = config('toolkit.runner.limits', []);
-            $launcherEnvironment['TOOL_RUNNER_CPU_SECONDS'] = (string) ($limits['cpu_seconds'] ?? 86400);
+            $launcherEnvironment['TOOL_RUNNER_CPU_SECONDS'] = $limits['cpu_seconds'] === null ? 'null' : (string) $limits['cpu_seconds'];
+            $launcherEnvironment['TOOL_RUNNER_HEARTBEAT_INTERVAL_SECONDS'] = (string) config('toolkit.runner.heartbeat_interval_seconds', 10);
+            $launcherEnvironment['TOOL_RUNNER_STALL_TIMEOUT_SECONDS'] = config('toolkit.runner.stall_timeout_seconds') === null ? 'null' : (string) config('toolkit.runner.stall_timeout_seconds');
             $launcherEnvironment['TOOL_RUNNER_MEMORY_BYTES'] = (string) ($limits['memory_bytes'] ?? 8_589_934_592);
             $launcherEnvironment['TOOL_RUNNER_MAX_PROCESSES'] = (string) ($limits['processes'] ?? 128);
             $launcherEnvironment['TOOL_RUNNER_MAX_FILE_BYTES'] = (string) ($limits['file_bytes'] ?? 1_099_511_627_776);
@@ -195,7 +198,7 @@ class RemoteOperationCoordinator
                 'evidence' => [...($operation->evidence ?? []), 'supervisor_dispatched_at' => now()->utc()->toIso8601String()],
             ])->save();
             $this->persistState($operation);
-            $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.supervisor_start_timeout_seconds', 3)));
+            $deadline = microtime(true) + $registeredDefinition['startup_timeout_seconds'];
             $launchPath = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, 'launch.json');
             $exitPath = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, 'exit.json');
             do {
@@ -306,6 +309,11 @@ class RemoteOperationCoordinator
                 'evidence' => [
                     'artifact_descriptors' => $definition['artifact_descriptors'],
                     'cancellable' => $definition['cancellable'],
+                    'execution_policy' => array_intersect_key($definition, array_flip([
+                        'startup_timeout_seconds', 'heartbeat_interval_seconds', 'stall_timeout_seconds',
+                        'wall_timeout_seconds', 'cancellation_grace_seconds', 'resource_limits',
+                        'enforce_os_limits', 'allow_force_kill',
+                    ])),
                 ],
             ]), true];
         });
@@ -329,6 +337,14 @@ class RemoteOperationCoordinator
                 'argv' => $definition['argv'] ?? [],
                 'environment' => $definition['environment'] ?? [],
                 'timeout' => $definition['timeout'] ?? null,
+                'startup_timeout_seconds' => $definition['startup_timeout_seconds'] ?? null,
+                'heartbeat_interval_seconds' => $definition['heartbeat_interval_seconds'] ?? null,
+                'stall_timeout_seconds' => $definition['stall_timeout_seconds'] ?? null,
+                'wall_timeout_seconds' => $definition['wall_timeout_seconds'] ?? null,
+                'cancellation_grace_seconds' => $definition['cancellation_grace_seconds'] ?? null,
+                'resource_limits' => $definition['resource_limits'] ?? [],
+                'enforce_os_limits' => $definition['enforce_os_limits'] ?? null,
+                'allow_force_kill' => $definition['allow_force_kill'] ?? null,
                 'max_output_bytes' => $definition['max_output_bytes'] ?? null,
                 'durable_log_max_bytes' => $definition['durable_log_max_bytes'] ?? null,
                 'platform_durable_log_max_bytes' => $definition['platform_durable_log_max_bytes'] ?? null,

@@ -274,6 +274,43 @@ class RegisteredCommandRunnerTest extends TestCase
         $this->assertFalse($this->processIsExecuting((int) $result->processId));
     }
 
+    public function test_unlimited_command_retains_resource_limits_and_stall_detection(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('La regresión necesita el runner Linux.');
+        }
+        config([
+            'toolkit.runner.commands.platform_long.wall_timeout_seconds' => null,
+            'toolkit.runner.commands.platform_long.stall_timeout_seconds' => 1,
+            'toolkit.runner.commands.platform_long.heartbeat_interval_seconds' => 1,
+            'toolkit.runner.commands.platform_long.cancellation_grace_seconds' => 1,
+        ]);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $heartbeats = 0;
+        $result = app(RegisteredCommandRunner::class)->run($execution, 'platform_long', onHeartbeat: function () use (&$heartbeats): void {
+            $heartbeats++;
+        });
+        $this->assertTrue($result->timedOut);
+        $this->assertSame(124, $result->exitCode);
+        $this->assertGreaterThan(0, $heartbeats);
+        $this->assertFalse($this->processIsExecuting((int) $result->processId));
+    }
+
+    public function test_time_and_resource_policy_cannot_change_under_an_idempotency_key(): void
+    {
+        Queue::fake();
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $coordinator = app(RemoteOperationCoordinator::class);
+        $operation = $coordinator->schedule($execution, 'policy-identity', 'platform_long');
+        $this->assertSame(15, $operation->evidence['execution_policy']['wall_timeout_seconds']);
+        config(['toolkit.runner.commands.platform_long.wall_timeout_seconds' => null]);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('otro comando');
+        $coordinator->schedule($execution, 'policy-identity', 'platform_long');
+    }
+
     public function test_launch_job_is_short_and_returns_while_the_process_group_keeps_running(): void
     {
         $this->assertLessThanOrEqual(120, (new RunRegisteredRemoteOperation(1, 'platform_long', [], ''))->timeout);
