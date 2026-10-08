@@ -67,6 +67,12 @@ final class StreamingSensitiveValueRedactor
                     $this->json = false;
                 } elseif (! $this->privateKey) {
                     $output .= self::UNFRAMED_MARKER."\n";
+                    if ($this->hasAmbiguousSensitiveAssignment($this->pending)) {
+                        $this->pending = '';
+                        $this->ambiguousContinuation = true;
+
+                        return $output;
+                    }
                 }
                 // Reuse the pending buffer for delimiter recognition while
                 // discarding. Its bounded tail is never released as output.
@@ -162,6 +168,9 @@ final class StreamingSensitiveValueRedactor
 
     private function sanitizeRecord(string $record): string
     {
+        if ($this->ambiguousContinuation) {
+            return '';
+        }
         if ($this->privateKey) {
             if (preg_match('/-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----/', $record, $end, PREG_OFFSET_CAPTURE) !== 1) {
                 return '';
@@ -172,6 +181,9 @@ final class StreamingSensitiveValueRedactor
         }
         if (preg_match('/-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY(?:-----)?/', $record, $begin, PREG_OFFSET_CAPTURE) === 1) {
             $prefix = $this->sanitizePlain(substr($record, 0, $begin[0][1]));
+            if ($this->ambiguousContinuation) {
+                return $prefix;
+            }
             $this->privateKey = true;
 
             return $prefix.'[REDACTED PRIVATE KEY]'.$this->sanitizeRecord(substr($record, $begin[0][1] + strlen($begin[0][0])));
@@ -180,6 +192,7 @@ final class StreamingSensitiveValueRedactor
         return $this->sanitizePlain($record);
     }
 
+    /** @phpstan-impure Updates continuation state when a record cannot be classified. */
     private function sanitizePlain(string $record): string
     {
         if (preg_match('//u', $record) !== 1) {
@@ -196,32 +209,34 @@ final class StreamingSensitiveValueRedactor
 
                 return self::UNFRAMED_MARKER;
             }
-        } else {
-            preg_match_all('/(?:"(?<quoted>[A-Za-z][A-Za-z0-9_%_-]*)"|(?<key>[A-Za-z][A-Za-z0-9_%_-]*))\s*[:=]\s*/', $record, $assignments, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
-            foreach ($assignments as $assignment) {
-                $quoted = $assignment['quoted'][0] ?? '';
-                $key = $quoted !== '' ? $quoted : ($assignment['key'][0] ?? '');
-                if (! $this->redactor->isSensitiveKeyName(rawurldecode($key))) {
-                    continue;
-                }
-                $rest = substr($record, $assignment[0][1] + strlen($assignment[0][0]));
-                if ($rest === '') {
-                    $this->ambiguousContinuation = true;
+        } elseif ($this->hasAmbiguousSensitiveAssignment($record)) {
+            $this->ambiguousContinuation = true;
 
-                    return self::UNFRAMED_MARKER."\n";
-                }
-                if (in_array($rest[0], ['{', '[', "'"], true)
-                    || ($rest[0] === '"' && preg_match('/^"(?:\\\\.|[^"\\\\])*"/s', $rest) !== 1)
-                ) {
-                    $this->ambiguousContinuation = true;
-
-                    return self::UNFRAMED_MARKER;
-                }
-            }
+            return self::UNFRAMED_MARKER."\n";
         }
         $ending = str_ends_with($record, "\r\n") ? "\r\n" : (str_ends_with($record, "\n") ? "\n" : '');
         $body = $ending === '' ? $record : substr($record, 0, -strlen($ending));
 
         return $this->redactor->redactString($body).$ending;
+    }
+
+    private function hasAmbiguousSensitiveAssignment(string $record): bool
+    {
+        preg_match_all('/(?:"(?<quoted>[A-Za-z][A-Za-z0-9_%_-]*)"|(?<key>[A-Za-z][A-Za-z0-9_%_-]*))\s*[:=]\s*/', $record, $assignments, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
+        foreach ($assignments as $assignment) {
+            $quoted = $assignment['quoted'][0] ?? '';
+            $key = $quoted !== '' ? $quoted : ($assignment['key'][0] ?? '');
+            if (! $this->redactor->isSensitiveKeyName(rawurldecode($key))) {
+                continue;
+            }
+            $rest = substr($record, $assignment[0][1] + strlen($assignment[0][0]));
+            if ($rest === '' || in_array($rest[0], ['{', '[', "'"], true)
+                || ($rest[0] === '"' && preg_match('/^"(?:\\\\.|[^"\\\\])*"/s', $rest) !== 1)
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

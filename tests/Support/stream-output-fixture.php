@@ -15,6 +15,8 @@ $pieces = match ($scenario) {
     'ambiguous-quoted' => [['password="\n', ''], ['private-value"\nvisible\n', '']],
     'ambiguous-structured' => [['credentials={\n', ''], ['"nested":"private-value"\n}\nvisible\n', '']],
     'ambiguous-empty' => [['password=\n\n', ''], ['private-value\nvisible\n', '']],
+    'ambiguous-overflow' => [['password="'.str_repeat('x', 65536).'\n', ''], ['private-value"\nvisible\n', '']],
+    'ambiguous-pem' => [["password='private-value with spaces ", ''], ['-----BEGIN PRIVATE KEY-----hidden-----END PRIVATE KEY-----', ''], [" private-value'\n", '']],
     'secret-failure' => [['pass', 'Authori'], ['word=private-value', 'zation: Bearer private-value']],
     default => [],
 };

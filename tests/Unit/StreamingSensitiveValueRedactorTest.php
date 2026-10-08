@@ -102,13 +102,13 @@ class StreamingSensitiveValueRedactorTest extends TestCase
     }
 
     #[DataProvider('ambiguousSensitiveRecords')]
-    public function test_ambiguous_sensitive_continuations_stay_closed_until_eof(string $record): void
+    public function test_ambiguous_sensitive_continuations_stay_closed_until_eof(string $record, int $maximum = 64): void
     {
-        $stream = new StreamingSensitiveValueRedactor(new SensitiveValueRedactor, 64);
+        $stream = new StreamingSensitiveValueRedactor(new SensitiveValueRedactor, $maximum);
         $output = '';
         foreach (str_split($record, 3) as $chunk) {
             $output .= $stream->push($chunk);
-            $this->assertLessThanOrEqual(64, $stream->bufferedBytes());
+            $this->assertLessThanOrEqual($maximum, $stream->bufferedBytes());
         }
         $output .= $stream->finish();
         $this->assertStringNotContainsString('private-value', $output);
@@ -124,6 +124,11 @@ class StreamingSensitiveValueRedactorTest extends TestCase
             ["password=\n\nprivate-value\nvisible\n"],
             ["password='\nprivate-value'\nvisible\n"],
             ["password='private-value with spaces'\nvisible\n"],
+            ['password="'.str_repeat('x', 100)."\nprivate-value\"\nvisible\n"],
+            ['credentials={'.str_repeat(' ', 100)."\n  \"nested\":\"private-value\"\n}\nvisible\n"],
+            ['token=['.str_repeat(' ', 100)."\n  \"private-value\"\n]\nvisible\n"],
+            ['password='.str_repeat(' ', 100)."\n\nprivate-value\nvisible\n"],
+            ["password='private-value with spaces -----BEGIN PRIVATE KEY-----hidden-----END PRIVATE KEY----- private-value'\n", 65536],
         ];
     }
 }

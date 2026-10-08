@@ -78,7 +78,7 @@ class StreamingCommandRunnerTest extends TestCase
 
     public static function fragmentedSecrets(): array
     {
-        return array_map(fn (string $scenario): array => [$scenario], ['split-key', 'split-value', 'authorization', 'url', 'pem', 'independent', 'pending', 'json', 'cookie', 'unterminated-pem', 'unframed', 'ambiguous-quoted', 'ambiguous-structured', 'ambiguous-empty']);
+        return array_map(fn (string $scenario): array => [$scenario], ['split-key', 'split-value', 'authorization', 'url', 'pem', 'independent', 'pending', 'json', 'cookie', 'unterminated-pem', 'unframed', 'ambiguous-quoted', 'ambiguous-structured', 'ambiguous-empty', 'ambiguous-overflow', 'ambiguous-pem']);
     }
 
     #[DataProvider('fragmentedSecrets')]
