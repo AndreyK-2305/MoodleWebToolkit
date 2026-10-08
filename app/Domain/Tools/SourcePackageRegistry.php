@@ -21,7 +21,7 @@ class SourcePackageRegistry
     }
 
     /**
-     * @param  list<string>  $compatibleWorkflows
+     * @param  array<array-key, mixed>  $compatibleWorkflows
      * @param  array<string, mixed>  $capabilities
      */
     public function register(
@@ -55,19 +55,24 @@ class SourcePackageRegistry
         }
         if (in_array($sensitivity, ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'], true) === false
             || array_is_list($compatibleWorkflows) === false
-            || array_filter($compatibleWorkflows, fn (mixed $workflow): bool => is_string($workflow) === false
-                || preg_match('/^[a-z][a-z0-9._:-]{1,119}$/D', $workflow) !== 1) !== []
         ) {
             throw new ToolOperationBlocked('La sensibilidad o los flujos compatibles del paquete fuente no son válidos.');
         }
-        $identityStrings = [$sourceId, $producerToolVersion, $schemaVersion, $name, ...$compatibleWorkflows];
+        $workflowKeys = [];
+        foreach ($compatibleWorkflows as $workflow) {
+            if (is_string($workflow) === false || preg_match('/^[a-z][a-z0-9._:-]{1,119}$/D', $workflow) !== 1) {
+                throw new ToolOperationBlocked('La sensibilidad o los flujos compatibles del paquete fuente no son válidos.');
+            }
+            $workflowKeys[] = $workflow;
+        }
+        $identityStrings = [$sourceId, $producerToolVersion, $schemaVersion, $name, ...$workflowKeys];
         if (array_filter($identityStrings, fn (string $value): bool => $this->redactor->redactString($value) !== $value) !== []
             || $this->redactor->redact($capabilities) !== $capabilities
         ) {
             throw new ToolOperationBlocked('Los metadatos del paquete fuente contienen material sensible y no se persistirán.');
         }
 
-        $compatibleWorkflows = array_values(array_unique($compatibleWorkflows));
+        $compatibleWorkflows = array_values(array_unique($workflowKeys));
         sort($compatibleWorkflows, SORT_STRING);
 
         return DB::transaction(fn (): SourcePackage => SourcePackage::query()->create([

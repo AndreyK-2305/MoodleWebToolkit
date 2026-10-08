@@ -289,7 +289,7 @@ class LocalArtifactStorage implements ArtifactReferenceStorage
             throw new RuntimeException('No se pudo crear el directorio para la referencia.');
         }
 
-        if (! link($source, $target)) {
+        if (@link($source, $target) === false) {
             throw new RuntimeException('No se pudo crear la referencia sin duplicar el archivo.');
         }
 

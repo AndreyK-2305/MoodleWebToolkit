@@ -41,7 +41,7 @@ class ExecutionWorkspaceManager
         if ($capacity !== null && $bindingQuota !== null && (int) $capacity->approved_quota_bytes !== (int) $bindingQuota) {
             throw new RuntimeException('La cuota del binding no coincide con la aprobación inmutable de capacidad.');
         }
-        $effectiveQuota = $quotaBytes ?? $approvedQuota ?? $existingWorkspace?->quota_bytes;
+        $effectiveQuota = $quotaBytes ?? $approvedQuota ?? $existingWorkspace->quota_bytes;
         if ($existingWorkspace !== null && $approvedQuota !== null && (int) $existingWorkspace->quota_bytes !== (int) $approvedQuota) {
             throw new RuntimeException('La cuota persistida del workspace ya no coincide con la aprobación fijada.');
         }

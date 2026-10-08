@@ -76,10 +76,10 @@ class BindExecutionTool
             $sourcePackageIds,
             $verified,
         ): ExecutionToolBinding {
-            $locked = Execution::query()->lockForUpdate()->findOrFail($execution->getKey());
-            $lockedVersion = ToolVersion::query()->lockForUpdate()->findOrFail($version->getKey());
+            $locked = Execution::query()->lockForUpdate()->whereKey($execution->getKey())->firstOrFail();
+            $lockedVersion = ToolVersion::query()->lockForUpdate()->whereKey($version->getKey())->firstOrFail();
             $lockedVersion->loadMissing('tool');
-            $lockedDistribution = ToolDistribution::query()->lockForUpdate()->findOrFail($distribution->getKey());
+            $lockedDistribution = ToolDistribution::query()->lockForUpdate()->whereKey($distribution->getKey())->firstOrFail();
             $compatibility = ToolCompatibility::query()
                 ->where('tool_version_id', $lockedVersion->getKey())
                 ->where('workflow_key', $workflowKey)
@@ -115,7 +115,7 @@ class BindExecutionTool
                     || $package->availability !== 'AVAILABLE'
                     || $package->revoked_at !== null
                     || $package->artifact?->category !== 'SOURCE_PACKAGE'
-                    || hash_equals($package->sha256, (string) $package->artifact?->sha256) === false
+                    || hash_equals($package->sha256, $package->artifact->sha256) === false
                     || in_array($workflowKey, $package->compatibility['workflows'] ?? [], true) === false
                 ) {
                     throw new ToolOperationBlocked('El paquete fuente no pertenece al proyecto, no está vigente o no es compatible con el flujo.');

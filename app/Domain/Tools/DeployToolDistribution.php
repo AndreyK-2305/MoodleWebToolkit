@@ -133,7 +133,7 @@ class DeployToolDistribution
             throw new RuntimeException('El árbol copiado tiene archivos diferentes al paquete inmutable declarado.');
         }
         foreach ($expected as $path => $hash) {
-            if (is_string($actual[$path]) === false || hash_equals($hash, $actual[$path]) === false) {
+            if (hash_equals($hash, $actual[$path]) === false) {
                 throw new RuntimeException("La copia desplegada falló su revalidación en [{$path}].");
             }
         }

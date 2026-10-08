@@ -16,6 +16,7 @@ use App\Models\Artifact;
 use App\Models\Execution;
 use App\Models\ExecutionCapacityApproval;
 use App\Models\ExecutionCommand;
+use App\Models\ExecutionEvent;
 use App\Models\ExecutionLog;
 use App\Models\ExecutionRuntimeConfiguration;
 use App\Models\ExecutionToolBinding;
@@ -151,7 +152,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
     /** @return list<array<string, mixed>> */
     public function readEvents(RemoteOperation $operation, int $afterSequence = 0): array
     {
-        return $operation->execution->events()->where('remote_operation_id', $operation->getKey())->where('sequence', '>', max(0, $afterSequence))->get()->map(fn ($event): array => [
+        $events = $operation->execution->events()->where('remote_operation_id', $operation->getKey())->where('sequence', '>', max(0, $afterSequence))->get()->map(fn (ExecutionEvent $event): array => [
             'sequence' => $event->sequence,
             'type' => $event->type,
             'step_key' => $event->step_key,
@@ -159,8 +160,10 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
             'progress' => $event->progress,
             'message' => app(SensitiveValueRedactor::class)->redactString((string) $event->message),
             'payload' => app(SensitiveValueRedactor::class)->redact($event->payload),
-            'created_at' => $event->created_at?->toIso8601String(),
+            'created_at' => $event->created_at->toIso8601String(),
         ])->all();
+
+        return array_values($events);
     }
 
     /** @return list<array<string, mixed>> */
@@ -168,7 +171,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
     {
         $redactor = app(SensitiveValueRedactor::class);
 
-        return ExecutionLog::query()
+        $logs = ExecutionLog::query()
             ->where('execution_id', $operation->execution_id)
             ->where('remote_operation_id', $operation->getKey())
             ->where('id', '>', max(0, $afterId))
@@ -181,6 +184,8 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
                 'context' => $redactor->redact($log->context),
                 'logged_at' => $log->logged_at?->toIso8601String(),
             ])->all();
+
+        return array_values($logs);
     }
 
     public function heartbeat(RemoteOperation $operation): RemoteOperation
@@ -268,7 +273,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
             clearstatcache(true, $path);
             $sizeAfter = filesize($path);
             $statAfter = @stat($path);
-            if (! is_int($sizeBefore) || $sizeBefore < 0 || $sizeBefore > $descriptor['max_size_bytes']
+            if (! is_int($sizeBefore) || $sizeBefore > $descriptor['max_size_bytes']
                 || $sizeAfter !== $sizeBefore || ! is_array($statBefore) || ! is_array($statAfter)
                 || $statBefore['dev'] !== $statAfter['dev'] || $statBefore['ino'] !== $statAfter['ino']
                 || $statBefore['size'] !== $statAfter['size'] || $statBefore['mtime'] !== $statAfter['mtime']

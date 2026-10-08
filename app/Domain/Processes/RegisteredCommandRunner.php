@@ -6,6 +6,7 @@ use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Processes\DTOs\RegisteredProcessResult;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Models\Execution;
+use HashContext;
 use RuntimeException;
 use Throwable;
 
@@ -125,7 +126,7 @@ class RegisteredCommandRunner
             }
             do {
                 $status = proc_get_status($process);
-                if ($processId === null && isset($status['pid']) && (int) $status['pid'] > 0) {
+                if ($processId === null && $status['pid'] > 0) {
                     $processId = (int) $status['pid'];
                     if ($onStarted !== null) {
                         $onStarted($processId);
@@ -165,7 +166,7 @@ class RegisteredCommandRunner
 
                 if (microtime(true) - $startedAt > $definition['timeout']) {
                     $timedOut = true;
-                    $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
+                    $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
                     $exitCode = 124;
                 }
 
@@ -181,7 +182,7 @@ class RegisteredCommandRunner
                         $this->workspaces->measure($execution);
                     } catch (Throwable $exception) {
                         $resourceLimitExceeded = true;
-                        $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
+                        $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
                         $exitCode = 125;
                         $stderr .= "\n[Proceso terminado al superar la cuota o fallar la inspección del workspace.]";
                     }
@@ -217,7 +218,7 @@ class RegisteredCommandRunner
         } catch (Throwable $exception) {
             $status = proc_get_status($process);
             if ($status['running']) {
-                $this->terminateProcessGroup((int) ($status['pid'] ?? $processId ?? 0), forceAfterGrace: true);
+                $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
             }
             throw $exception;
         } finally {
@@ -267,9 +268,8 @@ class RegisteredCommandRunner
 
     /**
      * @param  resource|null  $stream
-     * @param  resource  $hash
      */
-    private function persistOutputChunk(mixed $stream, string $chunk, mixed $hash): void
+    private function persistOutputChunk(mixed $stream, string $chunk, HashContext $hash): void
     {
         hash_update($hash, $chunk);
         if (is_resource($stream) === false) {

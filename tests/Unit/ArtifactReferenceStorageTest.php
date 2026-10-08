@@ -58,10 +58,15 @@ class ArtifactReferenceStorageTest extends TestCase
         $disk->put('workspaces/reference/source.bin', 'source');
         $disk->put('artifacts/execution/existing.bin', 'existing');
 
-        $this->expectException(\RuntimeException::class);
-        (new LocalArtifactStorage)->referenceExisting(
-            $disk->path('workspaces/reference/source.bin'),
-            'artifacts/execution/existing.bin',
-        );
+        try {
+            (new LocalArtifactStorage)->referenceExisting(
+                $disk->path('workspaces/reference/source.bin'),
+                'artifacts/execution/existing.bin',
+            );
+            $this->fail('An existing target must block the hard link.');
+        } catch (\RuntimeException) {
+            $this->assertSame('existing', $disk->get('artifacts/execution/existing.bin'));
+            $this->assertSame('source', $disk->get('workspaces/reference/source.bin'));
+        }
     }
 }

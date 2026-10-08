@@ -20,7 +20,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property list<int>|null $input_artifact_ids
  * @property array<string, mixed>|null $configuration_snapshot
  * @property list<int>|null $source_package_ids
- * @property array<string, string>|null $source_package_hashes
+ * @property array<int, string>|null $source_package_hashes
  * @property int|null $capacity_approval_id
  * @property int|null $approved_quota_bytes
  * @property int|null $runtime_configuration_id

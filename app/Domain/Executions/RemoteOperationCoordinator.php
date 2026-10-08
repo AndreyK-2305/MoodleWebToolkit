@@ -52,7 +52,7 @@ class RemoteOperationCoordinator
         [$operation, $created] = $this->createOperation($execution, $idempotencyKey, $commandKey, $parameters, $workingDirectory);
 
         return $created
-            ? $this->runScheduled($operation, $parameters, $workingDirectory)
+            ? $this->runScheduled($operation->id, $commandKey, $parameters, $workingDirectory)
             : $this->reconcile($operation);
     }
 
@@ -153,7 +153,6 @@ class RemoteOperationCoordinator
                 throw new RuntimeException('No se encontró setsid para separar el supervisor del worker Laravel.');
             }
             $launcherEnvironment = getenv();
-            $launcherEnvironment = is_array($launcherEnvironment) ? $launcherEnvironment : [];
             $launcherEnvironment['PATH'] = (string) ($launcherEnvironment['PATH'] ?? '/usr/bin:/bin');
             $launcherEnvironment['LANG'] = (string) ($launcherEnvironment['LANG'] ?? 'C.UTF-8');
             $launcherEnvironment['TOOL_LOCAL_RUNNER_ENABLED'] = config('toolkit.features.local_runner.enabled') ? 'true' : 'false';
@@ -232,7 +231,7 @@ class RemoteOperationCoordinator
                 $commandKey,
                 $parameters,
                 $workingDirectory,
-                $registeredDefinition['artifact_descriptors'] ?? [],
+                $registeredDefinition['artifact_descriptors'],
                 $registeredDefinition,
             )) === false
         ) {
@@ -476,7 +475,7 @@ class RemoteOperationCoordinator
     public function reconcile(RemoteOperation $operation): RemoteOperation
     {
         return DB::transaction(function () use ($operation): RemoteOperation {
-            $locked = RemoteOperation::query()->with('execution')->lockForUpdate()->findOrFail($operation->getKey());
+            $locked = RemoteOperation::query()->with('execution')->lockForUpdate()->whereKey($operation->getKey())->firstOrFail();
 
             return $this->reconcileLocked($locked);
         }, attempts: 3);
@@ -695,7 +694,7 @@ class RemoteOperationCoordinator
     private function markUnreachable(RemoteOperation $operation, string $reason): RemoteOperation
     {
         $operation = DB::transaction(function () use ($operation, $reason): RemoteOperation {
-            $locked = RemoteOperation::query()->lockForUpdate()->findOrFail($operation->getKey());
+            $locked = RemoteOperation::query()->lockForUpdate()->whereKey($operation->getKey())->firstOrFail();
             $attempts = min(65_535, (int) $locked->reconcile_attempts + 1);
             $manualRequired = $attempts >= 8;
             $delaySeconds = min(900, 15 * (2 ** min(6, max(0, $attempts - 1))));
@@ -759,7 +758,7 @@ class RemoteOperationCoordinator
     public function cancel(RemoteOperation $operation): RemoteOperation
     {
         $operation = DB::transaction(function () use ($operation): RemoteOperation {
-            $locked = RemoteOperation::query()->lockForUpdate()->findOrFail($operation->getKey());
+            $locked = RemoteOperation::query()->lockForUpdate()->whereKey($operation->getKey())->firstOrFail();
             if ($locked->communication_state === RemoteCommunicationState::TERMINATED) {
                 return $locked;
             }
@@ -829,7 +828,7 @@ class RemoteOperationCoordinator
             throw new RuntimeException('La reconciliación manual requiere un motivo auditable.');
         }
         $operation = DB::transaction(function () use ($operation, $actor, $reason): RemoteOperation {
-            $locked = RemoteOperation::query()->lockForUpdate()->findOrFail($operation->getKey());
+            $locked = RemoteOperation::query()->lockForUpdate()->whereKey($operation->getKey())->firstOrFail();
             $now = now()->utc();
             $locked->forceFill([
                 'next_poll_at' => $now,

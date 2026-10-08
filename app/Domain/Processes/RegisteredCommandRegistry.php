@@ -19,7 +19,7 @@ use InvalidArgumentException;
 class RegisteredCommandRegistry
 {
     /**
-     * @param  array<string, string>  $parameters
+     * @param  array<string, mixed>  $parameters
      * @return RegisteredCommandDefinition
      */
     public function resolve(string $key, array $parameters = []): array
