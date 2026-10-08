@@ -74,7 +74,7 @@ RUN printf 'extension_dir=/opt/collector-php/extensions/no-debug-non-zts-2023083
     && PHP_INI_SCAN_DIR=/opt/collector-php/conf.d /opt/collector-php/bin/php -c /opt/collector-php/php.ini -r 'exit(PHP_VERSION_ID >= 80300 && PHP_VERSION_ID < 80400 && extension_loaded("gd") && extension_loaded("pgsql") && extension_loaded("zip") ? 0 : 1);'
 
 # Immutable quality image: no host vendor/, node_modules/, .env or storage.
-FROM development AS quality
+FROM collector-lab AS quality
 RUN touch .env
 ENV VITE_REVERB_APP_KEY=quality-key \
     VITE_REVERB_HOST=localhost \

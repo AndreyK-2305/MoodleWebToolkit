@@ -3,6 +3,7 @@
 namespace App\Domain\Processes;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Enums\ArtifactCategory;
 use InvalidArgumentException;
 
@@ -41,6 +42,9 @@ class RegisteredCommandRegistry
 
         $definitions = config('toolkit.runner.commands', []);
         $definition = is_array($definitions) ? ($definitions[$key] ?? null) : null;
+        if ($key === CollectorRegisteredCommand::KEY) {
+            $definition = app(CollectorRegisteredCommand::class)->definition();
+        }
 
         if (is_array($definition) === false) {
             throw new InvalidArgumentException('El comando solicitado no está registrado.');

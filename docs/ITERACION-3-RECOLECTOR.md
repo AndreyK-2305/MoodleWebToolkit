@@ -176,6 +176,33 @@ todavía requiere una corrida única con todos los servicios.
 
 ## Trabajo restante
 
+## Corte 8 — bridge y comando cerrado
+
+El bridge PHP 8.3 vive fuera de BaseLine, sin autoload de Laravel. Comprueba
+identidades, configuración aprobada, ámbito LAB y los 29 archivos de la copia
+desplegada antes de materializar credenciales. Ejecuta source-export.php y el
+auditor original con argv; descarta stdout/stderr crudos de sus hijos y expone
+solo etapas permitidas y contadores enteros. Conserva checkpoints originales
+como evidencia privada; no habilita reutilización entre workspaces.
+
+`collector.742.lab` acepta únicamente project_uuid, execution_uuid y runtime_sha256.
+Ambas flags son obligatorias incluso si otra definición intenta usar esa clave.
+La política fija wall/CPU=null, heartbeat=10s, stall=7200s y recursos explícitos.
+La cancelación actúa sobre el grupo aislado del proceso, no sobre el servidor Moodle.
+El entrypoint aplica el scan dir del target después del gate del runtime web;
+PHPRC se hereda por los hijos Moodle para mantener la misma ABI PHP 8.3.
+
+Salida declarada: paquete, sidecar, manifiesto, inventario, inventario visual y
+auditoría sanitizada. Una señal package_validated todavía requiere exit.json
+íntegro y validación del dominio antes de registrar SourcePackage.
+
+Validación: 25 pruebas/126 aserciones del bridge y configuración; 76 pruebas/
+3745 aserciones del runner y captura sanitizada. Pint/PHPStan completos pasan.
+La imagen quality compiló con instalación limpia y build de producción.
+Reportes: `quality-results/it3-cut8.xml`, `quality-results/it3-cut8-runner.xml`.
+
+## Trabajo restante de integración
+
 Iteración abierta. CollectorAdapter,
 observación, validación de paquetes, SourcePackage, Moodle sintético y Playwright
 COLLECT LAB permanecen pendientes. No se declara recolección real ni cierre.
