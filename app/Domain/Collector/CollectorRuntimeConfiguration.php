@@ -40,6 +40,7 @@ final class CollectorRuntimeConfiguration
             'project_uuid' => $execution->project->uuid, 'execution_uuid' => $execution->uuid,
             'configuration_version' => $configuration->version, 'configuration_sha256' => $this->configurations->hash($settings),
             'settings' => $settings, 'profile' => $profile,
+            'reference_scope_sha256' => hash('sha256', (string) config('collector.secret_root')),
             'distribution_key' => $distribution->key, 'distribution_sha256' => $verified->treeSha256,
             'tool_directory' => Str::slug($distribution->key), 'manifest_sha256' => $verified->manifestSha256,
             'manifest_files' => $verified->manifestFiles,

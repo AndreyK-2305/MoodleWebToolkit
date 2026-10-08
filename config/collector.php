@@ -2,6 +2,9 @@
 
 // Administrator-owned catalog. HTTP accepts only its opaque profile keys.
 return [
+    'php_binary' => env('COLLECTOR_LAB_PHP_BINARY', '/opt/collector-php/bin/php'),
+    'php_ini' => '/opt/collector-php/php.ini',
+    'php_scan_dir' => '/opt/collector-php/conf.d',
     'secret_root' => env('COLLECTOR_LAB_SECRET_ROOT', '/run/secrets/moodle-toolkit-lab'),
     'profiles' => env('COLLECTOR_LAB_SYNTHETIC_PROFILE', false) ? [
         'synthetic-moodle' => [

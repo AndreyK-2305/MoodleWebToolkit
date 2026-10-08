@@ -3,12 +3,14 @@
 namespace Tests\Feature\Tools;
 
 use App\Domain\Collector\CollectorConfiguration;
+use App\Domain\Collector\CollectorPhpRuntime;
 use App\Domain\Collector\CollectorPreflight;
 use App\Domain\Collector\CollectorRuntimeConfiguration;
 use App\Domain\Collector\Contracts\SecretProvider;
 use App\Domain\Collector\EphemeralMoodleConfiguration;
 use App\Domain\Collector\LabFileSecretProvider;
 use App\Domain\Collector\LabMoodleProfiles;
+use App\Domain\Collector\MoodleConfigurationMaterializer;
 use App\Domain\Collector\TestingSecretProvider;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
@@ -273,5 +275,22 @@ class CollectorConfigurationTest extends DomainTestCase
         file_put_contents($path, '{}');
         $this->expectException(RuntimeException::class);
         $renderer->verify($execution, $runtime);
+    }
+
+    public function test_standalone_materializer_rejects_paths_outside_execution_input(): void
+    {
+        $provider = new TestingSecretProvider(['test-db' => ['1' => 'testing-only']]);
+        $materializer = new MoodleConfigurationMaterializer($provider, $this->labRoot.'/workspaces');
+        $profile = app(LabMoodleProfiles::class)->get('test-lab');
+        $this->expectException(RuntimeException::class);
+        $materializer->consume($this->labRoot.'/outside.php', $profile, fn (): null => null);
+    }
+
+    public function test_web_php_84_does_not_substitute_the_collector_php_83_runtime(): void
+    {
+        $ini = $this->labRoot.'/probe.ini';
+        file_put_contents($ini, 'memory_limit=32M');
+        config(['collector.php_binary' => PHP_BINARY, 'collector.php_ini' => $ini, 'collector.php_scan_dir' => $this->labRoot]);
+        $this->assertFalse(app(CollectorPhpRuntime::class)->available());
     }
 }

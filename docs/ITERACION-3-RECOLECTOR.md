@@ -129,8 +129,6 @@ El cursor y offsets de lectura se conectarán al observador durable del adaptado
 Validación: 7 pruebas, 29 aserciones, Pint y PHPStan completos.
 Reporte: `quality-results/it3-cut5.xml`.
 
-## Pendiente
-
 ## Corte 6 — render no interactivo por ejecución
 
 `CollectorRuntimeConfiguration` genera `state/collector-runtime.json` bajo el
@@ -147,6 +145,34 @@ credencial en ese render persistente.
 Validación: 13 pruebas, 73 aserciones, incluyendo Unicode, alteración de contenido,
 idempotencia, roles y secreto efímero. Pint/PHPStan completos pasan.
 Reporte: `quality-results/it3-cut6.xml`.
+
+## Corte 7 — runtime PHP aislado
+
+Laravel conserva PHP 8.4: el lock aprobado contiene dependencias que requieren
+esa versión. El target optativo `collector-lab` incorpora un CLI PHP 8.3 separado,
+su ini y extensiones. El preflight ejecuta un probe cerrado de tres segundos,
+comprueba Linux, wrappers y extensiones de Moodle; el PHP web no lo sustituye.
+El bridge no podrá cargar las dependencias Laravel desde ese CLI.
+
+Moodle sintético se fija a `v4.5.10`, commit
+`b2c2f2a0c5f9a141896df6c322a0b6b29bb77646`. El objeto del tag anotado es
+`3c37d509bd162f34b9eb870082d8c55e3b510c37`; el build compara HEAD con el commit,
+no con el objeto del tag. Solo la preparación descarga dependencias públicas;
+la ejecución LAB deberá operar sin Internet público.
+
+El materializador de configuración es PHP independiente del framework, comparte
+las restricciones de input, archivo privado y limpieza con el backend. El render
+fija además la huella del ámbito de referencias y el preflight incluye la política
+del runtime. El contexto Docker excluye todo storage del host y crea storage nuevo
+antes del descubrimiento de paquetes.
+
+Pruebas del corte: 22 pruebas y 104 aserciones; Pint/PHPStan completos pasan.
+El target LAB compiló y su probe positivo comprobó PHP 8.3.35 y las doce
+extensiones requeridas desde Laravel 8.4.
+Reporte: `quality-results/it3-cut7.xml`. La regresión PHP ejecutó 490 pruebas:
+solo fallaron tres por Redis/Reverb ausentes en el entorno manual. Después de
+iniciar esos servicios, las tres pasan con 31 aserciones. La puerta completa final
+todavía requiere una corrida única con todos los servicios.
 
 ## Trabajo restante
 

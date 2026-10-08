@@ -4,11 +4,7 @@ BaseLine
 node_modules
 vendor
 public/build
-storage/logs/*
-storage/app/*
-storage/framework/cache/*
-storage/framework/sessions/*
-storage/framework/views/*
+storage
 bootstrap/cache/*.php
 public/hot
 test-results

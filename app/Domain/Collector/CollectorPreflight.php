@@ -21,6 +21,7 @@ final class CollectorPreflight
         private readonly SyntheticMoodleProbe $moodle,
         private readonly ToolDistributionVerifier $distributions,
         private readonly ToolOperationGate $gate,
+        private readonly CollectorPhpRuntime $runtime,
     ) {}
 
     /** @return list<array{id: string, description: string, result: string, detail: string}> */
@@ -47,11 +48,7 @@ final class CollectorPreflight
             // Technical errors and physical paths never enter HTTP props or audit.
         }
         $checks[] = $this->check('collector.distribution', 'Distribución 7.4.2 autorizada', $verified, $verified ? 'Versión, manifiesto, hashes, entrypoint y capabilities verificados.' : 'Falta una distribución íntegra, habilitada y compatible para COLLECT LAB.');
-        $runtime = PHP_OS_FAMILY === 'Linux' && PHP_VERSION_ID < 80400;
-        foreach (['dom', 'zip', 'pgsql', 'gd', 'intl', 'mbstring', 'pcntl', 'posix'] as $extension) {
-            $runtime = $runtime && extension_loaded($extension);
-        }
-        $runtime = $runtime && is_executable('/bin/bash') && is_executable('/usr/bin/setsid') && is_executable('/usr/bin/prlimit');
+        $runtime = $this->runtime->available();
         $checks[] = $this->check('collector.runtime', 'Runtime compatible con Moodle 4.5', $runtime, $runtime ? 'Linux/PHP 8.3 y dependencias disponibles; ejecución PHP directa sin prompts.' : 'Se requiere el perfil Linux/PHP 8.3 con las extensiones Moodle y los wrappers de proceso.');
         $paths = is_file($profile['code'].'/version.php') && is_readable($profile['code'].'/lib/setup.php')
             && is_dir($profile['data']) && is_readable($profile['data']) && is_writable($profile['data']);
@@ -115,6 +112,11 @@ final class CollectorPreflight
             'configuration_version' => $configuration->version, 'options_sha256' => $this->configurations->hash(is_array($options) ? $options : []),
             'profile_sha256' => $profileHash, 'distribution_sha256' => $distribution?->distribution_sha256,
             'manifest_sha256' => $distribution?->manifest_sha256, 'workspace_policy_sha256' => hash('sha256', (string) json_encode(config('toolkit.workspaces'))),
+            'runtime_policy_sha256' => hash('sha256', (string) json_encode([
+                'binary' => config('collector.php_binary'), 'ini' => config('collector.php_ini'),
+                'scan_dir' => config('collector.php_scan_dir'), 'target_host' => config('toolkit.runner.host_id'),
+                'reference_scope' => config('collector.secret_root'),
+            ])),
         ]);
     }
 

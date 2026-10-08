@@ -7,6 +7,8 @@ use RuntimeException;
 
 final class LabFileSecretProvider implements SecretProvider
 {
+    public function __construct(private readonly ?string $root = null) {}
+
     public function available(string $reference, string $version): bool
     {
         try {
@@ -53,7 +55,7 @@ final class LabFileSecretProvider implements SecretProvider
         ) {
             throw new RuntimeException('La referencia o versión LAB no es válida.');
         }
-        $configured = (string) config('collector.secret_root');
+        $configured = $this->root ?? (string) config('collector.secret_root');
         $root = realpath($configured);
         if ($root === false || $configured !== $root || ! is_dir($root) || is_link($root)) {
             throw new RuntimeException('El ámbito de referencias LAB no está disponible.');
