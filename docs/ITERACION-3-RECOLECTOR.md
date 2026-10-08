@@ -55,7 +55,28 @@ del socket de inferencia de Docker Desktop; no acredita la puerta Docker de CI.
 
 ## Estado
 
-Iteración abierta. Configuración real, SecretProvider, CollectorAdapter, preflight,
+## Corte 2 — configuración y secretos
+
+`collector-lab.v1` conserva revisiones inmutables con actor, fecha y SHA-256.
+La configuración referencia un perfil administrado; la UI no recibe rutas ni
+valores de credenciales. Workers (1–4), nombre lógico y estimación/margen de
+capacidad son parámetros cerrados. Cambiar el perfil, su revisión de credencial
+o los parámetros invalida preflight y confirmación. La comparación usa JSON
+canónico para tolerar el orden de claves de PostgreSQL jsonb.
+
+`SecretProvider` tiene implementaciones de testing y archivo LAB versionado.
+LAB exige un archivo regular 0600, un único enlace y ámbito explícito;
+el valor solo se entrega a callbacks del backend. La configuración Moodle se
+materializa en `input` con 0600 y se elimina en `finally`, incluso si falla el
+consumidor. SIGKILL no ejecuta finally: un residuo bloquea cualquier reutilización
+hasta comprobar terminación y realizar limpieza conservadora. AWS no está habilitado.
+
+Validación del corte: 35 pruebas y 411 aserciones, incluidos los casos del wizard
+demostrativo; Pint y PHPStan completos pasan. Reporte: `quality-results/it3-cut2.xml`.
+
+## Estado actual
+
+Iteración abierta. CollectorAdapter, preflight,
 observación, validación de paquetes, SourcePackage, Moodle sintético y Playwright
 COLLECT LAB permanecen pendientes. No se declara recolección real ni cierre.
 Fake sigue predeterminado y las herramientas reales permanecen cerradas.

@@ -1,0 +1,179 @@
+<?php
+
+namespace Tests\Feature\Tools;
+
+use App\Domain\Collector\CollectorConfiguration;
+use App\Domain\Collector\Contracts\SecretProvider;
+use App\Domain\Collector\EphemeralMoodleConfiguration;
+use App\Domain\Collector\LabFileSecretProvider;
+use App\Domain\Collector\LabMoodleProfiles;
+use App\Domain\Collector\TestingSecretProvider;
+use App\Domain\Projects\ProjectWizard;
+use App\Domain\Workspaces\ApproveExecutionCapacity;
+use App\Enums\ProjectStatus;
+use App\Enums\UserRole;
+use App\Models\CollectorConfigurationRevision;
+use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Support\Facades\File;
+use Illuminate\Validation\ValidationException;
+use LogicException;
+use RuntimeException;
+use Tests\Feature\Domain\DomainTestCase;
+
+class CollectorConfigurationTest extends DomainTestCase
+{
+    private string $labRoot;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->labRoot = sys_get_temp_dir().'/it3-profile-'.bin2hex(random_bytes(8));
+        foreach (['code', 'data', 'secrets', 'workspaces'] as $directory) {
+            mkdir($this->labRoot.'/'.$directory, 0700, true);
+        }
+        config(['collector.secret_root' => $this->labRoot.'/secrets', 'toolkit.workspaces.root' => $this->labRoot.'/workspaces',
+            'collector.profiles' => ['test-lab' => [
+                'name' => 'Moodle de prueba', 'root' => $this->labRoot, 'code' => $this->labRoot.'/code', 'data' => $this->labRoot.'/data',
+                'base_url' => 'http://moodle-lab.test', 'db_host' => 'moodle-lab-db', 'db_port' => 5432,
+                'db_name' => 'moodle_lab', 'db_user' => 'moodle_lab', 'db_prefix' => 'mdl_',
+                'credential_reference' => 'test-db', 'credential_version' => '1', 'source_id' => 'test-lab', 'moodle_series' => '4.5',
+            ]],
+        ]);
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->labRoot);
+        parent::tearDown();
+    }
+
+    /** @return array<string, mixed> */
+    private function input(): array
+    {
+        return ['profile_id' => 'test-lab', 'workers' => 1, 'package_name' => 'test-package', 'capacity_bytes' => 33_554_432, 'safety_margin_percent' => 20];
+    }
+
+    public function test_configuration_is_versioned_idempotent_and_invalidates_confirmation(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        $service = app(CollectorConfiguration::class);
+        $saved = $service->save($project, $actor, $this->input());
+        $revision = CollectorConfigurationRevision::query()->sole();
+        $this->assertSame(2, $saved->configuration->version);
+        $this->assertSame($actor->id, $revision->created_by);
+        $this->assertSame($service->hash($revision->snapshot), $revision->fingerprint);
+        $this->assertSame(2, $service->save($saved, $actor, $this->input())->configuration->version);
+        $settings = $saved->configuration->settings;
+        $settings['preflight'] = ['configuration_version' => 2];
+        $settings['confirmation'] = ['configuration_version' => 2];
+        $saved->configuration->update(['settings' => $settings]);
+        $saved->transitionTo(ProjectStatus::READY);
+        $changed = $service->save($saved, $actor, [...$this->input(), 'workers' => 2]);
+        $this->assertSame(3, $changed->configuration->version);
+        $this->assertNull($changed->configuration->settings['preflight']);
+        $this->assertNull($changed->configuration->settings['confirmation']);
+        $this->assertSame(2, CollectorConfigurationRevision::query()->count());
+        $this->assertSame(ProjectStatus::CONFIGURING, $changed->status);
+    }
+
+    public function test_configuration_rejects_inline_parameters_and_unknown_profile(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        foreach ([['db_password' => 'testing-only'], ['command' => 'any'], ['profile_id' => 'unknown'], ['workers' => 0], ['package_name' => '../outside']] as $invalid) {
+            try {
+                app(CollectorConfiguration::class)->save($project, $actor, [...$this->input(), ...$invalid]);
+                $this->fail('Invalid configuration was accepted.');
+            } catch (ValidationException|RuntimeException) {
+                $this->assertSame(0, CollectorConfigurationRevision::query()->count());
+            }
+        }
+    }
+
+    public function test_profile_change_or_revision_tampering_invalidates_configuration(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        $saved = app(CollectorConfiguration::class)->save($project, $actor, $this->input());
+        $this->assertSame(1, app(CollectorConfiguration::class)->settings($saved->configuration)['workers']);
+        config(['collector.profiles.test-lab.credential_version' => '2']);
+        $this->expectException(RuntimeException::class);
+        app(CollectorConfiguration::class)->settings($saved->configuration);
+    }
+
+    public function test_revision_is_immutable(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        app(CollectorConfiguration::class)->save($project, $actor, $this->input());
+        $this->expectException(LogicException::class);
+        CollectorConfigurationRevision::query()->sole()->update(['fingerprint' => str_repeat('0', 64)]);
+    }
+
+    public function test_read_only_actor_cannot_save_configuration(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        $this->expectException(AuthorizationException::class);
+        app(CollectorConfiguration::class)->save($project, $this->user(UserRole::AUDITOR), $this->input());
+    }
+
+    public function test_authorized_profiles_reject_credentials_external_urls_and_outside_paths(): void
+    {
+        foreach ([['base_url', 'https://user:embedded@moodle-lab.test'], ['base_url', 'https://institution.example'], ['data', '/etc'], ['code', $this->labRoot.'/../other']] as [$key, $value]) {
+            $previous = config('collector.profiles.test-lab.'.$key);
+            config(['collector.profiles.test-lab.'.$key => $value]);
+            try {
+                app(LabMoodleProfiles::class)->get('test-lab');
+                $this->fail('Unsafe profile accepted.');
+            } catch (RuntimeException) {
+                $this->assertSame([], app(LabMoodleProfiles::class)->choices());
+            } finally {
+                config(['collector.profiles.test-lab.'.$key => $previous]);
+            }
+        }
+    }
+
+    public function test_lab_provider_requires_private_regular_versioned_file(): void
+    {
+        $path = $this->labRoot.'/secrets/test-db.1';
+        file_put_contents($path, bin2hex(random_bytes(16)));
+        chmod($path, 0644);
+        $provider = app(LabFileSecretProvider::class);
+        $this->assertFalse($provider->available('test-db', '1'));
+        chmod($path, 0600);
+        clearstatcache();
+        $this->assertTrue($provider->available('test-db', '1'));
+        $this->assertSame(32, $provider->consume('test-db', '1', strlen(...)));
+        $this->assertFalse($provider->available('../test-db', '1'));
+        $this->assertFalse($provider->available('test-db', '2'));
+        link($path, $this->labRoot.'/secrets/alias.1');
+        clearstatcache();
+        $this->assertFalse($provider->available('test-db', '1'));
+    }
+
+    public function test_ephemeral_configuration_is_private_and_removed_on_exception(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $execution = $this->execution($this->project($actor));
+        app(ApproveExecutionCapacity::class)->approve($execution, 16_777_216, 20, $actor);
+        $material = bin2hex(random_bytes(16));
+        $this->app->instance(SecretProvider::class, new TestingSecretProvider(['test-db' => ['1' => $material]]));
+        $profile = app(LabMoodleProfiles::class)->get('test-lab');
+        $path = '';
+        try {
+            app(EphemeralMoodleConfiguration::class)->consume($execution, $profile, function (string $generated) use (&$path, $material): never {
+                $path = $generated;
+                $this->assertSame(0600, fileperms($path) & 0777);
+                $this->assertTrue(str_contains((string) file_get_contents($path), $material));
+                throw new RuntimeException('Controlled failure.');
+            });
+        } catch (RuntimeException $error) {
+            $this->assertSame('Controlled failure.', $error->getMessage());
+        }
+        $this->assertFileDoesNotExist($path);
+        $this->assertStringNotContainsString($material, (string) json_encode($execution->fresh()->toArray()));
+        $this->assertSame([], glob($this->labRoot.'/workspaces/*/*/input/*'));
+    }
+}
