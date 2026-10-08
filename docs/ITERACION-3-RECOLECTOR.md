@@ -295,3 +295,23 @@ Fake sigue predeterminado y las herramientas reales permanecen cerradas.
 
 BaseLine verificada al comenzar: 423 archivos; SHA-256
 `d2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221`.
+
+## Corte 12 — observación durable y lectura incremental
+
+El observador persiste en la misma transacción el cursor de stdout, los eventos,
+el progreso nullable y el outbox. Lee lotes acotados y vuelve a leer una línea
+parcial después de reiniciar. Nunca guarda fragmentos crudos. Deduplica las
+secuencias del bridge; no interpreta sus señales como terminación de Execution.
+El porcentaje procede únicamente de cursos completados y total conocidos.
+
+Un prefijo SHA-256 y la identidad del archivo impiden continuar silenciosamente
+tras truncamiento, sustitución o alteración. Enlaces y archivos especiales quedan
+bloqueados. PostgreSQL impide retroceder el cursor, cambiar su identidad o
+modificar/eliminar una revisión de configuración. Las advertencias de lectura
+se emiten cuando cambia el estado, sin repetirlas en cada consulta.
+
+Validación: 40 pruebas/224 aserciones de lector, observador, parser, configuración
+y outbox; incluye rollback, reinicio, UTF-8 fragmentado, texto privado, duplicados,
+truncamiento, lotes, líneas excesivas, aislamiento por Execution y rollback/reapply
+de la migración. Pint y PHPStan pasan. Reporte: `quality-results/it3-cut12.xml`.
+La conexión del observador con CollectorAdapter y cierre de paquetes sigue pendiente.

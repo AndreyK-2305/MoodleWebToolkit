@@ -22,6 +22,8 @@ use App\Models\CollectorConfigurationRevision;
 use App\Models\ToolDistribution;
 use Database\Seeders\ToolCatalogSeeder;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Validation\ValidationException;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -118,6 +120,26 @@ class CollectorConfigurationTest extends DomainTestCase
         app(CollectorConfiguration::class)->save($project, $actor, $this->input());
         $this->expectException(LogicException::class);
         CollectorConfigurationRevision::query()->sole()->update(['fingerprint' => str_repeat('0', 64)]);
+    }
+
+    public function test_database_rejects_raw_revision_changes_and_deletion(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        app(CollectorConfiguration::class)->save($project, $actor, $this->input());
+        $revision = CollectorConfigurationRevision::query()->sole();
+        foreach (['update', 'delete'] as $operation) {
+            try {
+                DB::transaction(function () use ($revision, $operation): void {
+                    $query = DB::table('collector_configuration_revisions')->where('id', $revision->id);
+                    $operation === 'update' ? $query->update(['created_by' => $this->user()->id]) : $query->delete();
+                });
+                $this->fail('Immutable revision was changed.');
+            } catch (QueryException) {
+                $this->assertSame($revision->fingerprint, $revision->fresh()->fingerprint);
+                $this->assertSame($actor->id, $revision->fresh()->created_by);
+            }
+        }
     }
 
     public function test_read_only_actor_cannot_save_configuration(): void
