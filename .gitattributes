@@ -1,5 +1,8 @@
 * text=auto eol=lf
 
+# Preserve the final baseline overlay exactly, including its original CRLF.
+/BaseLine/Consolidador/Consolidador-v8.0.0/config.yaml -text -diff
+
 *.blade.php diff=html
 *.css diff=css
 *.html diff=html

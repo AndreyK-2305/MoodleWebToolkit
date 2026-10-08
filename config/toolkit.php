@@ -1,5 +1,7 @@
 <?php
 
+$syntheticProfile = env('APP_ENV') === 'testing' && (bool) env('TOOL_RUNNER_SYNTHETIC_PROFILE', false);
+
 return [
     'features' => [
         'recolector_742' => ['enabled' => (bool) env('TOOL_RECOLECTOR_742_ENABLED', false)],
@@ -26,6 +28,7 @@ return [
         'cancel_grace_seconds' => (int) env('TOOL_RUNNER_CANCEL_GRACE_SECONDS', 3),
         'allow_force_kill' => (bool) env('TOOL_RUNNER_ALLOW_FORCE_KILL', false),
         'supervisor_start_timeout_seconds' => (int) env('TOOL_SUPERVISOR_START_TIMEOUT_SECONDS', 3),
-        'commands' => [],
+        'synthetic_profile' => $syntheticProfile,
+        'commands' => $syntheticProfile ? require base_path('tests/Support/registered-command-fixtures.php') : [],
     ],
 ];

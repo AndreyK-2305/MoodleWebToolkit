@@ -73,6 +73,7 @@ class Iteration2MigrationUpgradeTest extends TestCase
                 'project_id' => $projectId,
                 'uuid' => (string) Str::uuid(),
                 'attempt' => 1,
+                'workspace_key' => (string) Str::uuid(),
                 'created_by' => $userId,
                 'created_at' => $now,
                 'updated_at' => $now,

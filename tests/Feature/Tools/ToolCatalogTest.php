@@ -110,4 +110,59 @@ class ToolCatalogTest extends DomainTestCase
         $this->expectException(ToolOperationBlocked::class);
         app(ToolOperationGate::class)->assertRunnable($version, 'moodle.source.export');
     }
+
+    public function test_manifest_hash_and_unexpected_mutable_paths_are_rejected_without_changing_baseline(): void
+    {
+        $this->seed(ToolCatalogSeeder::class);
+        $distribution = ToolDistribution::query()->where('key', 'moodle-recolector-7.4.2-linux-tree')->firstOrFail();
+        $manifestHash = $distribution->manifest_sha256;
+        $distribution->forceFill(['manifest_sha256' => str_repeat('0', 64)]);
+        try {
+            app(ToolDistributionVerifier::class)->verify($distribution);
+            $this->fail('An altered manifest identity must be rejected.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('manifiesto', $exception->getMessage());
+        }
+        $distribution->forceFill(['manifest_sha256' => $manifestHash, 'mutable_paths' => ['unexpected-overlay.json']]);
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('extra o faltantes');
+        app(ToolDistributionVerifier::class)->verify($distribution);
+    }
+
+    public function test_enabled_version_still_requires_its_flag_and_allowed_compatibility(): void
+    {
+        $this->seed(ToolCatalogSeeder::class);
+        $version = Tool::query()->where('key', 'moodle-recolector')->firstOrFail()->versions()->where('version', '7.4.2-linux')->firstOrFail();
+        $version->forceFill(['enabled' => true])->save();
+        try {
+            app(ToolOperationGate::class)->assertRunnable($version, 'moodle.source.export');
+            $this->fail('An enabled version must not bypass its disabled flag.');
+        } catch (ToolOperationBlocked) {
+            $this->assertFalse((bool) config('toolkit.features.recolector_742.enabled'));
+        }
+        config(['toolkit.features.recolector_742.enabled' => true]);
+        $version->compatibilities()->firstOrFail()->forceFill(['status' => ToolCompatibilityStatus::BLOCKED])->save();
+        $this->expectException(ToolOperationBlocked::class);
+        app(ToolOperationGate::class)->assertRunnable($version, 'moodle.source.export');
+    }
+
+    public function test_capacity_cannot_be_changed_after_an_execution_binding_is_pinned(): void
+    {
+        $this->seed(ToolCatalogSeeder::class);
+        $version = Tool::query()->where('key', 'moodle-recolector')->firstOrFail()->versions()->where('version', '7.4.2-linux')->firstOrFail();
+        $version->forceFill(['enabled' => true])->save();
+        config(['toolkit.features.recolector_742.enabled' => true]);
+        $execution = $this->execution($this->project());
+        $approver = app(ApproveExecutionCapacity::class);
+        $approval = $approver->approve($execution, 1024, 10, $execution->creator);
+        $binding = app(BindExecutionTool::class)->bind($execution, $version, $version->distributions()->firstOrFail(), 'moodle.source.export', 'synthetic', 'local-registered-process', []);
+
+        try {
+            $approver->approve($execution, 2048, 10, $execution->creator);
+            $this->fail('An approved bound quota must never change.');
+        } catch (ToolOperationBlocked) {
+            $this->assertSame($approval->approved_quota_bytes, $binding->fresh()->approved_quota_bytes);
+            $this->assertSame($approval->fingerprint, $approval->fresh()->fingerprint);
+        }
+    }
 }

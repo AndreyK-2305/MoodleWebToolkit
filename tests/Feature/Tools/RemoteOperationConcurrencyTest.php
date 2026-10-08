@@ -5,6 +5,7 @@ namespace Tests\Feature\Tools;
 use App\Domain\Executions\LocalProcessInspector;
 use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
+use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\ExecutionStatus;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
@@ -18,6 +19,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Tests\TestCase;
 use Throwable;
 
@@ -39,6 +41,7 @@ class RemoteOperationConcurrencyTest extends TestCase
             'toolkit.features.local_runner.enabled' => true,
             'toolkit.workspaces.root' => $this->workspaceRoot,
             'toolkit.runner.enforce_os_limits' => false,
+            'toolkit.runner.synthetic_profile' => true,
             'toolkit.runner.cancel_grace_seconds' => 2,
             'toolkit.runner.commands' => [
                 'platform_concurrent' => [
@@ -50,6 +53,7 @@ class RemoteOperationConcurrencyTest extends TestCase
                 ],
             ],
         ]);
+        config(['toolkit.runner.commands' => require base_path('tests/Support/registered-command-fixtures.php')]);
 
         $creator = User::factory()->create(['role' => UserRole::ADMIN, 'is_active' => true]);
         $project = Project::query()->create([
@@ -115,6 +119,47 @@ class RemoteOperationConcurrencyTest extends TestCase
         $this->assertSame('RUNNING', $operation->functional_state->value);
         $this->assertSame(1, count($this->processesMarkedFor($operation)));
         $this->stopAndConfirm($operation);
+    }
+
+    public function test_concurrent_workspace_writes_cannot_exceed_the_approved_execution_quota(): void
+    {
+        $this->requireLinuxProcessSupport();
+        $execution = Execution::query()->create([
+            'project_id' => Project::query()->create([
+                'name' => 'Quota concurrency project',
+                'type' => ProjectType::CONSOLIDATE,
+                'status' => ProjectStatus::DRAFT,
+                'created_by' => $this->execution->created_by,
+            ])->getKey(),
+            'attempt' => 2,
+            'status' => ExecutionStatus::QUEUED,
+            'created_by' => $this->execution->created_by,
+        ]);
+        app(ApproveExecutionCapacity::class)->approve($execution, 128, 0, $execution->creator);
+        app(ExecutionWorkspaceManager::class)->prepare($execution);
+        $jobs = [];
+        foreach (['first', 'second'] as $name) {
+            $jobs[] = function () use ($execution, $name): void {
+                try {
+                    app(ExecutionWorkspaceManager::class)->writeAtomic($execution, 'output', $name.'.bin', str_repeat('x', 80));
+                    $result = 'written';
+                } catch (RuntimeException $exception) {
+                    if (! str_contains($exception->getMessage(), 'cuota')) {
+                        throw $exception;
+                    }
+                    $result = 'blocked';
+                }
+                file_put_contents($this->workspaceRoot.'/'.$name.'.quota-result', $result);
+            };
+        }
+
+        $this->runConcurrently($jobs, 'quota-race');
+
+        $results = [file_get_contents($this->workspaceRoot.'/first.quota-result'), file_get_contents($this->workspaceRoot.'/second.quota-result')];
+        sort($results);
+        $this->assertSame(['blocked', 'written'], $results);
+        $this->assertSame(80, app(ExecutionWorkspaceManager::class)->measure($execution));
+        $this->assertSame(128, $execution->workspace()->firstOrFail()->quota_bytes);
     }
 
     private function newOperation(string $key): RemoteOperation

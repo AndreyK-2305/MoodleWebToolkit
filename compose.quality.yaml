@@ -112,7 +112,7 @@ services:
                 --queue=tool-runs,
                 --sleep=1,
                 --tries=1,
-                --timeout=86400,
+                --timeout=120,
             ]
         mem_limit: 12g
         cpus: 4.0

@@ -7,6 +7,7 @@ use App\Domain\Tools\BindExecutionTool;
 use App\Domain\Tools\SourcePackageRegistry;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Enums\ArtifactCategory;
+use App\Enums\ExecutionStatus;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Artifact;
 use App\Models\Execution;
@@ -43,7 +44,7 @@ class SourcePackageRegistryTest extends DomainTestCase
     public function test_package_from_prior_execution_in_same_project_is_bound_with_hash_snapshot(): void
     {
         $project = $this->project();
-        $producer = $this->execution($project, attempt: 1);
+        $producer = $this->execution($project, ExecutionStatus::FAILED, attempt: 1);
         $consumer = $this->execution($project, attempt: 2);
         $artifact = $this->sourceArtifact($producer);
         $package = app(SourcePackageRegistry::class)->register(
@@ -70,7 +71,7 @@ class SourcePackageRegistryTest extends DomainTestCase
     {
         $projectA = $this->project();
         $projectB = $this->project();
-        $producer = $this->execution($projectA);
+        $producer = $this->execution($projectA, ExecutionStatus::FAILED);
         $consumer = $this->execution($projectB);
         $package = app(SourcePackageRegistry::class)->register(
             $this->sourceArtifact($producer), 'source-cross-project', '7.4.2-linux', 'recolector-source.v1', 'fuente.zip', ['moodle.source.export'],
@@ -88,7 +89,7 @@ class SourcePackageRegistryTest extends DomainTestCase
     public function test_revoked_and_changed_packages_are_rejected_at_binding_time(): void
     {
         $project = $this->project();
-        $producer = $this->execution($project);
+        $producer = $this->execution($project, ExecutionStatus::FAILED);
         $consumer = $this->execution($project, attempt: 2);
         $artifact = $this->sourceArtifact($producer);
         $registry = app(SourcePackageRegistry::class);
@@ -105,7 +106,8 @@ class SourcePackageRegistryTest extends DomainTestCase
             $this->assertSame('REVOKED', $package->fresh()->validation_state);
         }
 
-        $producer2 = $this->execution($project, attempt: 3);
+        $consumer->transitionTo(ExecutionStatus::FAILED);
+        $producer2 = $this->execution($project, ExecutionStatus::FAILED, attempt: 3);
         $consumer2 = $this->execution($project, attempt: 4);
         $artifact2 = $this->sourceArtifact($producer2);
         $changed = $registry->register($artifact2, 'source-changed', '7.4.2-linux', 'recolector-source.v1', 'cambiada.zip', ['moodle.source.export']);
@@ -121,7 +123,7 @@ class SourcePackageRegistryTest extends DomainTestCase
     public function test_non_source_artifacts_are_rejected(): void
     {
         $project = $this->project();
-        $producer = $this->execution($project);
+        $producer = $this->execution($project, ExecutionStatus::FAILED);
         $artifact = $this->sourceArtifact($producer, ArtifactCategory::REPORT);
         $this->expectException(ToolOperationBlocked::class);
         app(SourcePackageRegistry::class)->register($artifact, 'wrong-category', '7.4.2-linux', 'recolector-source.v1', 'report.zip', ['moodle.source.export']);
@@ -162,7 +164,7 @@ class SourcePackageRegistryTest extends DomainTestCase
     public function test_duplicate_package_ids_are_rejected_instead_of_silently_deduplicated(): void
     {
         $project = $this->project();
-        $producer = $this->execution($project);
+        $producer = $this->execution($project, ExecutionStatus::FAILED);
         $consumer = $this->execution($project, attempt: 2);
         $package = app(SourcePackageRegistry::class)->register(
             $this->sourceArtifact($producer), 'source-duplicate', '7.4.2-linux', 'recolector-source.v1', 'fuente.zip', ['moodle.source.export'],

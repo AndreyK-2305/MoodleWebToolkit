@@ -156,6 +156,7 @@ class RemoteOperationCoordinator
             $launcherEnvironment['PATH'] = (string) ($launcherEnvironment['PATH'] ?? '/usr/bin:/bin');
             $launcherEnvironment['LANG'] = (string) ($launcherEnvironment['LANG'] ?? 'C.UTF-8');
             $launcherEnvironment['TOOL_LOCAL_RUNNER_ENABLED'] = config('toolkit.features.local_runner.enabled') ? 'true' : 'false';
+            $launcherEnvironment['TOOL_RUNNER_SYNTHETIC_PROFILE'] = app()->environment('testing') && config('toolkit.runner.synthetic_profile', false) ? 'true' : 'false';
             $launcherEnvironment['TOOL_WORKSPACES_ROOT'] = (string) config('toolkit.workspaces.root');
             $launcherEnvironment['TOOL_WORKSPACE_QUOTA_BYTES'] = (string) config('toolkit.workspaces.quota_bytes');
             $launcherEnvironment['TOOL_RUNNER_MAX_OUTPUT_BYTES'] = (string) config('toolkit.runner.max_output_bytes');

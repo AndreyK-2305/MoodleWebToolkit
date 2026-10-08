@@ -38,6 +38,8 @@ if ($existing.Count -gt 0 -or $volumes.Count -gt 0) {
     throw 'El prefijo ya tiene recursos. Use un proyecto nuevo; no se borrará un entorno preexistente.'
 }
 New-Item -ItemType Directory -Path quality-results -Force | Out-Null
+& ./tests/Infrastructure/verify-baseline-tracking.ps1
+& ./tests/Infrastructure/verify-baseline-integrity.ps1
 try {
     Invoke-QualityCompose config --quiet
     # Original development Compose is also a required gate.

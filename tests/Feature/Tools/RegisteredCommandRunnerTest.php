@@ -16,14 +16,19 @@ use App\Jobs\RunRegisteredRemoteOperation;
 use App\Models\Execution;
 use App\Models\ExecutionLog;
 use App\Models\RemoteOperation;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use Tests\Feature\Domain\DomainTestCase;
+use Tests\Feature\Domain\DomainFixtures;
+use Tests\TestCase;
 
-class RegisteredCommandRunnerTest extends DomainTestCase
+class RegisteredCommandRunnerTest extends TestCase
 {
+    use DatabaseMigrations;
+    use DomainFixtures;
+
     private string $workspaceRoot;
 
     protected function setUp(): void
@@ -35,6 +40,7 @@ class RegisteredCommandRunnerTest extends DomainTestCase
             'toolkit.workspaces.root' => $this->workspaceRoot,
             'toolkit.runner.max_output_bytes' => 4096,
             'toolkit.runner.enforce_os_limits' => false,
+            'toolkit.runner.synthetic_profile' => true,
             'toolkit.runner.commands' => [
                 'platform_health' => [
                     'executable' => PHP_BINARY,
@@ -58,6 +64,7 @@ class RegisteredCommandRunnerTest extends DomainTestCase
                 ],
             ],
         ]);
+        config(['toolkit.runner.commands' => require base_path('tests/Support/registered-command-fixtures.php')]);
     }
 
     protected function tearDown(): void
@@ -343,19 +350,10 @@ class RegisteredCommandRunnerTest extends DomainTestCase
         if (PHP_OS_FAMILY === 'Windows' || ! function_exists('pcntl_fork')) {
             $this->markTestSkipped('La regresión necesita pcntl y grupos POSIX.');
         }
-        $pidPath = $this->workspaceRoot.DIRECTORY_SEPARATOR.'child-process.pid';
-        $literalPath = var_export($pidPath, true);
-        $code = '$child=pcntl_fork(); if($child===0){file_put_contents('.$literalPath.',(string)getmypid()); while(true){usleep(100000);}} while(true){usleep(100000);}';
-        config(['toolkit.runner.commands.platform_tree' => [
-            'executable' => PHP_BINARY,
-            'fixed_arguments' => ['-r', $code],
-            'parameters' => [],
-            'timeout' => 20,
-            'cancellable' => true,
-        ]]);
         Queue::fake();
         $execution = $this->execution($this->project());
         $this->approveCapacity($execution);
+        $pidPath = app(ExecutionWorkspaceManager::class)->resolve($execution, 'temporary', 'child-process.pid');
         $coordinator = app(RemoteOperationCoordinator::class);
         $operation = $coordinator->schedule($execution, 'parent-child-cancel', 'platform_tree');
         (new RunRegisteredRemoteOperation((int) $operation->getKey(), 'platform_tree', [], ''))->handle($coordinator);

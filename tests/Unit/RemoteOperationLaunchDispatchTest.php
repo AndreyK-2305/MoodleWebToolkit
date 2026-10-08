@@ -8,6 +8,7 @@ use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Domain\Processes\RegisteredCommandRegistry;
 use App\Domain\Processes\RegisteredCommandRunner;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
+use App\Jobs\RunRegisteredRemoteOperation;
 use App\Models\Execution;
 use App\Models\RemoteOperation;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +17,15 @@ use Tests\TestCase;
 
 class RemoteOperationLaunchDispatchTest extends TestCase
 {
+    public function test_launch_queue_retries_after_the_short_job_timeout_within_a_bounded_window(): void
+    {
+        $timeout = (new RunRegisteredRemoteOperation(1, 'synthetic', [], ''))->timeout;
+        $retryAfter = (int) config('queue.connections.redis-tool-runs.retry_after');
+        $this->assertLessThanOrEqual(120, $timeout);
+        $this->assertGreaterThan($timeout, $retryAfter);
+        $this->assertLessThanOrEqual(180, $retryAfter);
+    }
+
     public function test_execute_passes_the_persisted_identity_command_and_parameters_to_the_launcher(): void
     {
         config(['toolkit.features.local_runner.enabled' => true]);

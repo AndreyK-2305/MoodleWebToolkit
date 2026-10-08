@@ -82,7 +82,7 @@ return [
             'driver' => 'redis',
             'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
             'queue' => env('REDIS_TOOL_RUNS_QUEUE', 'tool-runs'),
-            'retry_after' => (int) env('REDIS_TOOL_RUNS_RETRY_AFTER', 86430),
+            'retry_after' => (int) env('REDIS_TOOL_RUNS_RETRY_AFTER', 150),
             'block_for' => null,
             'after_commit' => false,
         ],

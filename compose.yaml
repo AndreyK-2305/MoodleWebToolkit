@@ -87,7 +87,7 @@ services:
         user: www-data
         command: >-
             php artisan queue:work redis-tool-runs
-            --queue=tool-runs --sleep=1 --tries=1 --timeout=86400
+            --queue=tool-runs --sleep=1 --tries=1 --timeout=120
         stop_grace_period: 30s
         mem_limit: 12g
         cpus: 4.0
