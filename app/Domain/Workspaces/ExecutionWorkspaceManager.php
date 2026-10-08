@@ -17,6 +17,8 @@ use RuntimeException;
 
 class ExecutionWorkspaceManager
 {
+    public const DURABLE_EVIDENCE_RESERVE_BYTES = 65_536;
+
     /** @var list<string> */
     private const AREAS = ['tools', 'input', 'output', 'logs', 'state', 'temporary'];
 
@@ -232,6 +234,46 @@ class ExecutionWorkspaceManager
         $workspace->forceFill(['usage_bytes' => $usage, 'last_measured_at' => now()->utc()])->save();
 
         return $usage;
+    }
+
+    public function durableOutputLimit(Execution $execution, int $commandLimit, int $platformLimit): int
+    {
+        $workspace = $this->prepare($execution);
+        if ($commandLimit < 1 || $platformLimit < 1 || $commandLimit > $workspace->quota_bytes) {
+            throw new RuntimeException('El límite durable no cabe en la capacidad aprobada de la ejecución.');
+        }
+        $available = (int) $workspace->quota_bytes - $this->measure($execution) - self::DURABLE_EVIDENCE_RESERVE_BYTES;
+        if ($available < 2) {
+            throw new RuntimeException('No queda capacidad aprobada para ambos logs y la evidencia terminal.');
+        }
+
+        return min($commandLimit, $platformLimit, intdiv($available, 2));
+    }
+
+    /** @param resource $stream */
+    public function writeDurableLog(Execution $execution, mixed $stream, string $sanitized): void
+    {
+        $lock = $this->acquireCapacityLock($execution);
+        try {
+            $workspace = $this->prepare($execution);
+            if ($this->measure($execution) + strlen($sanitized) + self::DURABLE_EVIDENCE_RESERVE_BYTES > $workspace->quota_bytes) {
+                throw new RuntimeException('La capacidad aprobada ya no permite persistir el log y su evidencia.');
+            }
+            $offset = 0;
+            while ($offset < strlen($sanitized)) {
+                $written = @fwrite($stream, substr($sanitized, $offset));
+                if ($written === false || $written === 0) {
+                    throw new RuntimeException('No se pudo persistir la salida sanitizada de la operación.');
+                }
+                $offset += $written;
+            }
+            if (! @fflush($stream) || (function_exists('fsync') && ! @fsync($stream))) {
+                throw new RuntimeException('No se pudo sincronizar la salida sanitizada de la operación.');
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     public function cleanup(Execution $execution): void

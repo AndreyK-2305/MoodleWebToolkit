@@ -160,6 +160,8 @@ class RemoteOperationCoordinator
             $launcherEnvironment['TOOL_WORKSPACES_ROOT'] = (string) config('toolkit.workspaces.root');
             $launcherEnvironment['TOOL_WORKSPACE_QUOTA_BYTES'] = (string) config('toolkit.workspaces.quota_bytes');
             $launcherEnvironment['TOOL_RUNNER_MAX_OUTPUT_BYTES'] = (string) config('toolkit.runner.max_output_bytes');
+            $launcherEnvironment['TOOL_RUNNER_DURABLE_LOG_MAX_BYTES'] = (string) $registeredDefinition['platform_durable_log_max_bytes'];
+            $launcherEnvironment['TOOL_RUNNER_STREAM_PENDING_MAX_BYTES'] = (string) $registeredDefinition['stream_pending_max_bytes'];
             $launcherEnvironment['TOOL_RUNNER_ENFORCE_OS_LIMITS'] = config('toolkit.runner.enforce_os_limits') ? 'true' : 'false';
             $launcherEnvironment['TOOL_RUNNER_LIMIT_WRAPPER'] = (string) config('toolkit.runner.limit_wrapper');
             $launcherEnvironment['TOOL_RUNNER_SESSION_WRAPPER'] = (string) config('toolkit.runner.session_wrapper');
@@ -328,6 +330,9 @@ class RemoteOperationCoordinator
                 'environment' => $definition['environment'] ?? [],
                 'timeout' => $definition['timeout'] ?? null,
                 'max_output_bytes' => $definition['max_output_bytes'] ?? null,
+                'durable_log_max_bytes' => $definition['durable_log_max_bytes'] ?? null,
+                'platform_durable_log_max_bytes' => $definition['platform_durable_log_max_bytes'] ?? null,
+                'stream_pending_max_bytes' => $definition['stream_pending_max_bytes'] ?? null,
                 'cancellable' => $definition['cancellable'] ?? false,
             ],
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
@@ -412,7 +417,7 @@ class RemoteOperationCoordinator
             $operation->refresh();
             $cancelRequested = isset(($operation->evidence ?? [])['cancel_requested_at']);
             $exitEvidence = [
-                'schema_version' => 'remote-operation-exit.v1',
+                'schema_version' => 'remote-operation-exit.v2',
                 'operation_uuid' => $operation->operation_uuid,
                 'command_sha256' => $operation->command_sha256,
                 'pid' => $operation->process_id === null ? $result->processId : (int) $operation->process_id,
@@ -428,9 +433,16 @@ class RemoteOperationCoordinator
                 'cancelled' => $cancelRequested,
                 'stdout_size_bytes' => $result->stdoutBytes,
                 'stderr_size_bytes' => $result->stderrBytes,
+                'stdout_observed_bytes' => $result->stdoutObservedBytes,
+                'stderr_observed_bytes' => $result->stderrObservedBytes,
+                'stdout_persisted_bytes' => $result->stdoutPersistedBytes,
+                'stderr_persisted_bytes' => $result->stderrPersistedBytes,
+                'stdout_truncated' => $result->stdoutTruncated,
+                'stderr_truncated' => $result->stderrTruncated,
+                'durable_output_limit_bytes' => $result->durableOutputLimitBytes,
                 'stdout_sha256' => $result->stdoutSha256,
                 'stderr_sha256' => $result->stderrSha256,
-                'output_limit_bytes' => (int) config('toolkit.runner.max_output_bytes', 1_048_576),
+                'output_limit_bytes' => $registeredDefinition['max_output_bytes'],
                 'output_truncated' => $result->outputTruncated,
             ];
             $this->workspaces->writeOperationEvidence($execution, $operation->operation_uuid, 'exit.json', $exitEvidence);
@@ -461,6 +473,7 @@ class RemoteOperationCoordinator
 
             return $operation->refresh();
         } catch (\Throwable $exception) {
+            $this->inspector->terminate($operation->fresh());
             $operation->refresh()->forceFill([
                 'communication_state' => RemoteCommunicationState::UNREACHABLE,
                 'functional_state' => RemoteFunctionalState::UNKNOWN,
@@ -633,7 +646,7 @@ class RemoteOperationCoordinator
                 && (string) $operation->process_group_id === (string) ($evidence['pgid'] ?? '')
                 && (string) $operation->process_start_identity === (string) ($evidence['process_start_identity'] ?? ''));
 
-        return ($evidence['schema_version'] ?? null) === 'remote-operation-exit.v1'
+        return in_array($evidence['schema_version'] ?? null, ['remote-operation-exit.v1', 'remote-operation-exit.v2'], true)
             && ($evidence['operation_uuid'] ?? null) === $operation->operation_uuid
             && is_string($evidence['command_sha256'] ?? null) && hash_equals($operation->command_sha256, $evidence['command_sha256'])
             && is_int($evidence['pid'] ?? null) && $evidence['pid'] > 1
@@ -655,7 +668,31 @@ class RemoteOperationCoordinator
             && is_string($evidence['started_at'] ?? null) && strtotime($evidence['started_at']) !== false
             && is_string($evidence['finished_at'] ?? null) && strtotime($evidence['finished_at']) !== false
             && strtotime($evidence['finished_at']) >= strtotime($evidence['started_at'])
+            && $this->validOutputAccounting($evidence)
             && $this->operationLogsMatchEvidence($operation, $evidence);
+    }
+
+    /** @param array<string, mixed> $evidence */
+    private function validOutputAccounting(array $evidence): bool
+    {
+        if ($evidence['schema_version'] === 'remote-operation-exit.v1') {
+            return true;
+        }
+        $limit = $evidence['durable_output_limit_bytes'] ?? null;
+        if (! is_int($limit) || $limit < 1 || $limit > 8_388_608) {
+            return false;
+        }
+        foreach (['stdout', 'stderr'] as $stream) {
+            $observed = $evidence[$stream.'_observed_bytes'] ?? null;
+            $persisted = $evidence[$stream.'_persisted_bytes'] ?? null;
+            if (! is_int($observed) || $observed < 0 || ! is_int($persisted) || $persisted < 0 || $persisted > $limit
+                || $persisted !== ($evidence[$stream.'_size_bytes'] ?? null) || ! is_bool($evidence[$stream.'_truncated'] ?? null)
+            ) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /** @param array<string, mixed> $evidence */
@@ -667,6 +704,7 @@ class RemoteOperationCoordinator
             } catch (\Throwable) {
                 return false;
             }
+            clearstatcache(true, $path);
             $size = is_link($path) || is_file($path) === false ? false : filesize($path);
             $hash = is_link($path) || is_file($path) === false ? false : hash_file('sha256', $path);
             if (is_int($size) === false || $size !== ($evidence[$stream.'_size_bytes'] ?? null)

@@ -3,10 +3,11 @@
 namespace App\Domain\Processes;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Artifacts\StreamingSensitiveValueRedactor;
 use App\Domain\Processes\DTOs\RegisteredProcessResult;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Models\Execution;
-use HashContext;
+use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
 
@@ -58,12 +59,14 @@ class RegisteredCommandRunner
         }
 
         $definition = $registeredDefinition ?? $this->registry->resolve($commandKey, $parameters);
+        $operationUuid ??= (string) Str::uuid();
+        $durableLimit = $this->workspaces->durableOutputLimit($execution, $definition['durable_log_max_bytes'], $definition['platform_durable_log_max_bytes']);
         $cwd = $this->workspaces->resolve($execution, $area, $workingDirectory);
         $environment = $definition['environment'];
         $workspaceTemp = $this->workspaces->resolve($execution, 'temporary');
         $environment['HOME'] = $workspaceTemp;
         $environment['TMPDIR'] = $workspaceTemp;
-        $environment['MOODLE_OPERATION_ID'] = $operationUuid ?? (string) ($execution->uuid ?? $execution->getKey());
+        $environment['MOODLE_OPERATION_ID'] = $operationUuid;
         $environment['MOODLE_COMMAND_SHA256'] = $commandSha256 ?? hash('sha256', json_encode([$commandKey, $definition['argv']], JSON_THROW_ON_ERROR));
         $argv = $definition['argv'];
         if ((bool) config('toolkit.runner.enforce_os_limits', true)) {
@@ -98,31 +101,27 @@ class RegisteredCommandRunner
         stream_set_blocking($pipes[2], false);
         $startedAt = microtime(true);
         $lastHeartbeat = $startedAt;
-        $processId = null;
         $exitCode = null;
         $timedOut = false;
-        $truncated = false;
         $resourceLimitExceeded = false;
-        $stdout = '';
-        $stderr = '';
-        $limit = $definition['max_output_bytes'];
-        $stdoutBytes = 0;
-        $stderrBytes = 0;
-        $stdoutHash = hash_init('sha256');
-        $stderrHash = hash_init('sha256');
-        $stdoutFile = null;
-        $stderrFile = null;
-
+        $files = [];
+        $captures = [];
         try {
             $processId = $this->awaitProcessReady($process, $pipes[3]);
-            if ($operationUuid !== null) {
-                $stdoutFile = fopen($this->workspaces->operationLogPath($execution, $operationUuid, 'stdout'), 'xb');
-                $stderrFile = fopen($this->workspaces->operationLogPath($execution, $operationUuid, 'stderr'), 'xb');
-                if ($stdoutFile === false || $stderrFile === false) {
-                    throw new RuntimeException('No se pudo crear el log durable de la operación.');
+            foreach (['stdout', 'stderr'] as $name) {
+                $path = $this->workspaces->operationLogPath($execution, $operationUuid, $name);
+                $file = @fopen($path, 'xb');
+                if ($file === false) {
+                    throw new RuntimeException('No se pudo crear el log durable privado de la operación.');
                 }
-                @chmod($this->workspaces->operationLogPath($execution, $operationUuid, 'stdout'), 0600);
-                @chmod($this->workspaces->operationLogPath($execution, $operationUuid, 'stderr'), 0600);
+                $files[$name] = $file;
+                @chmod($path, 0600);
+                $captures[$name] = new SanitizedOutputCapture(
+                    new StreamingSensitiveValueRedactor($this->redactor, $definition['stream_pending_max_bytes']),
+                    $durableLimit,
+                    $definition['max_output_bytes'],
+                    fn (string $safe) => $this->workspaces->writeDurableLog($execution, $file, $safe),
+                );
             }
             if ($onStarted !== null) {
                 $onStarted($processId);
@@ -140,140 +139,94 @@ class RegisteredCommandRunner
             fclose($pipes[0]);
             do {
                 $status = proc_get_status($process);
-
-                foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $streamName) {
-                    $chunk = stream_get_contents($pipes[$index]);
-                    if (is_string($chunk) === false || $chunk === '') {
-                        continue;
-                    }
-                    $chunk = $this->redactor->redactString($chunk);
-                    if ($streamName === 'stdout') {
-                        $this->persistOutputChunk($stdoutFile, $chunk, $stdoutHash);
-                        $stdoutBytes += strlen($chunk);
-                    } else {
-                        $this->persistOutputChunk($stderrFile, $chunk, $stderrHash);
-                        $stderrBytes += strlen($chunk);
-                    }
-                    $current = $streamName === 'stdout' ? $stdout : $stderr;
-                    $remaining = max(0, $limit - strlen($current));
-                    if (strlen($chunk) > $remaining) {
-                        $truncated = true;
-                    }
-                    $current .= substr($chunk, 0, $remaining);
-                    if ($streamName === 'stdout') {
-                        $stdout = $current;
-                    } else {
-                        $stderr = $current;
+                foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $name) {
+                    // Bounded reads and a fairness budget prevent a busy stream
+                    // from starving the other. Truncated streams still drain.
+                    for ($read = 0; $read < 64; $read++) {
+                        $chunk = stream_get_contents($pipes[$index], 8192);
+                        if ($chunk === false) {
+                            throw new RuntimeException('No se pudo leer el pipe de salida de la operación.');
+                        }
+                        if ($chunk === '') {
+                            break;
+                        }
+                        $captures[$name]->observe($chunk);
                     }
                 }
-
-                if ($status['running'] === false) {
+                if (! $status['running']) {
                     $exitCode ??= (int) $status['exitcode'];
-                    break;
+                    if (feof($pipes[1]) && feof($pipes[2])) {
+                        break;
+                    }
                 }
-
                 if (microtime(true) - $startedAt > $definition['timeout']) {
                     $timedOut = true;
                     $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
                     $exitCode = 124;
                 }
-
                 if (microtime(true) - $lastHeartbeat >= 10) {
                     if ($onHeartbeat !== null) {
                         $onHeartbeat($processId);
                     }
                     $lastHeartbeat = microtime(true);
-
                     try {
                         $this->workspaces->measure($execution);
-                    } catch (Throwable $exception) {
+                    } catch (Throwable) {
                         $resourceLimitExceeded = true;
                         $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
                         $exitCode = 125;
-                        $stderr .= "\n[Proceso terminado al superar la cuota o fallar la inspección del workspace.]";
                     }
                 }
-
                 usleep(50_000);
             } while (true);
-
-            foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $streamName) {
-                $chunk = stream_get_contents($pipes[$index]);
-                if (is_string($chunk) && $chunk !== '') {
-                    $chunk = $this->redactor->redactString($chunk);
-                    if ($streamName === 'stdout') {
-                        $this->persistOutputChunk($stdoutFile, $chunk, $stdoutHash);
-                        $stdoutBytes += strlen($chunk);
-                    } else {
-                        $this->persistOutputChunk($stderrFile, $chunk, $stderrHash);
-                        $stderrBytes += strlen($chunk);
-                    }
-                    $current = $streamName === 'stdout' ? $stdout : $stderr;
-                    $remaining = max(0, $limit - strlen($current));
-                    if (strlen($chunk) > $remaining) {
-                        $truncated = true;
-                    }
-                    $current .= substr($chunk, 0, $remaining);
-                    if ($streamName === 'stdout') {
-                        $stdout = $current;
-                    } else {
-                        $stderr = $current;
-                    }
+            foreach ($captures as $capture) {
+                $capture->finish();
+            }
+            foreach ($files as $file) {
+                if (! @fflush($file) || (function_exists('fsync') && ! @fsync($file))) {
+                    throw new RuntimeException('No se pudo cerrar y sincronizar el log durable de la operación.');
                 }
             }
         } catch (Throwable $exception) {
             $status = proc_get_status($process);
-            if ($status['running']) {
-                $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
-            }
+            // Also stop descendants when the original parent exited but its
+            // inherited pipes remain open. This group was created by this run.
+            $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
             throw $exception;
         } finally {
-            foreach ([$pipes[0], $pipes[3]] as $gatePipe) {
-                if (is_resource($gatePipe)) {
-                    fclose($gatePipe);
+            foreach ($pipes as $pipe) {
+                if (is_resource($pipe)) {
+                    fclose($pipe);
                 }
             }
-            fclose($pipes[1]);
-            fclose($pipes[2]);
-            foreach ([$stdoutFile, $stderrFile] as $outputFile) {
-                if (is_resource($outputFile)) {
-                    fflush($outputFile);
-                    if (function_exists('fsync')) {
-                        fsync($outputFile);
-                    }
-                    fclose($outputFile);
-                }
+            foreach ($files as $file) {
+                fclose($file);
             }
             $closedCode = proc_close($process);
             if ($exitCode === null && $closedCode >= 0) {
                 $exitCode = $closedCode;
             }
         }
-
-        $stdout = $this->redactor->redactString($stdout);
-        $stderr = $this->redactor->redactString($stderr);
-        if ($timedOut) {
-            $stderr .= "\n[Proceso terminado por exceder el tiempo máximo.]";
-        }
-        if ($resourceLimitExceeded) {
-            $stderr .= "\n[Se excedió un límite de recursos del workspace.]";
-        }
-        if ($truncated) {
-            $stderr .= "\n[Salida truncada por superar el límite configurado.]";
-        }
+        $stdout = $captures['stdout'];
+        $stderr = $captures['stderr'];
 
         return new RegisteredProcessResult(
             $exitCode,
-            $stdout,
-            $stderr,
+            $stdout->captured(),
+            $stderr->captured(),
             $processId,
             $timedOut,
-            $truncated,
+            $stdout->truncated() || $stderr->truncated() || $stdout->memoryTruncated() || $stderr->memoryTruncated(),
             $resourceLimitExceeded,
-            $stdoutBytes,
-            $stderrBytes,
-            hash_final($stdoutHash),
-            hash_final($stderrHash),
+            $stdout->persistedBytes(),
+            $stderr->persistedBytes(),
+            $stdout->sha256(),
+            $stderr->sha256(),
+            $stdout->observedBytes(),
+            $stderr->observedBytes(),
+            $stdout->truncated(),
+            $stderr->truncated(),
+            $durableLimit,
         );
     }
 
@@ -304,28 +257,6 @@ class RegisteredCommandRunner
         } while (microtime(true) < $deadline);
 
         throw new RuntimeException('El proceso registrado no confirmó el arranque antes de capturar su identidad.');
-    }
-
-    /**
-     * @param  resource|null  $stream
-     */
-    private function persistOutputChunk(mixed $stream, string $chunk, HashContext $hash): void
-    {
-        hash_update($hash, $chunk);
-        if (is_resource($stream) === false) {
-            return;
-        }
-        $offset = 0;
-        while ($offset < strlen($chunk)) {
-            $written = fwrite($stream, substr($chunk, $offset));
-            if ($written === false || $written === 0) {
-                throw new RuntimeException('No se pudo persistir la salida de la operación.');
-            }
-            $offset += $written;
-        }
-        if (fflush($stream) === false || (function_exists('fsync') && fsync($stream) === false)) {
-            throw new RuntimeException('No se pudo sincronizar la salida de la operación.');
-        }
     }
 
     private function terminateProcessGroup(int $pid, bool $forceAfterGrace = false): void

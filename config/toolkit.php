@@ -16,6 +16,8 @@ return [
     'runner' => [
         'timeout_seconds' => (int) env('TOOL_RUNNER_TIMEOUT_SECONDS', 3600),
         'max_output_bytes' => (int) env('TOOL_RUNNER_MAX_OUTPUT_BYTES', 1048576),
+        'durable_log_max_bytes' => env('TOOL_RUNNER_DURABLE_LOG_MAX_BYTES', 1048576),
+        'stream_pending_max_bytes' => env('TOOL_RUNNER_STREAM_PENDING_MAX_BYTES', 65536),
         'enforce_os_limits' => (bool) env('TOOL_RUNNER_ENFORCE_OS_LIMITS', true),
         'limit_wrapper' => env('TOOL_RUNNER_LIMIT_WRAPPER', '/usr/bin/prlimit'),
         'session_wrapper' => env('TOOL_RUNNER_SESSION_WRAPPER', '/usr/bin/setsid'),

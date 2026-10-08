@@ -12,6 +12,9 @@ use InvalidArgumentException;
  *     environment: array<string, string>,
  *     timeout: int,
  *     max_output_bytes: int,
+ *     durable_log_max_bytes: int,
+ *     platform_durable_log_max_bytes: int,
+ *     stream_pending_max_bytes: int,
  *     artifact_descriptors: list<array<string, mixed>>,
  *     cancellable: bool,
  * }
@@ -108,15 +111,36 @@ class RegisteredCommandRegistry
         }
 
         $descriptors = $this->validateArtifactDescriptors($definition['artifact_descriptors'] ?? []);
+        $platformLimit = $this->positiveLimit(config('toolkit.runner.durable_log_max_bytes', 1_048_576), 8_388_608);
+        $commandLimit = $this->positiveLimit($definition['durable_log_max_bytes'] ?? $platformLimit, 8_388_608);
+        $pendingLimit = $this->positiveLimit(config('toolkit.runner.stream_pending_max_bytes', 65_536), 65_536);
+        if ($pendingLimit < 64) {
+            throw new InvalidArgumentException('El buffer pendiente debe tener al menos 64 bytes.');
+        }
 
         return [
             'argv' => $argv,
             'environment' => $environment,
             'timeout' => min(86400, max(1, (int) ($definition['timeout'] ?? config('toolkit.runner.timeout_seconds', 3600)))),
             'max_output_bytes' => min(8_388_608, max(1024, (int) config('toolkit.runner.max_output_bytes', 1_048_576))),
+            'durable_log_max_bytes' => $commandLimit,
+            'platform_durable_log_max_bytes' => $platformLimit,
+            'stream_pending_max_bytes' => $pendingLimit,
             'artifact_descriptors' => $descriptors,
             'cancellable' => (bool) ($definition['cancellable'] ?? false),
         ];
+    }
+
+    private function positiveLimit(mixed $value, int $maximum): int
+    {
+        if (is_string($value) && preg_match('/^[1-9][0-9]*$/D', $value) === 1) {
+            $value = filter_var($value, FILTER_VALIDATE_INT);
+        }
+        if (! is_int($value) || $value < 1 || $value > $maximum) {
+            throw new InvalidArgumentException('El límite de salida debe ser un entero positivo dentro del máximo permitido.');
+        }
+
+        return $value;
     }
 
     /** @return list<array<string, mixed>> */
