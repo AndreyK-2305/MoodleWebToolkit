@@ -4,6 +4,7 @@ namespace Tests\Feature\Tools;
 
 use App\Domain\Collector\CollectorConfiguration;
 use App\Domain\Collector\CollectorPreflight;
+use App\Domain\Collector\CollectorRuntimeConfiguration;
 use App\Domain\Collector\Contracts\SecretProvider;
 use App\Domain\Collector\EphemeralMoodleConfiguration;
 use App\Domain\Collector\LabFileSecretProvider;
@@ -11,6 +12,7 @@ use App\Domain\Collector\LabMoodleProfiles;
 use App\Domain\Collector\TestingSecretProvider;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
+use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\ProjectStatus;
 use App\Enums\UserRole;
 use App\Models\AuditLog;
@@ -38,7 +40,7 @@ class CollectorConfigurationTest extends DomainTestCase
         }
         config(['collector.secret_root' => $this->labRoot.'/secrets', 'toolkit.workspaces.root' => $this->labRoot.'/workspaces',
             'collector.profiles' => ['test-lab' => [
-                'name' => 'Moodle de prueba', 'root' => $this->labRoot, 'code' => $this->labRoot.'/code', 'data' => $this->labRoot.'/data',
+                'name' => 'Moodle sintético de prueba', 'root' => $this->labRoot, 'code' => $this->labRoot.'/code', 'data' => $this->labRoot.'/data',
                 'base_url' => 'http://moodle-lab.test', 'db_host' => 'moodle-lab-db', 'db_port' => 5432,
                 'db_name' => 'moodle_lab', 'db_user' => 'moodle_lab', 'db_prefix' => 'mdl_',
                 'credential_reference' => 'test-db', 'credential_version' => '1', 'source_id' => 'test-lab', 'moodle_series' => '4.5',
@@ -247,5 +249,29 @@ class CollectorConfigurationTest extends DomainTestCase
         $this->assertSame(0, CollectorConfigurationRevision::query()->count());
         $this->actingAs($actor)->putJson($url, $this->input())->assertRedirect(route('projects.show', $project->uuid));
         $this->assertSame(1, CollectorConfigurationRevision::query()->count());
+    }
+
+    public function test_runtime_configuration_is_rendered_approved_pinned_and_contains_only_references(): void
+    {
+        $this->seed(ToolCatalogSeeder::class);
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        $project = app(CollectorConfiguration::class)->save($project, $actor, $this->input());
+        $execution = $this->execution($project);
+        app(ApproveExecutionCapacity::class)->approve($execution, 33_554_432, 20, $actor);
+        $distribution = ToolDistribution::query()->where('key', 'moodle-recolector-7.4.2-linux-tree')->sole();
+        $renderer = app(CollectorRuntimeConfiguration::class);
+        $runtime = $renderer->approve($execution, $project->configuration, $distribution, $actor);
+        $document = $renderer->verify($execution, $runtime);
+        $this->assertSame('lab', $document['scope']);
+        $this->assertSame('test-db', $document['profile']['credential_reference']);
+        $this->assertSame(0, $document['notify_every']);
+        $this->assertSame($runtime->id, $renderer->approve($execution, $project->configuration, $distribution, $actor)->id);
+        $this->assertArrayNotHasKey('dbpass', $document['profile']);
+        $path = app(ExecutionWorkspaceManager::class)->resolve($execution, 'state', $runtime->relative_path);
+        $this->assertSame(0600, fileperms($path) & 0777);
+        file_put_contents($path, '{}');
+        $this->expectException(RuntimeException::class);
+        $renderer->verify($execution, $runtime);
     }
 }

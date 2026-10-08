@@ -131,6 +131,25 @@ Reporte: `quality-results/it3-cut5.xml`.
 
 ## Pendiente
 
+## Corte 6 — render no interactivo por ejecución
+
+`CollectorRuntimeConfiguration` genera `state/collector-runtime.json` bajo el
+schema `collector-runtime.v1`. Conserva identidad de proyecto/ejecución, revisión,
+perfil no sensible, referencia opaca de credencial, hashes de distribución y
+archivos, workers y scope=lab. Notificaciones y reutilización permanecen cerradas.
+
+La aprobación usa ExecutionRuntimeConfiguration con actor/fecha y contenido
+canónico fijado por SHA-256. La revisión aprobada no se sustituye; se revalida el
+archivo regular 0600 antes de aplicarla. Un archivo residual sin aprobación se
+bloquea y requiere reconciliación. No se materializa todavía el valor de la
+credencial en ese render persistente.
+
+Validación: 13 pruebas, 73 aserciones, incluyendo Unicode, alteración de contenido,
+idempotencia, roles y secreto efímero. Pint/PHPStan completos pasan.
+Reporte: `quality-results/it3-cut6.xml`.
+
+## Trabajo restante
+
 Iteración abierta. CollectorAdapter,
 observación, validación de paquetes, SourcePackage, Moodle sintético y Playwright
 COLLECT LAB permanecen pendientes. No se declara recolección real ni cierre.
