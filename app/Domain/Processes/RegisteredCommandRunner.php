@@ -53,7 +53,7 @@ class RegisteredCommandRunner
         if ((bool) config('toolkit.features.local_runner.enabled', false) === false) {
             throw new RuntimeException('El runner local está deshabilitado por feature flag.');
         }
-        if (PHP_OS_FAMILY === 'Windows' || function_exists('posix_kill') === false) {
+        if (PHP_OS_FAMILY === 'Windows' || function_exists('posix_kill') === false || function_exists('pcntl_exec') === false) {
             throw new RuntimeException('El runner de operaciones requiere Linux con soporte de grupos de procesos.');
         }
 
@@ -86,15 +86,14 @@ class RegisteredCommandRunner
         if (str_starts_with($sessionWrapper, DIRECTORY_SEPARATOR) === false || is_file($sessionWrapper) === false || is_executable($sessionWrapper) === false) {
             throw new RuntimeException('El runner requiere setsid para aislar y cancelar el grupo de procesos.');
         }
-        $argv = [$sessionWrapper, ...$argv];
-        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $argv = [$sessionWrapper, PHP_BINARY, base_path('bin/registered-command-entrypoint.php'), ...$argv];
+        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'], 3 => ['pipe', 'w']];
         $process = proc_open($argv, $descriptors, $pipes, $cwd, $environment, ['bypass_shell' => true]);
 
         if (is_resource($process) === false) {
             throw new RuntimeException('No se pudo iniciar el proceso local registrado.');
         }
 
-        fclose($pipes[0]);
         stream_set_blocking($pipes[1], false);
         stream_set_blocking($pipes[2], false);
         $startedAt = microtime(true);
@@ -115,6 +114,7 @@ class RegisteredCommandRunner
         $stderrFile = null;
 
         try {
+            $processId = $this->awaitProcessReady($process, $pipes[3]);
             if ($operationUuid !== null) {
                 $stdoutFile = fopen($this->workspaces->operationLogPath($execution, $operationUuid, 'stdout'), 'xb');
                 $stderrFile = fopen($this->workspaces->operationLogPath($execution, $operationUuid, 'stderr'), 'xb');
@@ -124,14 +124,22 @@ class RegisteredCommandRunner
                 @chmod($this->workspaces->operationLogPath($execution, $operationUuid, 'stdout'), 0600);
                 @chmod($this->workspaces->operationLogPath($execution, $operationUuid, 'stderr'), 0600);
             }
+            if ($onStarted !== null) {
+                $onStarted($processId);
+            }
+            $status = proc_get_status($process);
+            if ($status['running'] && (@fwrite($pipes[0], '1') !== 1 || fflush($pipes[0]) === false)) {
+                $status = proc_get_status($process);
+                if ($status['running']) {
+                    throw new RuntimeException('No se pudo liberar el comando después de registrar su identidad.');
+                }
+            }
+            if (! $status['running']) {
+                $exitCode = (int) $status['exitcode'];
+            }
+            fclose($pipes[0]);
             do {
                 $status = proc_get_status($process);
-                if ($processId === null && $status['pid'] > 0) {
-                    $processId = (int) $status['pid'];
-                    if ($onStarted !== null) {
-                        $onStarted($processId);
-                    }
-                }
 
                 foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $streamName) {
                     $chunk = stream_get_contents($pipes[$index]);
@@ -171,10 +179,8 @@ class RegisteredCommandRunner
                 }
 
                 if (microtime(true) - $lastHeartbeat >= 10) {
-                    if ($processId !== null) {
-                        if ($onHeartbeat !== null) {
-                            $onHeartbeat($processId);
-                        }
+                    if ($onHeartbeat !== null) {
+                        $onHeartbeat($processId);
                     }
                     $lastHeartbeat = microtime(true);
 
@@ -222,6 +228,11 @@ class RegisteredCommandRunner
             }
             throw $exception;
         } finally {
+            foreach ([$pipes[0], $pipes[3]] as $gatePipe) {
+                if (is_resource($gatePipe)) {
+                    fclose($gatePipe);
+                }
+            }
             fclose($pipes[1]);
             fclose($pipes[2]);
             foreach ([$stdoutFile, $stderrFile] as $outputFile) {
@@ -264,6 +275,35 @@ class RegisteredCommandRunner
             hash_final($stdoutHash),
             hash_final($stderrHash),
         );
+    }
+
+    /**
+     * @param  resource  $process
+     * @param  resource  $readyPipe
+     */
+    private function awaitProcessReady(mixed $process, mixed $readyPipe): int
+    {
+        stream_set_blocking($readyPipe, false);
+        $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.supervisor_start_timeout_seconds', 3)));
+        $ready = '';
+        do {
+            $chunk = stream_get_contents($readyPipe);
+            if (is_string($chunk)) {
+                $ready .= $chunk;
+            }
+            $status = proc_get_status($process);
+            if (preg_match('/^([1-9][0-9]*)\n$/D', $ready, $matches) === 1
+                && (int) $matches[1] === $status['pid'] && $status['running']
+            ) {
+                return (int) $matches[1];
+            }
+            if (! $status['running'] || strlen($ready) > 32) {
+                break;
+            }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+
+        throw new RuntimeException('El proceso registrado no confirmó el arranque antes de capturar su identidad.');
     }
 
     /**
