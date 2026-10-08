@@ -3,6 +3,7 @@
 use App\Http\Controllers\AcademicProposalController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\ArtifactController;
+use App\Http\Controllers\CollectorConfigurationController;
 use App\Http\Controllers\ConfirmActionPasswordController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExecutionActionController;
@@ -21,6 +22,7 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::get('projects', [ProjectController::class, 'index'])->name('projects.index');
     Route::post('projects', [ProjectController::class, 'store'])->middleware('action.confirmed')->name('projects.store');
     Route::get('projects/{project:uuid}', [ProjectController::class, 'show'])->name('projects.show');
+    Route::put('projects/{project:uuid}/collector/configuration', CollectorConfigurationController::class)->middleware('action.confirmed')->name('projects.collector.configuration');
     Route::post('projects/{project:uuid}/executions', [ExecutionController::class, 'store'])->middleware('action.confirmed')->name('projects.executions.store');
     Route::get('projects/{project:uuid}/executions/{execution:uuid}', [ExecutionController::class, 'show'])->name('projects.executions.show');
     Route::get('projects/{project:uuid}/executions/{execution:uuid}/events', [ExecutionEventController::class, 'index'])->name('projects.executions.events');

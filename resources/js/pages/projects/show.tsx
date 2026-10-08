@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import InputError from '@/components/input-error';
+import CollectorConfigurationForm from '@/components/collector-configuration-form';
+import type { CollectorLab } from '@/components/collector-configuration-form';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -87,6 +89,7 @@ type ProjectData = {
     } | null;
 };
 type Props = {
+    collectorLab?: CollectorLab;
     project: ProjectData;
     projectTypes: { value: ProjectType; label: string }[];
 };
@@ -152,7 +155,11 @@ function defaultInstances(project: ProjectData): InstanceDraft[] {
     ];
 }
 
-export default function ProjectShow({ project, projectTypes }: Props) {
+export default function ProjectShow({
+    project,
+    projectTypes,
+    collectorLab,
+}: Props) {
     const [activeStep, setActiveStep] = useState(project.current_step);
 
     useEffect(() => {
@@ -163,6 +170,14 @@ export default function ProjectShow({ project, projectTypes }: Props) {
         <>
             <Head title={project.name} />
             <div className="space-y-6 p-4 md:p-6">
+                {project.type === 'COLLECT' && collectorLab?.enabled && (
+                    <CollectorConfigurationForm
+                        projectUuid={project.uuid}
+                        options={{}}
+                        laboratory={collectorLab}
+                        editable={project.can_edit}
+                    />
+                )}
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                         <Link

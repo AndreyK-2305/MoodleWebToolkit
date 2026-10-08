@@ -53,8 +53,6 @@ Pint y Larastan/PHPStan completos pasan. Reporte local: `quality-results/it3-cut
 El runtime local usa Podman debido al fallo de arranque
 del socket de inferencia de Docker Desktop; no acredita la puerta Docker de CI.
 
-## Estado
-
 ## Corte 2 — configuración y secretos
 
 `collector-lab.v1` conserva revisiones inmutables con actor, fecha y SHA-256.
@@ -74,9 +72,32 @@ hasta comprobar terminación y realizar limpieza conservadora. AWS no está habi
 Validación del corte: 35 pruebas y 411 aserciones, incluidos los casos del wizard
 demostrativo; Pint y PHPStan completos pasan. Reporte: `quality-results/it3-cut2.xml`.
 
+## Corte 3 — preflight y pantalla LAB
+
+COLLECT selecciona entre el wizard demostrativo y el perfil LAB persistido.
+La pantalla LAB acepta únicamente claves de perfiles administrados y parámetros
+no sensibles; reutiliza la autorización de acción vigente y los endpoints de
+confirmación. Los errores técnicos no se trasladan a las props de Inertia.
+
+El preflight LAB comprueba catálogo habilitado, distribución/hash/manifiesto,
+capabilities, runtime, rutas, referencia de credencial, identidad sintética,
+conexión PostgreSQL, Moodle 4.5, cursos/usuarios/OAuth y capacidad con margen.
+Persiste checks y fingerprint; un ERROR bloquea confirmación y un WARNING exige
+aceptación auditada. No inicia recolección. La integración permanece bloqueada
+hasta instalar CollectorAdapter y acreditar todos los demás checks.
+
+Moodle 4.5 requiere el perfil PHP 8.3 para este laboratorio; PHP 8.4 del runtime
+general se bloquea en ese preflight. Referencias oficiales:
+[requisitos 4.5](https://moodledev.io/general/releases/4.5) y
+[política PHP](https://moodledev.io/general/development/policies/php).
+
+Validación: 49 pruebas PHP/538 aserciones; Pint, PHPStan, TypeScript aplicación/E2E,
+ESLint y Vite Plus pasan después de instalar desde package-lock.json.
+Reporte: `quality-results/it3-cut3.xml`.
+
 ## Estado actual
 
-Iteración abierta. CollectorAdapter, preflight,
+Iteración abierta. CollectorAdapter,
 observación, validación de paquetes, SourcePackage, Moodle sintético y Playwright
 COLLECT LAB permanecen pendientes. No se declara recolección real ni cierre.
 Fake sigue predeterminado y las herramientas reales permanecen cerradas.

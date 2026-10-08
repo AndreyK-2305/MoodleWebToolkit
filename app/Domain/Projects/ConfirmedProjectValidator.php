@@ -11,7 +11,7 @@ class ConfirmedProjectValidator
 {
     public function __construct(
         private readonly ProjectWizard $wizard,
-        private readonly SimulatedPreflight $preflight,
+        private readonly ProjectPreflight $preflight,
     ) {}
 
     /** @return array{configuration_version: int, configuration_hash: string} */

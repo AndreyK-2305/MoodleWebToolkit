@@ -3,6 +3,7 @@
 namespace Tests\Feature\Tools;
 
 use App\Domain\Collector\CollectorConfiguration;
+use App\Domain\Collector\CollectorPreflight;
 use App\Domain\Collector\Contracts\SecretProvider;
 use App\Domain\Collector\EphemeralMoodleConfiguration;
 use App\Domain\Collector\LabFileSecretProvider;
@@ -12,10 +13,14 @@ use App\Domain\Projects\ProjectWizard;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Enums\ProjectStatus;
 use App\Enums\UserRole;
+use App\Models\AuditLog;
 use App\Models\CollectorConfigurationRevision;
+use App\Models\ToolDistribution;
+use Database\Seeders\ToolCatalogSeeder;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Validation\ValidationException;
+use Inertia\Testing\AssertableInertia as Assert;
 use LogicException;
 use RuntimeException;
 use Tests\Feature\Domain\DomainTestCase;
@@ -175,5 +180,72 @@ class CollectorConfigurationTest extends DomainTestCase
         $this->assertFileDoesNotExist($path);
         $this->assertStringNotContainsString($material, (string) json_encode($execution->fresh()->toArray()));
         $this->assertSame([], glob($this->labRoot.'/workspaces/*/*/input/*'));
+    }
+
+    public function test_lab_preflight_is_real_and_blocks_missing_moodle_without_fake_execution(): void
+    {
+        config(['toolkit.features.recolector_742.enabled' => true, 'toolkit.features.local_runner.enabled' => true]);
+        $this->seed(ToolCatalogSeeder::class);
+        $distribution = ToolDistribution::query()->where('key', 'moodle-recolector-7.4.2-linux-tree')->sole();
+        $distribution->toolVersion->update(['enabled' => true]);
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        $project = app(CollectorConfiguration::class)->save($project, $actor, $this->input());
+        $checks = app(ProjectWizard::class)->runPreflight($project, $actor);
+        $results = array_column($checks, 'result', 'id');
+        $this->assertSame('SUCCESS', $results['collector.distribution']);
+        $this->assertSame('ERROR', $results['collector.moodle']);
+        $this->assertSame('ERROR', $results['collector.reference']);
+        $this->assertSame('WARNING', $results['collector.laboratory']);
+        $this->assertFalse(AuditLog::query()->where('action', 'PROJECT_PREFLIGHT_COMPLETED')->sole()->payload['simulated']);
+        $this->assertSame(0, $project->executions()->count());
+        $this->expectException(ValidationException::class);
+        app(ProjectWizard::class)->confirm($project->fresh('configuration'), $actor, 2, ['collector.laboratory']);
+    }
+
+    public function test_closed_flag_and_changed_distribution_block_preflight(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        $project = app(CollectorConfiguration::class)->save($project, $actor, $this->input());
+        $preflight = app(CollectorPreflight::class);
+        $this->assertSame('ERROR', $preflight->evaluate($project, $project->configuration)[0]['result']);
+        config(['toolkit.features.recolector_742.enabled' => true, 'toolkit.features.local_runner.enabled' => true]);
+        $this->seed(ToolCatalogSeeder::class);
+        $distribution = ToolDistribution::query()->where('key', 'moodle-recolector-7.4.2-linux-tree')->sole();
+        $distribution->toolVersion->update(['enabled' => true]);
+        $before = $preflight->fingerprint($project, $project->configuration);
+        $distribution->update(['distribution_sha256' => str_repeat('f', 64)]);
+        $this->assertNotSame($before, $preflight->fingerprint($project, $project->configuration));
+        $this->assertSame('ERROR', array_column($preflight->evaluate($project, $project->configuration), 'result', 'id')['collector.distribution']);
+    }
+
+    public function test_lab_props_show_only_profile_choices_without_paths_or_credential_reference(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        $project = app(CollectorConfiguration::class)->save($project, $actor, $this->input());
+        $response = $this->actingAs($actor)->get(route('projects.show', $project->uuid));
+        $response->assertInertia(fn (Assert $page) => $page->component('projects/collector')
+            ->where('collectorLab.profiles.0.id', 'test-lab')
+            ->where('project.options.mode', 'LABORATORY'));
+        $this->assertStringNotContainsString($this->labRoot, $response->getContent());
+        $this->assertStringNotContainsString('test-db', $response->getContent());
+    }
+
+    public function test_http_configuration_requires_flags_assignment_and_fresh_action_authorization(): void
+    {
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        $url = route('projects.collector.configuration', $project->uuid);
+        $this->actingAs($actor)->putJson($url, $this->input())->assertStatus(409);
+        config(['toolkit.features.recolector_742.enabled' => true, 'toolkit.features.local_runner.enabled' => true]);
+        $this->actingAs($this->user())->putJson($url, $this->input())->assertForbidden();
+        $this->actingAs($this->user(UserRole::AUDITOR))->putJson($url, $this->input())->assertForbidden();
+        $this->actingAs($actor)->withSession(['auth.password_confirmed_at' => now()->timestamp - (int) config('auth.password_timeout') - 1])->putJson($url, $this->input())->assertStatus(423);
+        $this->actingAs($actor)->putJson($url, [...$this->input(), 'db_password' => 'testing-only'])->assertUnprocessable();
+        $this->assertSame(0, CollectorConfigurationRevision::query()->count());
+        $this->actingAs($actor)->putJson($url, $this->input())->assertRedirect(route('projects.show', $project->uuid));
+        $this->assertSame(1, CollectorConfigurationRevision::query()->count());
     }
 }
