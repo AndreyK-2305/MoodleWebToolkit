@@ -287,7 +287,8 @@ class RegisteredCommandRunnerTest extends TestCase
             'next_poll_at' => now()->utc(),
         ])->save();
 
-        $recovered = $coordinator->reconcile($operation);
+        $this->artisan('executions:reconcile-remote-operations')->assertExitCode(0);
+        $recovered = $operation->fresh();
 
         $this->assertSame('CONNECTED', $recovered->communication_state->value);
         $this->assertSame('RUNNING', $recovered->functional_state->value);
@@ -316,7 +317,8 @@ class RegisteredCommandRunnerTest extends TestCase
             'next_poll_at' => now()->utc(),
         ])->save();
 
-        $recovered = $coordinator->reconcile($operation);
+        $this->artisan('executions:reconcile-remote-operations')->assertExitCode(0);
+        $recovered = $operation->fresh();
 
         $this->assertSame('TERMINATED', $recovered->communication_state->value);
         $this->assertSame('SUCCEEDED', $recovered->functional_state->value);
@@ -330,7 +332,7 @@ class RegisteredCommandRunnerTest extends TestCase
         $recorder = app(ExecutionEventRecorder::class);
         $firstEvent = $recorder->record($execution, 'first', severity: EventSeverity::INFO, message: 'first event', operation: $first);
         $recorder->record($execution, 'second', severity: EventSeverity::INFO, message: 'second event', operation: $second);
-        ExecutionLog::query()->create([
+        $firstLog = ExecutionLog::query()->create([
             'execution_id' => $execution->getKey(), 'remote_operation_id' => $first->getKey(),
             'stream' => LogStream::STDOUT, 'level' => 'INFO', 'message' => 'first log', 'logged_at' => now()->utc(),
         ]);
@@ -343,6 +345,52 @@ class RegisteredCommandRunnerTest extends TestCase
         $this->assertSame([$firstEvent->sequence], array_column($provider->readEvents($first), 'sequence'));
         $this->assertSame([], $provider->readEvents($first, $firstEvent->sequence));
         $this->assertSame(['first log'], array_column($provider->readLogs($first), 'message'));
+        $this->assertSame([], $provider->readLogs($first, $firstLog->getKey()));
+        $this->assertSame(['second log'], array_column($provider->readLogs($second), 'message'));
+    }
+
+    public function test_absent_process_without_exit_evidence_never_implies_success_and_requires_manual_review_after_bounded_retries(): void
+    {
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $operation = $this->remoteOperation($execution, 'missing-process')->forceFill([
+            'process_id' => '2147483647', 'process_group_id' => '2147483647',
+            'process_start_identity' => '1',
+        ]);
+        $operation->save();
+        for ($attempt = 1; $attempt <= 8; $attempt++) {
+            $operation = app(RemoteOperationCoordinator::class)->reconcile($operation);
+            $this->assertSame('UNREACHABLE', $operation->communication_state->value);
+            $this->assertSame('UNKNOWN', $operation->functional_state->value);
+            $this->assertSame($attempt, $operation->reconcile_attempts);
+            $this->assertNull($operation->terminated_at);
+            if ($attempt < 8) {
+                $this->assertNotNull($operation->next_poll_at);
+                $this->assertFalse($operation->manual_intervention_required);
+            }
+        }
+        $this->assertNull($operation->next_poll_at);
+        $this->assertTrue($operation->manual_intervention_required);
+    }
+
+    public function test_terminal_evidence_with_altered_stdout_cannot_confirm_success(): void
+    {
+        Queue::fake();
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $coordinator = app(RemoteOperationCoordinator::class);
+        $operation = $coordinator->schedule($execution, 'corrupted-log-evidence', 'platform_health');
+        (new RunRegisteredRemoteOperation((int) $operation->getKey(), 'platform_health', [], ''))->handle($coordinator);
+        $operation = $this->waitForTerminal($operation);
+        $log = app(ExecutionWorkspaceManager::class)->operationLogPath($execution, $operation->operation_uuid, 'stdout');
+        file_put_contents($log, 'tampered durable output');
+        $operation->forceFill(['communication_state' => 'UNREACHABLE', 'functional_state' => 'UNKNOWN', 'next_poll_at' => now()->utc(), 'terminated_at' => null])->save();
+
+        $reconciled = $coordinator->reconcile($operation);
+
+        $this->assertSame('UNREACHABLE', $reconciled->communication_state->value);
+        $this->assertSame('UNKNOWN', $reconciled->functional_state->value);
+        $this->assertNull($reconciled->terminated_at);
     }
 
     public function test_supervisor_terminates_parent_and_child_in_the_registered_process_group(): void

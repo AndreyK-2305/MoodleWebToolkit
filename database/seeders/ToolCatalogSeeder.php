@@ -42,6 +42,7 @@ class ToolCatalogSeeder extends Seeder
             'file_count' => 263,
             'mutable_paths' => ['config/phase5-pilot-package.json', 'config/phase6-batch.json'],
             'deployment_exclusions' => [
+                'config.yaml',
                 'config/assistant.json',
                 'config/oauth2.json',
                 'config/identity-policy.json',

@@ -162,6 +162,40 @@ class RemoteOperationConcurrencyTest extends TestCase
         $this->assertSame(128, $execution->workspace()->firstOrFail()->quota_bytes);
     }
 
+    public function test_reconciliation_recovers_durable_success_after_the_launch_worker_is_killed(): void
+    {
+        $this->requireLinuxProcessSupport();
+        $operation = app(RemoteOperationCoordinator::class)->schedule($this->execution, 'dead-worker', 'platform_long');
+        DB::purge();
+        $pid = pcntl_fork();
+        $this->assertNotSame(-1, $pid);
+        if ($pid === 0) {
+            DB::reconnect();
+            app(RemoteOperationCoordinator::class)->runScheduled((int) $operation->getKey(), 'platform_long', [], '');
+            posix_kill(getmypid(), SIGKILL);
+            exit(1);
+        }
+        pcntl_waitpid($pid, $status);
+        DB::reconnect();
+        $this->assertTrue(pcntl_wifsignaled($status));
+        $this->assertSame(SIGKILL, pcntl_wtermsig($status));
+        $operation = $this->waitForProcess($operation);
+        $this->assertTrue(app(LocalProcessInspector::class)->isRunning($operation));
+        $deadline = microtime(true) + 12;
+        do {
+            $operation = app(RemoteOperationCoordinator::class)->reconcile($operation->fresh());
+            if ($operation->communication_state->value === 'TERMINATED') {
+                break;
+            }
+            usleep(50_000);
+        } while (microtime(true) < $deadline);
+
+        $this->assertSame('TERMINATED', $operation->communication_state->value);
+        $this->assertSame('SUCCEEDED', $operation->functional_state->value);
+        $this->assertSame(0, $operation->exit_code);
+        $this->assertSame($operation->operation_uuid, $operation->evidence['exit_evidence']['operation_uuid']);
+    }
+
     private function newOperation(string $key): RemoteOperation
     {
         return app(RemoteOperationCoordinator::class)->schedule($this->execution, $key, 'platform_concurrent');

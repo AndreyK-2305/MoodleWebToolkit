@@ -2,6 +2,9 @@
 
 namespace Tests\Feature\Domain;
 
+use Database\Seeders\ToolCatalogSeeder;
+use Illuminate\Database\QueryException;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -102,6 +105,7 @@ class Iteration2MigrationUpgradeTest extends TestCase
                 'created_at' => $now,
             ]);
             $runtime->up();
+            $this->seed(ToolCatalogSeeder::class);
 
             $this->assertTrue(Schema::hasTable('source_packages'));
             $this->assertSame((int) $projectId, (int) DB::table('execution_tool_bindings')->where('execution_id', $executionId)->value('project_id'));
@@ -110,7 +114,26 @@ class Iteration2MigrationUpgradeTest extends TestCase
                 ->whereRaw('tgrelid = ?::regclass', ['execution_tool_bindings'])
                 ->where('tgenabled', '<>', 'D')
                 ->count());
-            $this->assertSame(2, DB::table('tool_versions')->count());
+            $this->assertSame(4, DB::table('tool_versions')->count());
+            Schema::create('legacy_version_references', function (Blueprint $table): void {
+                $table->foreignId('tool_version_id')->constrained('tool_versions')->restrictOnDelete();
+            });
+            DB::table('legacy_version_references')->insert(['tool_version_id' => $treeVersionId]);
+            try {
+                DB::transaction(function () use ($runtime, $foundation): void {
+                    $runtime->down();
+                    $foundation->down();
+                });
+                $this->fail('A referenced tree-only version must block destructive rollback.');
+            } catch (QueryException $exception) {
+                $this->assertStringContainsString('SQLSTATE[23503]', $exception->getMessage());
+                $this->assertTrue(Schema::hasTable('source_packages'));
+                $this->assertTrue(Schema::hasTable('execution_tool_bindings'));
+                $this->assertSame(4, DB::table('tool_versions')->count());
+                $this->assertSame(1, DB::table('pg_trigger')->where('tgname', 'source_packages_identity_immutable')
+                    ->whereRaw('tgrelid IN (SELECT oid FROM pg_class WHERE relnamespace = ?::regnamespace)', [$schema])->count());
+            }
+            Schema::drop('legacy_version_references');
             DB::transaction(function () use ($runtime, $foundation): void {
                 $runtime->down();
                 $foundation->down();
@@ -125,6 +148,9 @@ class Iteration2MigrationUpgradeTest extends TestCase
                 ->where('table_name', 'tool_versions')
                 ->where('column_name', 'archive_name')
                 ->value('is_nullable'));
+            $this->assertSame('NO', DB::table('information_schema.columns')
+                ->where('table_schema', $schema)->where('table_name', 'tool_versions')
+                ->where('column_name', 'archive_sha256')->value('is_nullable'));
             $this->assertSame(1, DB::table('pg_trigger')
                 ->where('tgname', 'execution_commands_completed_project_read_only')
                 ->whereRaw('tgrelid = ?::regclass', ['execution_commands'])
@@ -132,6 +158,7 @@ class Iteration2MigrationUpgradeTest extends TestCase
                 ->count());
             $this->assertSame(0, DB::table('pg_trigger')
                 ->where('tgname', 'source_packages_identity_immutable')
+                ->whereRaw('tgrelid IN (SELECT oid FROM pg_class WHERE relnamespace = ?::regnamespace)', [$schema])
                 ->count());
 
             $foundation->up();
@@ -145,6 +172,7 @@ class Iteration2MigrationUpgradeTest extends TestCase
                 ->value('is_nullable'));
             $this->assertSame(1, DB::table('pg_trigger')
                 ->where('tgname', 'source_packages_identity_immutable')
+                ->whereRaw('tgrelid IN (SELECT oid FROM pg_class WHERE relnamespace = ?::regnamespace)', [$schema])
                 ->count());
             $this->assertSame(0, DB::table('tool_versions')->where('id', $treeVersionId)->count());
         } finally {

@@ -182,10 +182,10 @@ class BindExecutionTool
                     && $existing->provider_key === $providerKey
                     && hash_equals($existing->configuration_sha256, $configurationHash)
                     && $existing->distribution_sha256 === $verified->treeSha256
-                    && $existing->capabilities_snapshot === $capabilities
+                    && $this->canonicalize($existing->capabilities_snapshot) === $this->canonicalize($capabilities)
                     && $existing->input_artifact_ids === []
                     && $existing->source_package_ids === $sourcePackageIds
-                    && $existing->source_package_hashes === $sourceHashes
+                    && $this->canonicalize($existing->source_package_hashes ?? []) === $this->canonicalize($sourceHashes)
                     && (int) $existing->capacity_approval_id === (int) $capacity->getKey()
                     && $existing->runtime_configuration_id === $runtimeConfiguration?->getKey();
 

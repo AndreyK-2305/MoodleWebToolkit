@@ -2,10 +2,15 @@
 
 namespace Tests\Feature\Tools;
 
+use App\Domain\Tools\ApproveGeneratedRuntimeConfiguration;
+use App\Domain\Tools\BindExecutionTool;
 use App\Domain\Tools\DeployToolDistribution;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
+use App\Enums\ToolCompatibilityStatus;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\Execution;
+use App\Models\ExecutionRuntimeConfiguration;
 use App\Models\ToolDistribution;
 use Database\Seeders\ToolCatalogSeeder;
 use FilesystemIterator;
@@ -69,10 +74,11 @@ class ToolDistributionDeploymentTest extends DomainTestCase
         $distribution = ToolDistribution::query()->where('key', 'moodle-consolidador-8.0.0-linux-rc12-tree')->firstOrFail();
         $result = app(DeployToolDistribution::class)->deploy($execution, $distribution);
 
+        $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config.yaml');
         $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config/phase5-pilot-package.json');
         $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config/phase6-batch.json');
         $this->assertSame([], $result['evidence']['workspace_overlays']);
-        $this->assertSame(250, $result['evidence']['deployed_file_count']);
+        $this->assertSame(249, $result['evidence']['deployed_file_count']);
         $activeConfig = app(ExecutionWorkspaceManager::class)->resolve(
             $execution,
             'state',
@@ -90,5 +96,35 @@ class ToolDistributionDeploymentTest extends DomainTestCase
     private function approveCapacity(Execution $execution): void
     {
         app(ApproveExecutionCapacity::class)->approve($execution, 512 * 1024 * 1024, 10, $execution->creator);
+    }
+
+    public function test_v8_configuration_approval_rejects_every_benchmark_identifier(): void
+    {
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $version = ToolDistribution::query()->where('key', 'moodle-consolidador-8.0.0-linux-rc12-tree')->firstOrFail()->toolVersion;
+        foreach (['pregrado-2026-03-04-directo', 'posgrados-2025-05-02-directo', 'benchmark-operator'] as $forbidden) {
+            try {
+                app(ApproveGeneratedRuntimeConfiguration::class)->approve($execution, $version, ['source_id' => $forbidden], 'synthetic.v1', 'synthetic fixture', $execution->creator);
+                $this->fail('Benchmark decisions must not become approved active configuration.');
+            } catch (ToolOperationBlocked $exception) {
+                $this->assertStringContainsString('benchmark', $exception->getMessage());
+                $this->assertSame(0, ExecutionRuntimeConfiguration::query()->where('execution_id', $execution->getKey())->count());
+            }
+        }
+    }
+
+    public function test_v8_cannot_bind_without_generated_and_approved_runtime_configuration(): void
+    {
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $distribution = ToolDistribution::query()->where('key', 'moodle-consolidador-8.0.0-linux-rc12-tree')->firstOrFail();
+        $version = $distribution->toolVersion;
+        $version->forceFill(['enabled' => true])->save();
+        $version->compatibilities()->firstOrFail()->forceFill(['status' => ToolCompatibilityStatus::LABORATORY])->save();
+        config(['toolkit.features.consolidador_800.enabled' => true]);
+        $this->expectException(ToolOperationBlocked::class);
+        $this->expectExceptionMessage('configuración');
+        app(BindExecutionTool::class)->bind($execution, $version, $distribution, 'moodle.consolidation.v8', 'synthetic', 'local-registered-process', []);
     }
 }
