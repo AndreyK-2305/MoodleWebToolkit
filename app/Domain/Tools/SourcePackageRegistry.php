@@ -94,7 +94,7 @@ class SourcePackageRegistry
         $compatibleWorkflows = array_values(array_unique($workflowKeys));
         sort($compatibleWorkflows, SORT_STRING);
 
-        return DB::transaction(fn (): SourcePackage => SourcePackage::query()->create([
+        $attributes = [
             'uuid' => (string) Str::uuid(),
             'project_id' => $execution->project_id,
             'producer_execution_id' => $execution->getKey(),
@@ -117,12 +117,33 @@ class SourcePackageRegistry
                 'producer_execution_uuid' => $execution->uuid,
                 'collector_audit' => $schemaVersion === '1.0' ? $collectorAudit : null,
             ],
-        ]));
+        ];
+
+        return DB::transaction(function () use ($artifact, $attributes): SourcePackage {
+            Artifact::query()->whereKey($artifact->id)->lockForUpdate()->firstOrFail();
+            $existing = SourcePackage::query()->where('artifact_id', $artifact->id)->first();
+            if ($existing !== null) {
+                foreach (['project_id', 'producer_execution_id', 'artifact_id', 'producer_tool_version', 'schema_version',
+                    'source_id', 'name', 'size_bytes', 'sha256', 'manifest_sha256', 'capabilities', 'compatibility', 'sensitivity'] as $key) {
+                    if ($this->canonical($existing->getAttribute($key)) !== $this->canonical($attributes[$key])) {
+                        throw new ToolOperationBlocked('El artefacto ya tiene un registro fuente con otra identidad o contrato.');
+                    }
+                }
+                if ($existing->validation_state === 'REVOKED' || $existing->availability !== 'AVAILABLE') {
+                    throw new ToolOperationBlocked('El registro fuente existente no está disponible.');
+                }
+
+                return $existing;
+            }
+
+            return SourcePackage::query()->create($attributes);
+        });
     }
 
     public function validate(SourcePackage $package): SourcePackage
     {
         $package->loadMissing('artifact', 'producerExecution');
+        $this->assertKnownContract($package);
         $artifact = $package->artifact;
         if ($package->validation_state === 'REVOKED' || $package->availability !== 'AVAILABLE'
             || $artifact === null || $artifact->category !== ArtifactCategory::SOURCE_PACKAGE->value
@@ -167,5 +188,36 @@ class SourcePackageRegistry
         ])->save();
 
         return $package->refresh();
+    }
+
+    public function assertKnownContract(SourcePackage $package): void
+    {
+        if (! in_array($package->producer_tool_version, ['7.4.1-linux', '7.4.2-linux'], true)
+            || ! in_array($package->schema_version, ['1.0', 'recolector-source.v1'], true)) {
+            throw new ToolOperationBlocked('El productor o schema existente no tiene un contrato reconocido.');
+        }
+        if ($package->schema_version === '1.0') {
+            $audit = $package->evidence['collector_audit'] ?? null;
+            if (! is_array($audit) || ($audit['validation_schema'] ?? null) !== 'collector-web-audit.v1'
+                || ($audit['result'] ?? null) !== 'VALID' || ($audit['producer_version'] ?? null) !== $package->producer_tool_version
+                || ($audit['package_sha256'] ?? null) !== $package->sha256 || ($audit['source_id'] ?? null) !== $package->source_id
+                || ($audit['manifest_sha256'] ?? null) !== $package->manifest_sha256
+                || $this->canonical($audit['capabilities'] ?? null) !== $this->canonical($package->capabilities)
+                || ($package->producer_tool_version === '7.4.2-linux' && ($package->capabilities['theme_inventory'] ?? null) !== '1.0')) {
+                throw new ToolOperationBlocked('El contrato existente necesita auditoría verificable y capabilities compatibles.');
+            }
+        }
+    }
+
+    private function canonical(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return array_map($this->canonical(...), $value);
     }
 }

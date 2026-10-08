@@ -125,6 +125,36 @@ class RegisteredCommandRunnerTest extends TestCase
         }
     }
 
+    public function test_terminal_evidence_is_rechecked_and_wrong_host_or_changed_log_blocks_capture(): void
+    {
+        Queue::fake();
+        config(['toolkit.runner.host_id' => gethostname() ?: 'local']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $coordinator = app(RemoteOperationCoordinator::class);
+        $operation = $coordinator->schedule($execution, 'it3-terminal-proof', 'platform_health');
+        $operation = $coordinator->runScheduled($operation->id, 'platform_health', [], '');
+        $deadline = microtime(true) + 10;
+        do {
+            usleep(100000);
+            $operation = $coordinator->reconcile($operation);
+        } while ($operation->communication_state->value !== 'TERMINATED' && microtime(true) < $deadline);
+        $this->assertSame('TERMINATED', $operation->communication_state->value);
+        $this->assertTrue($coordinator->verifyTerminalEvidence($operation));
+        $exit = app(ExecutionWorkspaceManager::class)->operationEvidencePath($execution, $operation->operation_uuid, 'exit.json');
+        $original = file_get_contents($exit);
+        $document = json_decode($original, true, flags: JSON_THROW_ON_ERROR);
+        $document['host_id'] = 'another-host';
+        file_put_contents($exit, json_encode($document, JSON_THROW_ON_ERROR));
+        $this->assertFalse($coordinator->verifyTerminalEvidence($operation));
+        file_put_contents($exit, $original);
+        $this->assertTrue($coordinator->verifyTerminalEvidence($operation));
+        $stdout = app(ExecutionWorkspaceManager::class)->operationLogPath($execution, $operation->operation_uuid, 'stdout');
+        file_put_contents($stdout, 'changed bytes', FILE_APPEND);
+        $this->assertFalse($coordinator->verifyTerminalEvidence($operation));
+        $this->assertSame('TERMINATED', $operation->fresh()->communication_state->value);
+    }
+
     public function test_scheduler_dispatches_observation_to_the_runner_queue(): void
     {
         Queue::fake();

@@ -109,6 +109,7 @@ class BindExecutionTool
             foreach ($sourcePackageIds as $sourcePackageId) {
                 /** @var SourcePackage $package */
                 $package = $packages->get($sourcePackageId);
+                app(SourcePackageRegistry::class)->assertKnownContract($package);
                 $package->loadMissing('artifact');
                 if ((int) $package->project_id !== (int) $locked->project_id
                     || $package->validation_state !== 'VALID'

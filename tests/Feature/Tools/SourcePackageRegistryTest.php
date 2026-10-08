@@ -86,6 +86,22 @@ class SourcePackageRegistryTest extends DomainTestCase
         );
     }
 
+    public function test_repeated_registration_reuses_identity_and_conflicting_metadata_is_rejected(): void
+    {
+        $producer = $this->execution($this->project(), ExecutionStatus::FAILED);
+        $artifact = $this->sourceArtifact($producer);
+        $registry = app(SourcePackageRegistry::class);
+        $first = $registry->register($artifact, 'source-a', '7.4.1-linux', 'recolector-source.v1', 'fuente.zip', ['moodle.source.export']);
+        $registry->validate($first);
+        $second = $registry->register($artifact, 'source-a', '7.4.1-linux', 'recolector-source.v1', 'fuente.zip', ['moodle.source.export']);
+        $this->assertSame($first->id, $second->id);
+        $this->assertSame('7.4.1-linux', $second->producer_tool_version);
+        $this->assertSame('VALID', $second->validation_state);
+        $this->assertDatabaseCount('source_packages', 1);
+        $this->expectException(ToolOperationBlocked::class);
+        $registry->register($artifact, 'source-a', '7.4.2-linux', 'recolector-source.v1', 'fuente.zip', ['moodle.source.export']);
+    }
+
     public function test_revoked_and_changed_packages_are_rejected_at_binding_time(): void
     {
         $project = $this->project();

@@ -95,6 +95,31 @@ class LocalProcessInspector
         return ! $this->processGroupExists($processGroupId);
     }
 
+    public function hasActiveProcessGroup(RemoteOperation $operation): bool
+    {
+        if (PHP_OS_FAMILY !== 'Linux' || $operation->host_id !== (gethostname() ?: 'local')
+            || $operation->runtime_key !== 'workspace-process-v2' || (int) $operation->process_group_id < 2) {
+            return true;
+        }
+        $paths = glob('/proc/[0-9]*/stat');
+        if ($paths === false) {
+            return true;
+        }
+        foreach ($paths as $path) {
+            $stat = @file_get_contents($path);
+            if (! is_string($stat)) {
+                continue; // A process may exit between enumeration and inspection.
+            }
+            $end = strrpos($stat, ')');
+            $fields = $end === false ? [] : (preg_split('/\s+/', trim(substr($stat, $end + 1))) ?: []);
+            if (($fields[2] ?? null) === $operation->process_group_id && ! in_array($fields[0] ?? null, ['Z', 'X'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** @phpstan-impure */
     private function processGroupExists(int $processGroupId): bool
     {

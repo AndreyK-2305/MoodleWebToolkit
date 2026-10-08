@@ -315,3 +315,23 @@ y outbox; incluye rollback, reinicio, UTF-8 fragmentado, texto privado, duplicad
 truncamiento, lotes, líneas excesivas, aislamiento por Execution y rollback/reapply
 de la migración. Pint y PHPStan pasan. Reporte: `quality-results/it3-cut12.xml`.
 La conexión del observador con CollectorAdapter y cierre de paquetes sigue pendiente.
+
+## Corte 13 — terminación verificable y captura idempotente
+
+COLLECT requiere revalidar la evidencia durable y sus hashes en el hostname del
+runner, además de comprobar que no quede un proceso activo en el grupo registrado.
+La ausencia del PID y el estado TERMINATED de PostgreSQL por sí solos no autorizan
+captura. Se valida nuevamente launch/exit y la identidad del productor.
+
+Capturas repetidas devuelven el mismo Artifact si su archivo y el enlace del
+almacenamiento conservan inode, tamaño, SHA-256 y metadata. Un enlace adicional,
+una sustitución, un cambio de contenido o un archivo especial bloquean la captura.
+El registro SourcePackage también es idempotente por artefacto y conserva el
+producer original. La validación y binding bloquean contratos existentes
+desconocidos; schema 1.0 exige auditoría y capabilities acreditadas. Índices únicos
+protegen las identidades de captura de COLLECT y de sus paquetes auditados.
+
+Validación: 53 pruebas/214 aserciones del runner, descriptores, almacenamiento y
+SourcePackage. Incluye proceso registrado real, exit/log alterados, enlace ajeno,
+FIFO, captura duplicada y registro legacy repetido. Pint y PHPStan pasan.
+Reporte: `quality-results/it3-cut13.xml`. El flujo Web continúa pendiente.

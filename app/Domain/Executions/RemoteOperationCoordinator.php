@@ -637,12 +637,49 @@ class RemoteOperationCoordinator
             : 'El PID ya no acredita la identidad registrada y no existe exit.json; nunca se infiere éxito por ausencia del proceso.');
     }
 
+    public function verifyTerminalEvidence(RemoteOperation $operation): bool
+    {
+        $operation->refresh();
+        if ($operation->communication_state !== RemoteCommunicationState::TERMINATED || $operation->terminated_at === null
+            || PHP_OS_FAMILY !== 'Linux' || $operation->host_id !== (gethostname() ?: 'local')
+            || $operation->runtime_key !== 'workspace-process-v2') {
+            return false;
+        }
+        if (($operation->evidence['cancelled_before_launch'] ?? false) === true) {
+            return $operation->functional_state === RemoteFunctionalState::CANCELLED && $operation->process_id === null
+                && $operation->launch_claimed_at === null && $this->readOperationEvidence($operation, 'launch.json') === null
+                && $this->readOperationEvidence($operation, 'exit.json') === null;
+        }
+        $launch = $this->readOperationEvidence($operation, 'launch.json');
+        $exit = $this->readOperationEvidence($operation, 'exit.json');
+
+        return $operation->process_id !== null && $launch !== null && $exit !== null
+            && $this->validLaunchEvidence($operation, $launch) && $this->validExitEvidence($operation, $exit, $launch)
+            && $this->canonicalEvidence($exit) === $this->canonicalEvidence($operation->evidence['exit_evidence'] ?? null)
+            && $operation->exit_code === $exit['exit_code']
+            && ! $this->inspector->hasActiveProcessGroup($operation);
+    }
+
+    private function canonicalEvidence(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return array_map($this->canonicalEvidence(...), $value);
+    }
+
     /** @return array<string, mixed>|null */
     private function readOperationEvidence(RemoteOperation $operation, string $name): ?array
     {
         try {
             $path = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, $name);
-            if (is_link($path) || is_file($path) === false) {
+            $stat = @lstat($path);
+            if (is_link($path) || $stat === false || ($stat['mode'] & 0170000) !== 0100000
+                || $stat['nlink'] !== 1 || $stat['size'] > 1048576) {
                 return null;
             }
             $decoded = json_decode((string) file_get_contents($path), true);
@@ -737,6 +774,10 @@ class RemoteOperationCoordinator
                 return false;
             }
             clearstatcache(true, $path);
+            $stat = @lstat($path);
+            if ($stat === false || ($stat['mode'] & 0170000) !== 0100000 || $stat['nlink'] !== 1 || realpath($path) !== $path) {
+                return false;
+            }
             $size = is_link($path) || is_file($path) === false ? false : filesize($path);
             $hash = is_link($path) || is_file($path) === false ? false : hash_file('sha256', $path);
             if (is_int($size) === false || $size !== ($evidence[$stream.'_size_bytes'] ?? null)

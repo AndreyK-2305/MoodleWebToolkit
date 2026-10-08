@@ -4,6 +4,7 @@ namespace App\Domain\Executions;
 
 use App\Domain\Artifacts\RegisterReferencedArtifact;
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Executions\Contracts\ExecutionRuntimeProvider;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\DeployToolDistribution;
@@ -208,8 +209,11 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         throw new ToolOperationBlocked('La parada de un runtime completo no está implementada. Use la cancelación granular de esta operación.');
     }
 
-    /** @return list<Artifact> */
-    public function collectArtifacts(RemoteOperation $operation): array
+    /**
+     * @param  array<string, array<string, mixed>>  $metadataByPath
+     * @return list<Artifact>
+     */
+    public function collectArtifacts(RemoteOperation $operation, array $metadataByPath = []): array
     {
         if (! $this->verifyTermination($operation)) {
             throw new RuntimeException('No se recogen artefactos hasta verificar la terminación del proceso registrado.');
@@ -249,7 +253,10 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
                 throw new RuntimeException('La recolección de artefactos rechazó un enlace simbólico.');
             }
             if (! $item->isFile()) {
-                continue;
+                if ($item->isDir()) {
+                    continue;
+                }
+                throw new RuntimeException('La recolección de artefactos rechazó un archivo especial.');
             }
             $relative = str_replace('\\', '/', substr($item->getPathname(), strlen($root) + 1));
             $actual[$relative] = $item->getPathname();
@@ -287,6 +294,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
                 throw new RuntimeException('La categoría del descriptor no está permitida.');
             }
             $artifacts[] = $this->artifacts->register($execution, $path, $category, $descriptor['name'], [
+                ...($metadataByPath[$relative] ?? []),
                 'remote_operation_uuid' => $operation->operation_uuid,
                 'command_key' => $operation->command_key,
                 'source_relative_path' => $relative,
@@ -302,6 +310,10 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
     public function verifyTermination(RemoteOperation $operation): bool
     {
         $operation->refresh();
+
+        if ($operation->command_key === CollectorRegisteredCommand::KEY) {
+            return $this->operations->verifyTerminalEvidence($operation);
+        }
 
         return $operation->communication_state->value === 'TERMINATED'
             && $operation->terminated_at !== null
