@@ -2,11 +2,12 @@
 
 namespace App\Domain\Executions;
 
+use App\Domain\Realtime\ExecutionEventOutboxPublisher;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\EventSeverity;
-use App\Events\ExecutionEventBroadcast;
 use App\Models\Execution;
 use App\Models\ExecutionEvent;
+use App\Models\ExecutionEventOutbox;
 use App\Models\RemoteOperation;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +16,7 @@ use Throwable;
 
 class ExecutionEventRecorder
 {
-    public function recordNormalized(Execution $execution, NormalizedToolEvent $event, ?CarbonInterface $createdAt = null): ExecutionEvent
+    public function recordNormalized(Execution $execution, NormalizedToolEvent $event, ?CarbonInterface $createdAt = null, ?RemoteOperation $operation = null): ExecutionEvent
     {
         return $this->record(
             $execution,
@@ -26,6 +27,7 @@ class ExecutionEventRecorder
             $event->message,
             $event->payload,
             $createdAt,
+            $operation,
         );
     }
 
@@ -72,18 +74,14 @@ class ExecutionEventRecorder
 
             $event = $lockedExecution->events()->create($attributes);
 
-            $eventId = (int) $event->getKey();
-            DB::afterCommit(function () use ($eventId): void {
+            $outbox = ExecutionEventOutbox::query()->create(['execution_event_id' => $event->getKey(),
+                'available_at' => now()->utc(), 'created_at' => now()->utc()]);
+            $outboxId = (int) $outbox->getKey();
+            DB::afterCommit(function () use ($outboxId): void {
                 try {
-                    $persisted = ExecutionEvent::query()
-                        ->with('execution.project')
-                        ->find($eventId);
-
-                    if ($persisted !== null) {
-                        broadcast(new ExecutionEventBroadcast($persisted));
-                    }
-                } catch (Throwable $exception) {
-                    report($exception);
+                    app(ExecutionEventOutboxPublisher::class)->publish($outboxId);
+                } catch (Throwable) {
+                    // Commit is authoritative. The scheduler recovers a lost callback.
                 }
             });
 

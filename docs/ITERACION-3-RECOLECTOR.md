@@ -264,6 +264,30 @@ Reportes: `quality-results/it3-cut10.xml`, `it3-cut10-lab.xml`.
 
 ## Trabajo restante de integración Web
 
+## Corte 11 — outbox después de commit
+
+ExecutionEventRecorder inserta el evento y una fila única de outbox en la misma
+transacción PostgreSQL. Solo después del commit intenta publicarlo; si el callback
+se pierde, el scheduler recupera la fila. Si falla Reverb, guarda únicamente un
+código cerrado y un próximo reintento con backoff. La ejecución y el evento siguen
+disponibles para polling. Reverb tiene límites de conexión/respuesta breves,
+independientes del proceso del Recolector.
+
+Las entregas repetidas de una fila publicada no vuelven a emitirla. Una pérdida
+del proceso después del envío y antes del commit de entrega puede repetir el
+mismo evento: el contrato conserva execution_uuid/sequence para la deduplicación
+del cliente. PostgreSQL sigue siendo la fuente de verdad. La migración no altera
+eventos anteriores; rollback y reaplicación preservan eventos y ejecuciones.
+
+Validación del outbox: 5 pruebas/38 aserciones de commit, rollback, falla de
+transporte, callback perdido, reintento y upgrade/rollback. La regresión PHP
+completa pasó 502 pruebas/6616 aserciones con PostgreSQL, Redis y Reverb activos;
+Fake y las iteraciones anteriores permanecen verdes. Pint (334 archivos) y
+PHPStan completos pasan.
+Reportes: `quality-results/it3-cut11.xml`, `it3-cut11-regression.xml`.
+
+## Trabajo restante de integración Web
+
 Iteración abierta. CollectorAdapter,
 observación durable, registro validado de SourcePackage y Playwright
 COLLECT LAB permanecen pendientes. No se declara recolección real ni cierre.
