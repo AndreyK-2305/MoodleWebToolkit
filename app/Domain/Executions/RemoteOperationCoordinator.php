@@ -217,8 +217,8 @@ class RemoteOperationCoordinator
     }
 
     /**
-     * @param  array<string, string>               $parameters
-     * @param  RegisteredCommandDefinition         $registeredDefinition
+     * @param  array<string, string>  $parameters
+     * @param  RegisteredCommandDefinition  $registeredDefinition
      */
     public function runDetached(int $operationId, string $commandKey, array $parameters, string $workingDirectory, array $registeredDefinition): RemoteOperation
     {
@@ -310,9 +310,9 @@ class RemoteOperationCoordinator
     }
 
     /**
-     * @param  array<string, string>         $parameters
-     * @param  list<array<string, mixed>>    $descriptors
-     * @param  array<string, mixed>          $definition
+     * @param  array<string, string>  $parameters
+     * @param  list<array<string, mixed>>  $descriptors
+     * @param  array<string, mixed>  $definition
      */
     private function commandHash(string $commandKey, array $parameters, string $workingDirectory, array $descriptors = [], array $definition = []): string
     {
@@ -334,8 +334,8 @@ class RemoteOperationCoordinator
     }
 
     /**
-     * @param  array<string, string>               $parameters
-     * @param  RegisteredCommandDefinition         $registeredDefinition
+     * @param  array<string, string>  $parameters
+     * @param  RegisteredCommandDefinition  $registeredDefinition
      */
     private function runProcess(RemoteOperation $operation, array $parameters, string $workingDirectory, array $registeredDefinition): RemoteOperation
     {
@@ -623,7 +623,7 @@ class RemoteOperationCoordinator
     }
 
     /**
-     * @param  array<string, mixed>       $evidence
+     * @param  array<string, mixed>  $evidence
      * @param  array<string, mixed>|null  $launch
      */
     private function validExitEvidence(RemoteOperation $operation, array $evidence, ?array $launch): bool

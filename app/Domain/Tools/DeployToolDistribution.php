@@ -92,7 +92,7 @@ class DeployToolDistribution
     }
 
     /**
-     * @param list<string> $excluded
+     * @param  list<string>  $excluded
      * @return array<string, mixed>
      */
     private function verifyDeployedTree(string $root, VerifiedDistribution $verified, string $manifestName, array $excluded = []): array
@@ -188,7 +188,7 @@ class DeployToolDistribution
     }
 
     /**
-     * @param list<string> $excluded
+     * @param  list<string>  $excluded
      * @return array<string, array{path: string, source_sha256: string, workspace_sha256: string}>
      */
     private function deployMutableOverlays(Execution $execution, ToolDistribution $distribution, VerifiedDistribution $verified, string $slug, array $excluded = []): array
@@ -259,7 +259,7 @@ class DeployToolDistribution
     }
 
     /**
-     * @param array<string, mixed> $deployed
+     * @param  array<string, mixed>  $deployed
      * @return array<string, mixed>
      */
     private function deploymentEvidence(ToolDistribution $distribution, VerifiedDistribution $verified, string $target, array $deployed): array
