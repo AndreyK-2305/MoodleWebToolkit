@@ -97,6 +97,25 @@ Reporte: `quality-results/it3-cut3.xml`.
 
 ## Estado actual
 
+## Corte 4 — propiedad del runtime
+
+El host de destino se fija al crear RemoteOperation, forma parte del hash del
+comando y conserva la protección inmutable de PostgreSQL. Un runner distinto
+rechaza el lanzamiento antes de reclamarlo. `TOOL_RUNNER_HOST_ID` permite dirigir
+los despachos al hostname estable del contenedor runner; null conserva el uso
+del proceso local para las pruebas existentes.
+
+El scheduler despacha reconciliación a `redis-tool-runs/tool-runs`, con unidades
+de 120 segundos y exclusión de trabajos duplicados. La inspección de `/proc`
+ocurre en el runner. El modo sync mantiene la inspección local de pruebas.
+Las regresiones también detectaron una carrera benigna de mkdir; se conserva
+la comprobación final del directorio sin convertir esa carrera en un warning fatal.
+
+Validación: 36 pruebas, 184 aserciones (incluidas cuatro multiproceso), Pint y
+PHPStan completos. Reporte: `quality-results/it3-cut4.xml`.
+
+## Pendiente
+
 Iteración abierta. CollectorAdapter,
 observación, validación de paquetes, SourcePackage, Moodle sintético y Playwright
 COLLECT LAB permanecen pendientes. No se declara recolección real ni cierre.

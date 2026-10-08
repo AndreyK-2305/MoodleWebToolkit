@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Domain\Executions\RemoteOperationCoordinator;
+use App\Jobs\ReconcileRemoteOperation;
 use App\Models\RemoteOperation;
 use Illuminate\Console\Command;
 use Throwable;
@@ -27,7 +28,12 @@ class ReconcileRemoteOperations extends Command
             ->get()
             ->each(function (RemoteOperation $operation) use ($operations, &$failed): void {
                 try {
-                    $operations->reconcile($operation);
+                    if (config('queue.default') === 'sync') {
+                        $operations->reconcile($operation);
+                    } else {
+                        dispatch((new ReconcileRemoteOperation((int) $operation->getKey()))
+                            ->onConnection('redis-tool-runs')->onQueue('tool-runs'));
+                    }
                 } catch (Throwable $exception) {
                     $failed++;
                     report($exception);

@@ -311,7 +311,7 @@ class ExecutionWorkspaceManager
             throw new RuntimeException('No se permiten enlaces simbólicos en el árbol de workspaces.');
         }
 
-        if (is_dir($path) === false && mkdir($path, 0700, true) === false && is_dir($path) === false) {
+        if (is_dir($path) === false && @mkdir($path, 0700, true) === false && is_dir($path) === false) {
             throw new RuntimeException('No se pudo crear un directorio privado de workspace.');
         }
 

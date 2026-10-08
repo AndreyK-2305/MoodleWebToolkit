@@ -101,6 +101,9 @@ class RemoteOperationCoordinator
             if ($locked->launch_claimed_at !== null) {
                 return null;
             }
+            if ($locked->host_id !== (gethostname() ?: 'local')) {
+                throw new RuntimeException('La operación pertenece a otro runtime; no se iniciará desde este host.');
+            }
 
             $locked->forceFill([
                 'launch_claimed_at' => now()->utc(),
@@ -156,6 +159,7 @@ class RemoteOperationCoordinator
             $launcherEnvironment['PATH'] = (string) ($launcherEnvironment['PATH'] ?? '/usr/bin:/bin');
             $launcherEnvironment['LANG'] = (string) ($launcherEnvironment['LANG'] ?? 'C.UTF-8');
             $launcherEnvironment['TOOL_LOCAL_RUNNER_ENABLED'] = config('toolkit.features.local_runner.enabled') ? 'true' : 'false';
+            $launcherEnvironment['TOOL_RUNNER_HOST_ID'] = (string) $operation->host_id;
             $launcherEnvironment['TOOL_RUNNER_SYNTHETIC_PROFILE'] = app()->environment('testing') && config('toolkit.runner.synthetic_profile', false) ? 'true' : 'false';
             $launcherEnvironment['TOOL_WORKSPACES_ROOT'] = (string) config('toolkit.workspaces.root');
             $launcherEnvironment['TOOL_WORKSPACE_QUOTA_BYTES'] = (string) config('toolkit.workspaces.quota_bytes');
@@ -299,7 +303,7 @@ class RemoteOperationCoordinator
                 'operation_uuid' => (string) Str::uuid(),
                 'idempotency_key' => $idempotencyKey,
                 'provider_key' => 'local-registered-process',
-                'host_id' => gethostname() ?: 'local',
+                'host_id' => $this->targetHost(),
                 'runtime_key' => 'workspace-process-v2',
                 'command_key' => $commandKey,
                 'command_sha256' => $commandHash,
@@ -329,6 +333,7 @@ class RemoteOperationCoordinator
         ksort($parameters, SORT_STRING);
 
         return hash('sha256', json_encode([
+            'target_host' => $this->targetHost(),
             'command_key' => $commandKey,
             'parameters' => $parameters,
             'working_directory' => $workingDirectory,
@@ -352,6 +357,17 @@ class RemoteOperationCoordinator
                 'cancellable' => $definition['cancellable'] ?? false,
             ],
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+
+    private function targetHost(): string
+    {
+        $configured = config('toolkit.runner.host_id');
+        $host = $configured ?? (gethostname() ?: 'local');
+        if (! is_string($host) || preg_match('/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$/D', $host) !== 1) {
+            throw new RuntimeException('El runtime de destino no tiene una identidad válida.');
+        }
+
+        return $host;
     }
 
     /**

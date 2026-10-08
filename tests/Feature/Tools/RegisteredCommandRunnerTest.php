@@ -12,6 +12,7 @@ use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\EventSeverity;
 use App\Enums\LogStream;
+use App\Jobs\ReconcileRemoteOperation;
 use App\Jobs\RunRegisteredRemoteOperation;
 use App\Models\Execution;
 use App\Models\ExecutionLog;
@@ -85,6 +86,69 @@ class RegisteredCommandRunnerTest extends TestCase
         $this->assertGreaterThan(0, $result->processId);
         $this->assertStringContainsString('password=[REDACTED]', $result->stdout);
         $this->assertStringNotContainsString('private-value', $result->stdout);
+    }
+
+    public function test_runner_target_is_pinned_before_detached_launch(): void
+    {
+        Queue::fake();
+        config(['toolkit.runner.host_id' => gethostname() ?: 'local']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $operations = app(RemoteOperationCoordinator::class);
+        $operation = $operations->schedule($execution, 'it3-host-claim', 'platform_health');
+        $operation = $operations->runScheduled((int) $operation->getKey(), 'platform_health', [], '');
+        $deadline = microtime(true) + 10;
+        do {
+            usleep(100_000);
+            $operation = $operations->reconcile($operation);
+        } while ($operation->communication_state->value !== 'TERMINATED' && microtime(true) < $deadline);
+        $this->assertSame(gethostname() ?: 'local', $operation->host_id);
+        $this->assertSame('TERMINATED', $operation->communication_state->value);
+        $this->assertSame($operation->host_id, $operation->evidence['exit_evidence']['host_id']);
+    }
+
+    public function test_a_different_runner_cannot_claim_the_immutable_target_host(): void
+    {
+        Queue::fake();
+        config(['toolkit.runner.host_id' => 'another-runner-container']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $operations = app(RemoteOperationCoordinator::class);
+        $operation = $operations->schedule($execution, 'it3-other-host', 'platform_health');
+        try {
+            $operations->runScheduled((int) $operation->getKey(), 'platform_health', [], '');
+            $this->fail('An operation was launched on the wrong host.');
+        } catch (\RuntimeException) {
+            $this->assertNull($operation->fresh()->launch_claimed_at);
+            $this->assertNull($operation->fresh()->process_id);
+            $this->assertSame('another-runner-container', $operation->fresh()->host_id);
+        }
+    }
+
+    public function test_scheduler_dispatches_observation_to_the_runner_queue(): void
+    {
+        Queue::fake();
+        config(['queue.default' => 'redis']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $operation = app(RemoteOperationCoordinator::class)->schedule($execution, 'it3-observation-host', 'platform_long');
+        $operation->update(['next_poll_at' => now()->utc()->subSecond()]);
+        $this->artisan('executions:reconcile-remote-operations')->assertExitCode(0);
+        Queue::assertPushed(ReconcileRemoteOperation::class, fn (ReconcileRemoteOperation $job): bool => $job->operationId === $operation->id
+            && $job->connection === 'redis-tool-runs' && $job->queue === 'tool-runs');
+        $this->assertNull($operation->fresh()->process_id);
+    }
+
+    public function test_runner_target_is_part_of_command_idempotency(): void
+    {
+        Queue::fake();
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $operations = app(RemoteOperationCoordinator::class);
+        $operation = $operations->schedule($execution, 'it3-target-idempotency', 'platform_health');
+        config(['toolkit.runner.host_id' => 'another-runner-container']);
+        $this->expectException(\RuntimeException::class);
+        $operations->schedule($execution, $operation->idempotency_key, 'platform_health');
     }
 
     public function test_registered_argument_schema_rejects_shell_syntax(): void

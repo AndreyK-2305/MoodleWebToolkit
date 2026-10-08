@@ -14,6 +14,7 @@ return [
         'quota_bytes' => (int) env('TOOL_WORKSPACE_QUOTA_BYTES', 20 * 1024 * 1024 * 1024),
     ],
     'runner' => [
+        'host_id' => env('TOOL_RUNNER_HOST_ID'),
         'timeout_seconds' => (int) env('TOOL_RUNNER_TIMEOUT_SECONDS', 3600),
         'heartbeat_interval_seconds' => env('TOOL_RUNNER_HEARTBEAT_INTERVAL_SECONDS', 10),
         'stall_timeout_seconds' => env('TOOL_RUNNER_STALL_TIMEOUT_SECONDS'),
