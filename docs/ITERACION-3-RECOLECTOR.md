@@ -95,8 +95,6 @@ Validación: 49 pruebas PHP/538 aserciones; Pint, PHPStan, TypeScript aplicació
 ESLint y Vite Plus pasan después de instalar desde package-lock.json.
 Reporte: `quality-results/it3-cut3.xml`.
 
-## Estado actual
-
 ## Corte 4 — propiedad del runtime
 
 El host de destino se fija al crear RemoteOperation, forma parte del hash del
@@ -113,6 +111,23 @@ la comprobación final del directorio sin convertir esa carrera en un warning fa
 
 Validación: 36 pruebas, 184 aserciones (incluidas cuatro multiproceso), Pint y
 PHPStan completos. Reporte: `quality-results/it3-cut4.xml`.
+
+## Corte 5 — parser de señales
+
+`CollectorEventParser` interpreta el contrato cerrado `collector-event.v1`.
+Solo calcula porcentaje para `course-backups` con total/completados/fallos válidos;
+las demás etapas o denominadores desconocidos conservan progress=null. Ignora
+porcentajes y ETA suministrados por el proceso. Una señal de paquete validado
+no declara éxito de Execution ni sustituye exit.json.
+
+El parser valida operation_uuid y secuencia, descarta duplicados/eventos atrasados
+y permite restaurar el cursor. Tolera fragmentación y UTF-8 inválido; una línea
+truncada o demasiado grande produce un log genérico sin persistir su contenido.
+Los mensajes desconocidos también se convierten en logs genéricos sanitizados.
+El cursor y offsets de lectura se conectarán al observador durable del adaptador.
+
+Validación: 7 pruebas, 29 aserciones, Pint y PHPStan completos.
+Reporte: `quality-results/it3-cut5.xml`.
 
 ## Pendiente
 
