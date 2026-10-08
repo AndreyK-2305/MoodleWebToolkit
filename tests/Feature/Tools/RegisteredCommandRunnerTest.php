@@ -135,6 +135,33 @@ class RegisteredCommandRunnerTest extends TestCase
         app(RegisteredCommandRegistry::class)->resolve('platform_generic_parameter', ['input' => 'token=private-value']);
     }
 
+    public function test_fast_command_waits_for_identity_capture_even_when_the_supervisor_is_delayed(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('La regresión necesita /proc y grupos POSIX.');
+        }
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $operation = $this->remoteOperation($execution, 'delayed-identity-'.$attempt);
+            $result = app(RegisteredCommandRunner::class)->run(
+                $execution,
+                'platform_health',
+                operationUuid: $operation->operation_uuid,
+                onStarted: function (int $pid) use ($operation): void {
+                    usleep(250_000);
+                    $identity = app(LocalProcessInspector::class)->identity($pid, $operation);
+                    $this->assertNotNull($identity, 'The command must remain gated until its identity is durably captured.');
+                    $this->assertSame((string) $pid, $identity['process_group_id']);
+                },
+                commandSha256: $operation->command_sha256,
+            );
+            $this->assertTrue($result->successful());
+            $this->assertSame('password=[REDACTED]', $result->stdout);
+        }
+    }
+
     public function test_operation_identity_prevents_a_second_process_after_a_successful_command(): void
     {
         config(['queue.default' => 'sync']);
