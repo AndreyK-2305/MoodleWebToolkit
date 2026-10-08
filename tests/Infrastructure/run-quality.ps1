@@ -40,6 +40,7 @@ if ($existing.Count -gt 0 -or $volumes.Count -gt 0) {
 New-Item -ItemType Directory -Path quality-results -Force | Out-Null
 & ./tests/Infrastructure/verify-baseline-tracking.ps1
 & ./tests/Infrastructure/verify-baseline-integrity.ps1
+$validationWritten = $false
 try {
     Invoke-QualityCompose config --quiet
     # Original development Compose is also a required gate.
@@ -83,6 +84,35 @@ try {
     & git diff --check
     if ($LASTEXITCODE -ne 0) { throw 'git diff --check del working tree falló.' }
     Invoke-QualityCompose --profile e2e run --rm --no-deps playwright
+    # Persist exact checkout identity and aggregate results outside the checkout,
+    # so documentation does not need a circular self-referencing commit hash.
+    [xml] $phpReport = Get-Content -LiteralPath quality-results/phpunit.xml -Raw
+    [xml] $browserReport = Get-Content -LiteralPath quality-results/playwright.xml -Raw
+    function Measure-JUnitAttribute {
+        param([xml] $Report, [string] $Attribute)
+        return [int] (($Report.SelectNodes('/testsuites/testsuite') | ForEach-Object { [int] $_.GetAttribute($Attribute) } | Measure-Object -Sum).Sum)
+    }
+    $headSha = (& git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'No se pudo registrar el SHA exacto del checkout validado.' }
+    $validation = [ordered] @{
+        schema_version = 'iteration2-validation.v1'
+        head_sha = $headSha
+        ci_url = if ($env:GITHUB_RUN_ID) { "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" } else { $null }
+        quality_gates = 'PASSED'
+        php_tests = Measure-JUnitAttribute $phpReport 'tests'
+        php_assertions = Measure-JUnitAttribute $phpReport 'assertions'
+        php_failures = Measure-JUnitAttribute $phpReport 'failures'
+        php_errors = Measure-JUnitAttribute $phpReport 'errors'
+        php_skipped = Measure-JUnitAttribute $phpReport 'skipped'
+        playwright_tests = Measure-JUnitAttribute $browserReport 'tests'
+        playwright_failures = Measure-JUnitAttribute $browserReport 'failures'
+        healthy_services = 11
+        baseline_files = 423
+        baseline_sha256 = 'd2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221'
+        completed_at_utc = [DateTime]::UtcNow.ToString('o')
+    }
+    $validation | ConvertTo-Json | Set-Content -LiteralPath quality-results/iteration2-validation.json
+    $validationWritten = $true
     Write-Host 'Todas las puertas de calidad aprobaron.'
 } catch {
     # Retain healthcheck diagnostics only, never inspect environment or credentials.
@@ -95,5 +125,10 @@ try {
     # This project was proven absent before creation; never remove development volumes.
     & docker compose --profile e2e down --volumes --remove-orphans
     if ($LASTEXITCODE -ne 0) { throw "No se pudo desmontar el entorno exclusivo $ProjectName." }
+    if ($validationWritten) {
+        $validation = Get-Content -LiteralPath quality-results/iteration2-validation.json -Raw | ConvertFrom-Json
+        $validation | Add-Member -NotePropertyName teardown -NotePropertyValue 'PASSED' -Force
+        $validation | ConvertTo-Json | Set-Content -LiteralPath quality-results/iteration2-validation.json
+    }
     Remove-Item Env:QUALITY_APP_KEY, Env:QUALITY_DB_PASSWORD, Env:QUALITY_REVERB_SECRET -ErrorAction SilentlyContinue
 }

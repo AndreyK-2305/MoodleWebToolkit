@@ -505,7 +505,7 @@ Este cierre describe el alcance esperado, no una aprobación automática. La cor
 
 El supervisor conserva UUID, PID, grupo, `/proc` start time, hash, host y runtime. La evidencia terminal y los logs permiten reconciliar después de que muera el worker Laravel, pero no se afirma supervivencia ante reinicio completo del contenedor. Si no aparece evidencia terminal íntegra ni se confirma el proceso, el resultado queda desconocido y requiere revisión; nunca se infiere éxito por ausencia del PID. La medición de cuota de archivos escritos directamente por herramientas es periódica, no un límite duro de filesystem.
 
-Las regresiones se añadieron, pero el estado de cada puerta debe leerse en `docs/ITERACION-2-IMPLEMENTACION.md` y en CI del SHA final. Si faltan dependencias o un servicio, la puerta queda sin validar y el PR se mantiene en borrador. `BaseLine/` debe conservar 423 archivos y su huella canónica registrada.
+Las regresiones cubren supervisor separado del worker, su muerte con SIGKILL, evidencia terminal íntegra, backoff, aislamiento de eventos/logs/artefactos y PostgreSQL multiproceso. El estado de cada puerta se conserva en `docs/ITERACION-2-IMPLEMENTACION.md`, en el PR #8 y en el artifact de CI `iteration2-validation-<SHA>`, con SHA y URL del último checkout validado. Si faltan dependencias o un servicio, la puerta queda sin validar y el PR se mantiene en borrador. `BaseLine/` conserva 423 archivos registrados y su huella canónica; se publicó el `config.yaml` originalmente ignorado con autorización explícita, sin editarlo. El runtime excluye ese archivo y exige configuración activa V8 aprobada; no transporta sus fuentes históricas.
 
 ---
 

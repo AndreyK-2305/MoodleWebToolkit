@@ -61,6 +61,19 @@ jobs:
           path: quality-results/
           retention-days: 3
 
+      - name: Preserve successful validation with exact published SHA
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: iteration2-validation-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            quality-results/iteration2-validation.json
+            quality-results/health.json
+            quality-results/phpunit.xml
+            quality-results/playwright.xml
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Ensure isolated stack is stopped even after interruption
         if: always()
         env:
