@@ -84,4 +84,46 @@ class StreamingSensitiveValueRedactorTest extends TestCase
             $this->assertStringContainsString('[REDACTED UNFRAMED OUTPUT]', $output);
         }
     }
+
+    public function test_private_key_header_crossing_an_overflow_keeps_its_discard_state(): void
+    {
+        foreach ([0, 50, 61, 64, 90] as $prefixLength) {
+            $stream = new StreamingSensitiveValueRedactor(new SensitiveValueRedactor, 64);
+            $output = '';
+            $record = str_repeat('x', $prefixLength).'-----BEGIN PRIVATE KEY-----'.str_repeat('private-value', 100)."\nprivate-value\n-----END PRIVATE KEY-----\nvisible\n";
+            foreach (str_split($record, 13) as $chunk) {
+                $output .= $stream->push($chunk);
+                $this->assertLessThanOrEqual(64, $stream->bufferedBytes());
+            }
+            $output .= $stream->finish();
+            $this->assertStringNotContainsString('private-value', $output);
+            $this->assertStringContainsString('visible', $output);
+        }
+    }
+
+    #[DataProvider('ambiguousSensitiveRecords')]
+    public function test_ambiguous_sensitive_continuations_stay_closed_until_eof(string $record): void
+    {
+        $stream = new StreamingSensitiveValueRedactor(new SensitiveValueRedactor, 64);
+        $output = '';
+        foreach (str_split($record, 3) as $chunk) {
+            $output .= $stream->push($chunk);
+            $this->assertLessThanOrEqual(64, $stream->bufferedBytes());
+        }
+        $output .= $stream->finish();
+        $this->assertStringNotContainsString('private-value', $output);
+        $this->assertSame(1, substr_count($output, '[REDACTED UNFRAMED OUTPUT]'));
+    }
+
+    public static function ambiguousSensitiveRecords(): array
+    {
+        return [
+            ["password=\"\nprivate-value\"\nvisible\n"],
+            ["credentials={\n  \"nested\":\"private-value\"\n}\nvisible\n"],
+            ["token=[\n  \"private-value\"\n]\nvisible\n"],
+            ["password=\n\nprivate-value\nvisible\n"],
+            ["password='\nprivate-value'\nvisible\n"],
+            ["password='private-value with spaces'\nvisible\n"],
+        ];
+    }
 }

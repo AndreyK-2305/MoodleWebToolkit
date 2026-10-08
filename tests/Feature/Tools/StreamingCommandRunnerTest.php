@@ -78,7 +78,7 @@ class StreamingCommandRunnerTest extends TestCase
 
     public static function fragmentedSecrets(): array
     {
-        return array_map(fn (string $scenario): array => [$scenario], ['split-key', 'split-value', 'authorization', 'url', 'pem', 'independent', 'pending', 'json', 'cookie', 'unterminated-pem', 'unframed']);
+        return array_map(fn (string $scenario): array => [$scenario], ['split-key', 'split-value', 'authorization', 'url', 'pem', 'independent', 'pending', 'json', 'cookie', 'unterminated-pem', 'unframed', 'ambiguous-quoted', 'ambiguous-structured', 'ambiguous-empty']);
     }
 
     #[DataProvider('fragmentedSecrets')]
@@ -244,7 +244,14 @@ class StreamingCommandRunnerTest extends TestCase
         $execution = $this->approvedExecution(128 * 1024);
         config(['toolkit.runner.durable_log_max_bytes' => 65536]);
         $manager = app(ExecutionWorkspaceManager::class);
-        $this->assertSame(32768, $manager->durableOutputLimit($execution, 65536, 65536));
+        $workspace = $manager->prepare($execution);
+        // The approval adds the fixture's explicit 10% margin to its estimate.
+        $this->assertSame(144180, (int) $workspace->quota_bytes);
+        $this->assertSame(0, $manager->measure($execution));
+        $this->assertSame(39322, $manager->durableOutputLimit($execution, 65536, 65536));
+        $manager->writeAtomic($execution, 'output', 'existing.bin', str_repeat('x', 1024));
+        $this->assertSame(1024, $manager->measure($execution));
+        $this->assertSame(38810, $manager->durableOutputLimit($execution, 65536, 65536));
         try {
             $manager->durableOutputLimit($execution, 256 * 1024, 256 * 1024);
             $this->fail('A command limit exceeding approved capacity must be rejected.');

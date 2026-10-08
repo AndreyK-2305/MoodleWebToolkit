@@ -12,6 +12,9 @@ $pieces = match ($scenario) {
     'json' => [['{"client_', ''], ['secret":', ''], ['"private-value"}\n', '']],
     'cookie' => [['Set-Co', ''], ['okie: session=private-value; HttpOnly\n', '']],
     'unterminated-pem' => [['-----BEGIN PRIVATE KEY-----\n', ''], ['private-value', '']],
+    'ambiguous-quoted' => [['password="\n', ''], ['private-value"\nvisible\n', '']],
+    'ambiguous-structured' => [['credentials={\n', ''], ['"nested":"private-value"\n}\nvisible\n', '']],
+    'ambiguous-empty' => [['password=\n\n', ''], ['private-value\nvisible\n', '']],
     'secret-failure' => [['pass', 'Authori'], ['word=private-value', 'zation: Bearer private-value']],
     default => [],
 };

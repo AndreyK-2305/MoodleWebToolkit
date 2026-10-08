@@ -20,6 +20,8 @@ final class StreamingSensitiveValueRedactor
 
     private bool $finished = false;
 
+    private bool $ambiguousContinuation = false;
+
     private ?bool $json = null;
 
     private int $depth = 0;
@@ -42,10 +44,15 @@ final class StreamingSensitiveValueRedactor
         }
         $output = '';
         for ($index = 0, $length = strlen($chunk); $index < $length; $index++) {
+            if ($this->ambiguousContinuation) {
+                return $output;
+            }
             $character = $chunk[$index];
             $this->trackJson($character);
             $boundary = $character === "\n" && (! $this->json || $this->depth <= 0);
             if ($this->discarding) {
+                $this->trackDiscardedPem($character);
+                $boundary = $character === "\n" && (! $this->json || $this->depth <= 0);
                 if ($boundary) {
                     $this->discarding = false;
                     $this->resetRecord();
@@ -54,11 +61,19 @@ final class StreamingSensitiveValueRedactor
                 continue;
             }
             if (strlen($this->pending) === $this->maximumPendingBytes) {
-                $this->pending = '';
-                $this->discarding = true;
-                if (! $this->privateKey) {
+                if (! $this->privateKey && preg_match('/-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----/', $this->pending) === 1) {
+                    $output .= '[REDACTED PRIVATE KEY]';
+                    $this->privateKey = true;
+                    $this->json = false;
+                } elseif (! $this->privateKey) {
                     $output .= self::UNFRAMED_MARKER."\n";
                 }
+                // Reuse the pending buffer for delimiter recognition while
+                // discarding. Its bounded tail is never released as output.
+                $this->pending = substr($this->pending, -64);
+                $this->discarding = true;
+                $this->trackDiscardedPem($character);
+                $boundary = $character === "\n" && (! $this->json || $this->depth <= 0);
                 if ($boundary) {
                     $this->discarding = false;
                     $this->resetRecord();
@@ -86,7 +101,7 @@ final class StreamingSensitiveValueRedactor
         $record = $this->pending;
         $this->pending = '';
 
-        return $this->discarding || $record === '' ? '' : $this->sanitizeRecord($record);
+        return $this->ambiguousContinuation || $this->discarding || $record === '' ? '' : $this->sanitizeRecord($record);
     }
 
     public function discard(): void
@@ -134,6 +149,17 @@ final class StreamingSensitiveValueRedactor
         $this->escaped = false;
     }
 
+    private function trackDiscardedPem(string $character): void
+    {
+        $this->pending = substr($this->pending.$character, -64);
+        if (! $this->privateKey && preg_match('/-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----$/D', $this->pending) === 1) {
+            $this->privateKey = true;
+            $this->json = false;
+        } elseif ($this->privateKey && preg_match('/-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----$/D', $this->pending) === 1) {
+            $this->privateKey = false;
+        }
+    }
+
     private function sanitizeRecord(string $record): string
     {
         if ($this->privateKey) {
@@ -157,6 +183,8 @@ final class StreamingSensitiveValueRedactor
     private function sanitizePlain(string $record): string
     {
         if (preg_match('//u', $record) !== 1) {
+            $this->ambiguousContinuation = true;
+
             return self::UNFRAMED_MARKER;
         }
         $trimmed = ltrim($record);
@@ -164,6 +192,8 @@ final class StreamingSensitiveValueRedactor
             try {
                 json_decode($record, flags: JSON_THROW_ON_ERROR);
             } catch (\JsonException) {
+                $this->ambiguousContinuation = true;
+
                 return self::UNFRAMED_MARKER;
             }
         } else {
@@ -176,13 +206,15 @@ final class StreamingSensitiveValueRedactor
                 }
                 $rest = substr($record, $assignment[0][1] + strlen($assignment[0][0]));
                 if ($rest === '') {
-                    $this->discarding = true;
+                    $this->ambiguousContinuation = true;
 
                     return self::UNFRAMED_MARKER."\n";
                 }
-                if (in_array($rest[0], ['{', '['], true)
+                if (in_array($rest[0], ['{', '[', "'"], true)
                     || ($rest[0] === '"' && preg_match('/^"(?:\\\\.|[^"\\\\])*"/s', $rest) !== 1)
                 ) {
+                    $this->ambiguousContinuation = true;
+
                     return self::UNFRAMED_MARKER;
                 }
             }
