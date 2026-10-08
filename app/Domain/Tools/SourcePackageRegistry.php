@@ -44,13 +44,32 @@ class SourcePackageRegistry
             ->where('communication_state', 'TERMINATED')
             ->first();
         $exitEvidence = $producerOperation?->evidence['exit_evidence'] ?? null;
-        if ($producerOperation === null || $producerOperation->terminated_at === null || is_array($exitEvidence) === false
+        if ($producerOperation === null || $producerOperation->terminated_at === null || $producerOperation->exit_code !== 0
+            || $producerOperation->functional_state->value !== 'SUCCEEDED' || is_array($exitEvidence) === false
             || ($exitEvidence['operation_uuid'] ?? null) !== $producerOperation->operation_uuid
             || ($exitEvidence['command_sha256'] ?? null) !== $producerOperation->command_sha256
         ) {
             throw new ToolOperationBlocked('El paquete fuente solo se registra después de confirmar la terminación de su operación productora.');
         }
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/D', $sourceId) !== 1 || $producerToolVersion === '' || $schemaVersion === '' || $name === '') {
+        if (! in_array($producerToolVersion, ['7.4.1-linux', '7.4.2-linux'], true)
+            || ! in_array($schemaVersion, ['1.0', 'recolector-source.v1'], true)) {
+            throw new ToolOperationBlocked('La versión productora o schema del paquete fuente es desconocido.');
+        }
+        $collectorAudit = $artifact->metadata['collector_audit'] ?? null;
+        if ($schemaVersion === '1.0' && (! is_array($collectorAudit)
+            || ($collectorAudit['validation_schema'] ?? null) !== 'collector-web-audit.v1'
+            || ($collectorAudit['result'] ?? null) !== 'VALID'
+            || ($collectorAudit['execution_uuid'] ?? null) !== $execution->uuid
+            || ($collectorAudit['project_uuid'] ?? null) !== $execution->project->uuid
+            || ($collectorAudit['package_sha256'] ?? null) !== $artifact->sha256
+            || ($collectorAudit['package_bytes'] ?? null) !== $artifact->size
+            || ($collectorAudit['producer_version'] ?? null) !== $producerToolVersion
+            || ($collectorAudit['source_id'] ?? null) !== $sourceId
+            || ($collectorAudit['capabilities'] ?? null) !== $capabilities
+            || ($collectorAudit['manifest_sha256'] ?? null) !== ($artifact->metadata['manifest_sha256'] ?? null))) {
+            throw new ToolOperationBlocked('El paquete requiere una auditoría íntegra vinculada a su proyecto, ejecución y manifiesto.');
+        }
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/D', $sourceId) !== 1 || $name === '') {
             throw new ToolOperationBlocked('La identidad y el esquema del paquete fuente son obligatorios.');
         }
         if (in_array($sensitivity, ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'], true) === false
@@ -96,6 +115,7 @@ class SourcePackageRegistry
                 'registered_at' => now()->utc()->toIso8601String(),
                 'producer_operation_id' => $artifact->remote_operation_id,
                 'producer_execution_uuid' => $execution->uuid,
+                'collector_audit' => $schemaVersion === '1.0' ? $collectorAudit : null,
             ],
         ]));
     }
@@ -111,6 +131,10 @@ class SourcePackageRegistry
             || (int) $package->size_bytes !== (int) $artifact->size
         ) {
             throw new ToolOperationBlocked('El artefacto fuente dejó de coincidir con su registro inmutable.');
+        }
+        if ($package->schema_version === '1.0' && (($package->evidence['collector_audit'] ?? null) !== ($artifact->metadata['collector_audit'] ?? null)
+            || ($package->evidence['collector_audit']['result'] ?? null) !== 'VALID')) {
+            throw new ToolOperationBlocked('La evidencia de auditoría del paquete fue sustituida.');
         }
 
         $path = Storage::disk($artifact->disk)->path($artifact->path);

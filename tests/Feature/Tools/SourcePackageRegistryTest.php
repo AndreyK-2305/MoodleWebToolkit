@@ -129,6 +129,24 @@ class SourcePackageRegistryTest extends DomainTestCase
         app(SourcePackageRegistry::class)->register($artifact, 'wrong-category', '7.4.2-linux', 'recolector-source.v1', 'report.zip', ['moodle.source.export']);
     }
 
+    public function test_unknown_producer_schema_and_failed_operation_are_blocked(): void
+    {
+        foreach (['producer', 'schema', 'failed', 'audit'] as $fault) {
+            $execution = $this->execution($this->project(), ExecutionStatus::FAILED);
+            $artifact = $this->sourceArtifact($execution);
+            if ($fault === 'failed') {
+                $execution->remoteOperations()->firstOrFail()->forceFill(['exit_code' => 1, 'functional_state' => 'FAILED'])->save();
+            }
+            try {
+                app(SourcePackageRegistry::class)->register($artifact, 'synthetic-source', $fault === 'producer' ? 'unknown' : '7.4.2-linux',
+                    $fault === 'schema' ? 'unknown' : ($fault === 'audit' ? '1.0' : 'recolector-source.v1'), 'source.zip', []);
+                $this->fail('An unverified package must not be registered.');
+            } catch (ToolOperationBlocked) {
+                $this->assertDatabaseCount('source_packages', 0);
+            }
+        }
+    }
+
     public function test_referenced_artifact_cannot_be_registered_before_durable_termination(): void
     {
         $execution = $this->execution($this->project());

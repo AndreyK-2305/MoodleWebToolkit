@@ -235,6 +235,35 @@ sintético explícitos; la suite Feature ordinaria conserva Fake predeterminado.
 
 ## Trabajo restante de integración Web
 
+## Corte 10 — auditoría del dominio y compatibilidad de paquetes
+
+`CollectorPackageInspector` acredita archivo regular exclusivo, SHA-256 y tamaño,
+estructura ZIP y metadata antes de ejecutar el auditor original desde otra copia
+verificada. Rechaza traversal, entradas duplicadas/cifradas, enlaces, archivos
+especiales, productor desconocido y capabilities incompatibles. Escanea la
+referencia privada del perfil en bloques con solape; sus valores no aparecen en
+mensajes de rechazo. El reporte crudo del auditor se limita al área privada
+temporal, se descarta y se retira; el dominio conserva solo identidad, hashes,
+versión, capabilities, contadores y número de advertencias.
+
+El contrato acepta producer 7.4.1-linux sin cambiarlo a 7.4.2. Una ausencia legacy
+de capabilities no se convierte en soporte inventado. La identidad obligatoria
+incompleta se bloquea; un nombre ausente puede mostrarse mediante el source_id
+verificado. 7.4.2 requiere theme_inventory=1.0. SourcePackage ahora bloquea
+productores/schemas desconocidos, operaciones fallidas y schema 1.0 sin auditoría
+vinculada a artefacto, manifiesto, proyecto y ejecución.
+
+La prueba LAB pasó 1 prueba/58 aserciones. Incluye exportación real y auditoría
+independiente, variante sintética legacy cambiando solamente metadata/hashes del
+manifiesto y conservando los MBZ, backup/hash alterados, hardlink, traversal,
+productor desconocido y secreto de pruebas fragmentado entre bloques. Esa variante
+prueba compatibilidad de schema; no afirma haber ejecutado el binario 7.4.1.
+La regresión del corte pasó 25 pruebas/106 aserciones y la extensión del caso de
+capability null pasó 3 pruebas/18 aserciones. Pint/PHPStan completos pasan.
+Reportes: `quality-results/it3-cut10.xml`, `it3-cut10-lab.xml`.
+
+## Trabajo restante de integración Web
+
 Iteración abierta. CollectorAdapter,
 observación durable, registro validado de SourcePackage y Playwright
 COLLECT LAB permanecen pendientes. No se declara recolección real ni cierre.

@@ -3,15 +3,18 @@
 namespace Tests\Laboratory;
 
 use App\Domain\Collector\CollectorConfiguration;
+use App\Domain\Collector\CollectorPackageInspector;
 use App\Domain\Collector\CollectorRuntimeConfiguration;
 use App\Domain\Collector\Contracts\SecretProvider;
 use App\Domain\Collector\LabMoodleProfiles;
 use App\Domain\Collector\SyntheticMoodleProbe;
+use App\Domain\Collector\TestingSecretProvider;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Tools\DeployToolDistribution;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\UserRole;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\ToolDistribution;
 use Database\Seeders\ToolCatalogSeeder;
 use Illuminate\Support\Facades\File;
@@ -86,6 +89,80 @@ class CollectorExportTest extends DomainTestCase
             }
             $zip->close();
             $this->assertSame(2, $mbz);
+            $inspector = app(CollectorPackageInspector::class);
+            $package = $output.'/source-package.zip';
+            $verified = $inspector->inspect($execution, $distribution, $package, hash_file('sha256', $package), filesize($package));
+            $this->assertSame('7.4.2-linux', $verified['producer_version']);
+            $this->assertSame('VALID', $verified['result']);
+            $this->assertSame($execution->uuid, $verified['execution_uuid']);
+            $this->assertSame($project->uuid, $verified['project_uuid']);
+            $this->assertSame(2, $verified['counts']['courses_cross_checked']);
+            $this->assertSame([], glob($workspaces->resolve($execution, 'temporary').'/package-audit-*'));
+            $legacy = $workspaces->resolve($execution, 'temporary', 'legacy.zip');
+            copy($package, $legacy);
+            $zip = new ZipArchive;
+            $this->assertTrue($zip->open($legacy));
+            $legacyManifest = $manifest;
+            $legacyManifest['collector_version'] = '7.4.1-linux';
+            unset($legacyManifest['capabilities']);
+            $legacyBytes = json_encode($legacyManifest, JSON_THROW_ON_ERROR);
+            $checksums = $zip->getFromName('checksums.sha256');
+            $checksums = preg_replace('/^[a-f0-9]{64}  manifest\.json$/m', hash('sha256', $legacyBytes).'  manifest.json', $checksums);
+            $zip->addFromString('manifest.json', $legacyBytes);
+            $zip->addFromString('checksums.sha256', $checksums);
+            $zip->close();
+            $legacyAudit = $inspector->inspect($execution, $distribution, $legacy, hash_file('sha256', $legacy), filesize($legacy));
+            $this->assertSame('7.4.1-linux', $legacyAudit['producer_version']);
+            $this->assertSame('LEGACY', $legacyAudit['metadata_state']);
+            $this->assertSame(2, $legacyAudit['counts']['courses_cross_checked']);
+            foreach (['hash', 'mbz', 'link', 'traversal', 'producer'] as $fault) {
+                $altered = $workspaces->resolve($execution, 'temporary', 'altered-'.$fault.'.zip');
+                copy($package, $altered);
+                $hash = hash_file('sha256', $altered);
+                $bytes = filesize($altered);
+                if ($fault === 'link') {
+                    link($altered, $altered.'.linked');
+                } elseif ($fault !== 'hash') {
+                    $zip = new ZipArchive;
+                    $this->assertTrue($zip->open($altered));
+                    if ($fault === 'mbz') {
+                        $zip->addFromString($manifest['entries'][0]['backup_file'], 'damaged backup');
+                    } elseif ($fault === 'traversal') {
+                        $zip->addFromString('../outside.txt', 'untrusted');
+                    } else {
+                        $zip->addFromString('manifest.json', json_encode([...$manifest, 'collector_version' => '9.0-unknown']));
+                    }
+                    $zip->close();
+                    $hash = hash_file('sha256', $altered);
+                    $bytes = filesize($altered);
+                }
+                try {
+                    $inspector->inspect($execution, $distribution, $altered, $fault === 'hash' ? str_repeat('0', 64) : $hash, $bytes);
+                    $this->fail('Altered packages must not be accepted.');
+                } catch (ToolOperationBlocked) {
+                    $this->assertSame(0, $execution->artifacts()->count());
+                }
+            }
+            $actualSecrets = app(SecretProvider::class);
+            $testingValue = 'synthetic-only-'.bin2hex(random_bytes(16));
+            app()->instance(SecretProvider::class, new TestingSecretProvider(['moodle-lab-db' => ['1' => $testingValue]]));
+            try {
+                $leak = $workspaces->resolve($execution, 'temporary', 'private-material.zip');
+                copy($package, $leak);
+                $zip = new ZipArchive;
+                $this->assertTrue($zip->open($leak));
+                $zip->addFromString('private-material.txt', str_repeat('x', 65530).$testingValue);
+                $zip->close();
+                try {
+                    app(CollectorPackageInspector::class)->inspect($execution, $distribution, $leak, hash_file('sha256', $leak), filesize($leak));
+                    $this->fail('Private material split across read boundaries must be rejected.');
+                } catch (ToolOperationBlocked $error) {
+                    $this->assertStringNotContainsString($testingValue, $error->getMessage());
+                    $this->assertStringContainsString('contenido privado', $error->getPrevious()->getMessage());
+                }
+            } finally {
+                app()->instance(SecretProvider::class, $actualSecrets);
+            }
             app(SecretProvider::class)->consume('moodle-lab-db', '1', function (string $secret) use ($process, $output): void {
                 $this->assertStringNotContainsString($secret, $process->getOutput().$process->getErrorOutput());
                 foreach (glob($output.'/*.json') as $path) {
