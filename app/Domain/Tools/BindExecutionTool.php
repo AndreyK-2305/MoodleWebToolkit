@@ -3,6 +3,8 @@
 namespace App\Domain\Tools;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Collector\CollectorRuntimeConfiguration;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Execution;
 use App\Models\ExecutionCapacityApproval;
@@ -132,7 +134,7 @@ class BindExecutionTool
             ksort($sourceHashes, SORT_NUMERIC);
 
             $runtimeConfiguration = null;
-            if ($lockedVersion->tool->key === 'moodle-consolidador') {
+            if ($lockedVersion->tool->key === 'moodle-consolidador' || $adapterKey === CollectorExecutionPreparation::ADAPTER_KEY) {
                 $runtimeConfiguration = ExecutionRuntimeConfiguration::query()
                     ->where('execution_id', $locked->getKey())
                     ->where('tool_version_id', $lockedVersion->getKey())
@@ -140,7 +142,17 @@ class BindExecutionTool
                     ->lockForUpdate()
                     ->first();
                 if ($runtimeConfiguration === null) {
-                    throw new ToolOperationBlocked('V8 requiere configuración runtime generada y aprobada para esta ejecución.');
+                    throw new ToolOperationBlocked('La herramienta requiere configuración runtime generada y aprobada para esta ejecución.');
+                }
+                if ($adapterKey === CollectorExecutionPreparation::ADAPTER_KEY) {
+                    $runtime = app(CollectorRuntimeConfiguration::class)->verify($locked, $runtimeConfiguration);
+                    if ($lockedVersion->version !== '7.4.2-linux' || $lockedDistribution->key !== 'moodle-recolector-7.4.2-linux-tree'
+                        || ($runtime['distribution_sha256'] ?? null) !== $verified->treeSha256
+                        || $this->canonicalize($runtime['settings'] ?? null) !== $this->canonicalize($safeConfiguration)
+                        || $sourcePackageIds !== [] || $workflowKey !== 'moodle.source.export'
+                        || $providerKey !== 'local-registered-process') {
+                        throw new ToolOperationBlocked('El binding COLLECT LAB no coincide con su configuración runtime inmutable.');
+                    }
                 }
             }
 

@@ -4,7 +4,9 @@ namespace App\Domain\Executions;
 
 use App\Domain\Artifacts\RegisterReferencedArtifact;
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Collector\CollectorRegisteredCommand;
+use App\Domain\Collector\CollectorRuntimeConfiguration;
 use App\Domain\Executions\Contracts\ExecutionRuntimeProvider;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\DeployToolDistribution;
@@ -98,6 +100,15 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
 
         if ($binding->toolVersion->tool->key === 'moodle-consolidador') {
             $this->assertApprovedV8RuntimeConfiguration($execution, $binding);
+        }
+        if ($binding->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY) {
+            $runtime = ExecutionRuntimeConfiguration::query()->whereKey($binding->runtime_configuration_id)
+                ->where('execution_id', $execution->id)->firstOrFail();
+            app(CollectorRuntimeConfiguration::class)->verify($execution, $runtime);
+            if ($commandKey !== CollectorRegisteredCommand::KEY || $parameters !== ['project_uuid' => $execution->project->uuid,
+                'execution_uuid' => $execution->uuid, 'runtime_sha256' => $runtime->content_sha256]) {
+                throw new ToolOperationBlocked('El comando real solo acepta identidades y el hash de su runtime aprobado.');
+            }
         }
 
         $this->gate->assertRunnable($binding->toolVersion, $binding->workflow_key);

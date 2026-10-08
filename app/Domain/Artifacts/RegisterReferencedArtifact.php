@@ -3,6 +3,7 @@
 namespace App\Domain\Artifacts;
 
 use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
+use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Enums\ArtifactCategory;
 use App\Models\Artifact;
 use App\Models\Execution;
@@ -93,7 +94,9 @@ class RegisterReferencedArtifact
             return $existing;
         }
 
-        $relativePath = 'artifacts/'.$execution->uuid.'/'.Str::uuid().'-'.$filename;
+        $prefix = ($metadata['command_key'] ?? null) === CollectorRegisteredCommand::KEY
+            ? 'executions/'.$execution->workspace_key.'/collector/' : 'artifacts/'.$execution->uuid.'/';
+        $relativePath = $prefix.Str::uuid().'-'.$filename;
         $stored = $this->storage->referenceExisting($sourceAbsolutePath, $relativePath, $expectedSha256, $expectedSize);
 
         try {

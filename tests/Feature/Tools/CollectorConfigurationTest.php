@@ -3,6 +3,7 @@
 namespace Tests\Feature\Tools;
 
 use App\Domain\Collector\CollectorConfiguration;
+use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Collector\CollectorPhpRuntime;
 use App\Domain\Collector\CollectorPreflight;
 use App\Domain\Collector\CollectorRuntimeConfiguration;
@@ -13,10 +14,12 @@ use App\Domain\Collector\LabMoodleProfiles;
 use App\Domain\Collector\MoodleConfigurationMaterializer;
 use App\Domain\Collector\TestingSecretProvider;
 use App\Domain\Projects\ProjectWizard;
+use App\Domain\Tools\BindExecutionTool;
 use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\ProjectStatus;
 use App\Enums\UserRole;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\AuditLog;
 use App\Models\CollectorConfigurationRevision;
 use App\Models\ToolDistribution;
@@ -306,6 +309,41 @@ class CollectorConfigurationTest extends DomainTestCase
         $profile = app(LabMoodleProfiles::class)->get('test-lab');
         $this->expectException(RuntimeException::class);
         $materializer->consume($this->labRoot.'/outside.php', $profile, fn (): null => null);
+    }
+
+    public function test_actual_binding_pins_capacity_runtime_and_configuration_before_launch(): void
+    {
+        config(['toolkit.features.recolector_742.enabled' => true, 'toolkit.features.local_runner.enabled' => true]);
+        $this->seed(ToolCatalogSeeder::class);
+        $distribution = ToolDistribution::query()->where('key', 'moodle-recolector-7.4.2-linux-tree')->sole();
+        $distribution->toolVersion->update(['enabled' => true]);
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Collect LAB', 'type' => 'COLLECT']);
+        $project = app(CollectorConfiguration::class)->save($project, $actor, $this->input());
+        $execution = $this->execution($project);
+        $preparation = app(CollectorExecutionPreparation::class);
+        $binding = $preparation->prepare($execution, $project->configuration, $actor);
+        $this->assertSame(CollectorExecutionPreparation::ADAPTER_KEY, $binding->adapter_key);
+        $this->assertSame('local-registered-process', $binding->provider_key);
+        $this->assertNotNull($binding->runtime_configuration_id);
+        $this->assertSame(40265319, $binding->approved_quota_bytes);
+        $this->assertSame([], $binding->source_package_ids);
+        $this->assertSame(1, $binding->configuration_snapshot['workers']);
+        $this->assertSame($binding->id, $preparation->prepare($execution, $project->configuration, $actor)->id);
+        $this->assertSame(0, $execution->remoteOperations()->count());
+    }
+
+    public function test_actual_binding_without_runtime_is_blocked(): void
+    {
+        config(['toolkit.features.recolector_742.enabled' => true]);
+        $this->seed(ToolCatalogSeeder::class);
+        $distribution = ToolDistribution::query()->where('key', 'moodle-recolector-7.4.2-linux-tree')->sole();
+        $distribution->toolVersion->update(['enabled' => true]);
+        $execution = $this->execution($this->project());
+        app(ApproveExecutionCapacity::class)->approve($execution, 16777216, 20, $execution->creator);
+        $this->expectException(ToolOperationBlocked::class);
+        app(BindExecutionTool::class)->bind($execution, $distribution->toolVersion, $distribution, 'moodle.source.export',
+            CollectorExecutionPreparation::ADAPTER_KEY, 'local-registered-process', []);
     }
 
     public function test_web_php_84_does_not_substitute_the_collector_php_83_runtime(): void

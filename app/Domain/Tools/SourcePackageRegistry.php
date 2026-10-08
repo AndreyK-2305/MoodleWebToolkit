@@ -153,7 +153,7 @@ class SourcePackageRegistry
         ) {
             throw new ToolOperationBlocked('El artefacto fuente dejó de coincidir con su registro inmutable.');
         }
-        if ($package->schema_version === '1.0' && (($package->evidence['collector_audit'] ?? null) !== ($artifact->metadata['collector_audit'] ?? null)
+        if ($package->schema_version === '1.0' && ($this->canonical($package->evidence['collector_audit'] ?? null) !== $this->canonical($artifact->metadata['collector_audit'] ?? null)
             || ($package->evidence['collector_audit']['result'] ?? null) !== 'VALID')) {
             throw new ToolOperationBlocked('La evidencia de auditoría del paquete fue sustituida.');
         }

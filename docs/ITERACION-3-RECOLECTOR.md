@@ -335,3 +335,27 @@ Validación: 53 pruebas/214 aserciones del runner, descriptores, almacenamiento 
 SourcePackage. Incluye proceso registrado real, exit/log alterados, enlace ajeno,
 FIFO, captura duplicada y registro legacy repetido. Pint y PHPStan pasan.
 Reporte: `quality-results/it3-cut13.xml`. El flujo Web continúa pendiente.
+
+## Corte 14 — ciclo durable del paquete real
+
+La preparación de COLLECT fija cuota, revisión, distribución y runtime aprobado
+antes del lanzamiento. El binding real solo admite 7.4.2 y referencias de su
+configuración inmutable. La auditoría posterior utiliza ese perfil fijado, aunque
+la configuración vigente del proyecto cambiara.
+
+El ciclo separa la operación registrada del worker Laravel, observa el stdout
+mediante el cursor durable y exige terminación íntegra antes de retirar cualquier
+configuración privada residual. Guarda una auditoría independiente inmutable;
+la captura puede recuperarse sin sustituirla. Manifiesto, inventario, evidencia
+visual, sidecar y validación deben coincidir con el ZIP auditado. La captura y el
+registro fuente se conservan al repetir la reconciliación. REVIEW se alcanza con
+verificación aprobada, sin checkpoints simulados ni cierre automático.
+
+La prueba explícita LAB pasó 1 prueba/29 aserciones: proceso registrado separado,
+dos cursos, seis artefactos, SourcePackage VALID, hashes, inmutabilidad PostgreSQL,
+reobservación/captura repetidas, configuración privada retirada y rechazo de ZIP
+alterado. La regresión pasó 44 pruebas/164 aserciones; Pint y PHPStan pasan.
+Reportes: `quality-results/it3-cut14.xml`, `it3-cut14-lab.xml`.
+
+Este corte verifica el ciclo del dominio mediante el harness LAB. CollectorAdapter,
+routing Web, controles, cierre, nuevo intento y Playwright todavía están pendientes.

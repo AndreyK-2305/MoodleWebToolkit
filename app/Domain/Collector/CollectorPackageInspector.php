@@ -7,6 +7,7 @@ use App\Domain\Tools\DeployToolDistribution;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Execution;
+use App\Models\ExecutionRuntimeConfiguration;
 use App\Models\ToolDistribution;
 use Illuminate\Support\Str;
 use Throwable;
@@ -73,10 +74,17 @@ final class CollectorPackageInspector
                 throw new ToolOperationBlocked('El manifiesto falta o excede los límites de lectura.');
             }
             $metadata = $this->metadata->recognize($manifest);
+            $binding = $execution->toolBinding;
             $configuration = $execution->project->configuration;
-            if ($this->configurations->selected($configuration)) {
+            $profile = null;
+            if ($binding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY) {
+                $runtime = ExecutionRuntimeConfiguration::query()->whereKey($binding->runtime_configuration_id)->firstOrFail();
+                $profile = app(CollectorRuntimeConfiguration::class)->verify($execution, $runtime)['profile'];
+            } elseif ($this->configurations->selected($configuration)) {
                 $settings = $this->configurations->settings($configuration);
                 $profile = $this->profiles->get($settings['profile_id']);
+            }
+            if ($profile !== null) {
                 if ($metadata['source_id'] !== $profile['source_id']) {
                     throw new ToolOperationBlocked('El paquete no corresponde al origen aprobado del proyecto.');
                 }
