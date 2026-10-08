@@ -1,0 +1,81 @@
+# Explicit opt-in overlay: docker compose -f compose.quality.yaml -f compose.collector-lab.yaml
+x-lab-environment: &lab-environment
+    TOOL_RECOLECTOR_742_ENABLED: 'true'
+    TOOL_LOCAL_RUNNER_ENABLED: 'true'
+    COLLECTOR_LAB_SYNTHETIC_PROFILE: 'true'
+    TOOL_RUNNER_HOST_ID: moodle-tool-runner
+
+x-lab-volumes: &lab-volumes
+    - lab_source:/opt/moodle-lab:ro
+    - lab_data:/opt/moodle-lab/data
+    - lab_references:/run/secrets/moodle-toolkit-lab:ro
+
+services:
+    lab-init:
+        image: moodle-toolkit-quality:local
+        user: root
+        volumes:
+            - lab_source:/opt/moodle-lab
+            - lab_data:/opt/moodle-lab/data
+            - lab_references:/run/secrets/moodle-toolkit-lab
+            - lab_database_reference:/run/secrets/moodle-lab-database
+        command: [php, docker/collector-lab/bootstrap-references.php]
+    moodle-lab-db:
+        image: postgres:17-alpine
+        environment:
+            POSTGRES_DB: moodle_lab
+            POSTGRES_USER: moodle_lab
+            POSTGRES_PASSWORD_FILE: /run/secrets/moodle-lab-database/password
+        volumes:
+            - lab_database_reference:/run/secrets/moodle-lab-database:ro
+        tmpfs: [/var/lib/postgresql/data]
+        depends_on:
+            lab-init:
+                condition: service_completed_successfully
+        healthcheck:
+            test: [CMD-SHELL, 'pg_isready -U moodle_lab -d moodle_lab']
+            interval: 2s
+            timeout: 5s
+            retries: 30
+    moodle-lab-fixture:
+        image: moodle-toolkit-quality:local
+        user: www-data
+        environment:
+            PHP_INI_SCAN_DIR: /opt/collector-php/conf.d
+        volumes: *lab-volumes
+        command: [/opt/collector-php/bin/php, -c, /opt/collector-php/php.ini, docker/collector-lab/prepare-fixture.php]
+        depends_on:
+            moodle-lab-db:
+                condition: service_healthy
+    app:
+        environment: *lab-environment
+        volumes: *lab-volumes
+        depends_on:
+            moodle-lab-fixture:
+                condition: service_completed_successfully
+    queue-worker:
+        environment: *lab-environment
+        volumes: *lab-volumes
+    tool-runner:
+        hostname: moodle-tool-runner
+        environment: *lab-environment
+        volumes: *lab-volumes
+        mem_limit: 2g
+        cpus: 2.0
+    scheduler:
+        environment: *lab-environment
+        volumes: *lab-volumes
+    reverb:
+        environment: *lab-environment
+        volumes: *lab-volumes
+    vite:
+        environment: *lab-environment
+        volumes: *lab-volumes
+    playwright:
+        environment: *lab-environment
+
+volumes:
+    lab_source:
+    lab_data:
+    lab_references:
+    lab_database_reference:

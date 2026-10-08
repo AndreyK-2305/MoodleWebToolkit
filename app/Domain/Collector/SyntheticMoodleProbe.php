@@ -42,7 +42,7 @@ class SyntheticMoodleProbe
             }
             $courses = $this->count($pdo, 'SELECT COUNT(*) FROM '.$prefix.'course WHERE id > 1');
             $users = $this->count($pdo, 'SELECT COUNT(*) FROM '.$prefix.'user WHERE deleted = 0');
-            $oauth = $this->count($pdo, "SELECT COUNT(*) FROM {$prefix}oauth2_issuer WHERE baseurl = 'http://oauth-lab.test'");
+            $oauth = $this->count($pdo, "SELECT COUNT(*) FROM {$prefix}oauth2_issuer WHERE baseurl = 'https://oauth-lab.test'");
             if ($courses < 1 || $courses > 3 || $users > 15 || $oauth < 1) {
                 throw new RuntimeException('El laboratorio requiere 1–3 cursos, pocos usuarios y OAuth sintético.');
             }

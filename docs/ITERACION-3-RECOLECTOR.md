@@ -203,8 +203,40 @@ Reportes: `quality-results/it3-cut8.xml`, `quality-results/it3-cut8-runner.xml`.
 
 ## Trabajo restante de integración
 
+## Corte 9 — Moodle sintético y exportación real
+
+El overlay optativo `compose.collector-lab.yaml` prepara Moodle 4.5.10 en
+volúmenes exclusivos: dos cursos, tres usuarios sintéticos más admin/guest,
+dos páginas, dos carpetas con archivos pequeños, temas Boost/Classic y OAuth
+sintético HTTPS. PostgreSQL usa tmpfs. La identidad del fixture se fija solo
+después de terminar la semilla; una instalación incompleta no se considera lista.
+
+El inicializador genera localmente la referencia privada versionada y una copia
+separada para PostgreSQL, ambas 0600 y con el UID de su consumidor. No se
+transportan valores mediante argv ni archivos del host. La configuración Moodle
+se materializa durante la instalación y se retira en finally. El config.php público
+del código sintético es un guard sin parámetros de conexión: satisface los requires
+internos de plugins solo después de cargar la configuración CLI efímera.
+
+El perfil se instaló desde volúmenes nuevos mediante Docker Compose conectado
+al API compatible de Podman 5.8.2. Ambos inicializadores finalizaron con exit=0;
+se observaron dos cursos, cinco cuentas, dos recursos por tipo y un issuer OAuth.
+Docker Desktop continúa sin motor disponible; las puertas finales también deben
+ejecutarse en el CI Docker de la rama.
+
+La suite LAB explícita ejecuta PHP 8.3 y la copia verificada del Recolector,
+no BaseLine. Pasó 1 prueba con 37 aserciones: ZIP auditado, dos MBZ, producer
+7.4.2-linux, capability theme_inventory=1.0, SHA-256 y limpieza privada.
+La regresión del corte pasó 25 pruebas/126 aserciones; Pint/PHPStan completos,
+Compose config y build de imagen/producción pasan.
+Reportes: `quality-results/it3-cut9-lab.xml`, `it3-cut9.xml`,
+`it3-cut9-fixture.json`. La suite `tests/Laboratory` requiere flags y origen
+sintético explícitos; la suite Feature ordinaria conserva Fake predeterminado.
+
+## Trabajo restante de integración Web
+
 Iteración abierta. CollectorAdapter,
-observación, validación de paquetes, SourcePackage, Moodle sintético y Playwright
+observación durable, registro validado de SourcePackage y Playwright
 COLLECT LAB permanecen pendientes. No se declara recolección real ni cierre.
 Fake sigue predeterminado y las herramientas reales permanecen cerradas.
 

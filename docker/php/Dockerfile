@@ -70,6 +70,7 @@ COPY --from=collector-php /usr/local/bin/php /opt/collector-php/bin/php
 COPY --from=collector-php /usr/local/lib/php/extensions /opt/collector-php/extensions
 COPY --from=collector-php /usr/local/etc/php/conf.d /opt/collector-php/conf.d
 COPY --from=synthetic-moodle-code /moodle /opt/moodle-lab/code
+COPY docker/collector-lab/moodle-config.php /opt/moodle-lab/code/config.php
 RUN printf 'extension_dir=/opt/collector-php/extensions/no-debug-non-zts-20230831\nmax_input_vars=5000\nmemory_limit=512M\n' > /opt/collector-php/php.ini \
     && PHP_INI_SCAN_DIR=/opt/collector-php/conf.d /opt/collector-php/bin/php -c /opt/collector-php/php.ini -r 'exit(PHP_VERSION_ID >= 80300 && PHP_VERSION_ID < 80400 && extension_loaded("gd") && extension_loaded("pgsql") && extension_loaded("zip") ? 0 : 1);'
 
