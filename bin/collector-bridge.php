@@ -8,6 +8,7 @@ $root = dirname(__DIR__);
 require $root.'/app/Domain/Collector/Contracts/SecretProvider.php';
 require $root.'/app/Domain/Collector/LabFileSecretProvider.php';
 require $root.'/app/Domain/Collector/MoodleConfigurationMaterializer.php';
+require $root.'/app/Domain/Collector/CollectorSourceEvidence.php';
 require $root.'/app/Domain/Collector/CollectorBridge.php';
 
 if (PHP_OS_FAMILY !== 'Linux' || PHP_VERSION_ID < 80300 || PHP_VERSION_ID >= 80400 || count($argv) !== 4) {

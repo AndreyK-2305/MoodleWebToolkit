@@ -73,6 +73,42 @@ class CollectorBridgeTest extends DomainTestCase
         app(RegisteredCommandRegistry::class)->resolve(CollectorRegisteredCommand::KEY);
     }
 
+    public function test_bridge_refuses_writable_source_before_materializing_credentials_or_exporting(): void
+    {
+        $this->seed(ToolCatalogSeeder::class);
+        $actor = $this->user(UserRole::ADMIN);
+        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Protected source boundary', 'type' => 'COLLECT']);
+        $project = app(CollectorConfiguration::class)->save($project, $actor, ['profile_id' => 'bridge-test', 'workers' => 1,
+            'package_name' => 'bridge-test', 'capacity_bytes' => 33554432, 'safety_margin_percent' => 20]);
+        $execution = $this->execution($project);
+        app(ApproveExecutionCapacity::class)->approve($execution, 33554432, 20, $actor);
+        $distribution = ToolDistribution::query()->where('key', 'moodle-recolector-7.4.2-linux-tree')->sole();
+        $runtime = app(CollectorRuntimeConfiguration::class)->approve($execution, $project->configuration, $distribution, $actor);
+        app(DeployToolDistribution::class)->deploy($execution, $distribution);
+        $material = bin2hex(random_bytes(24));
+        file_put_contents($this->root.'/references/bridge-test-db.1', $material);
+        chmod($this->root.'/references/bridge-test-db.1', 0600);
+        file_put_contents($this->root.'/code/version.php', 'private-source-content');
+        $this->assertTrue(is_writable($this->root.'/code'));
+        $operation = (string) Str::uuid();
+        $process = new Process(['/usr/bin/setsid', (string) config('collector.php_binary'), '-c', (string) config('collector.php_ini'),
+            base_path('bin/collector-bridge.php'), $project->uuid, $execution->uuid, $runtime->content_sha256], base_path(), [
+                'PHP_INI_SCAN_DIR' => (string) config('collector.php_scan_dir'), 'COLLECTOR_WORKSPACE_ROOT' => $this->root.'/workspaces',
+                'COLLECTOR_REFERENCE_ROOT' => $this->root.'/references', 'MOODLE_OPERATION_ID' => $operation,
+            ], timeout: 10);
+        $this->assertSame(1, $process->run());
+        $signal = json_decode(trim($process->getOutput()), true, 16, JSON_THROW_ON_ERROR);
+        $this->assertSame('error', $signal['type']);
+        $this->assertSame($operation, $signal['operation_uuid']);
+        $this->assertTrue($process->getErrorOutput() === '', 'The bridge must not produce stderr.');
+        foreach ([$this->root, $material, 'private-source-content'] as $private) {
+            $this->assertFalse(str_contains($process->getOutput(), $private), 'The bridge output exposed private material.');
+        }
+        $this->assertFileDoesNotExist(app(ExecutionWorkspaceManager::class)->resolve($execution, 'input', 'moodle-runtime.php'));
+        $this->assertSame([], glob(app(ExecutionWorkspaceManager::class)->resolve($execution, 'output').'/*'));
+        $this->assertSame(0, $execution->artifacts()->count());
+    }
+
     public function test_standalone_bridge_refuses_changed_runtime_and_copied_distribution_before_reading_reference(): void
     {
         $this->seed(ToolCatalogSeeder::class);
@@ -109,7 +145,7 @@ class CollectorBridgeTest extends DomainTestCase
             $this->assertSame('error', $signal['type']);
             $this->assertSame($operation, $signal['operation_uuid']);
             $this->assertSame(1, $signal['sequence']);
-            $this->assertStringNotContainsString($material, $process->getOutput().$process->getErrorOutput());
+            $this->assertFalse(str_contains($process->getOutput().$process->getErrorOutput(), $material), 'The bridge output exposed the private credential.');
             $this->assertFileDoesNotExist(app(ExecutionWorkspaceManager::class)->resolve($execution, 'input', 'moodle-runtime.php'));
             $this->assertSame([], glob(app(ExecutionWorkspaceManager::class)->resolve($execution, 'output').'/*'));
         }

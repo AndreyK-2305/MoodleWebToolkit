@@ -141,7 +141,13 @@ final class CollectorWorkflow
                     if (! is_string($hash) || ! is_int($bytes)) {
                         throw new ToolOperationBlocked('Falta un paquete fuente verificable.');
                     }
-                    $snapshot = $this->inspector->inspect($execution, $binding->distribution, $path, $hash, $bytes);
+                    // The bridge measured code before export and after its package audit.
+                    // Group/supervisor termination is reconciled separately above; no
+                    // unmeasured data or database immutability is inferred from either.
+                    $sourceAccess = $this->sourceAccess($execution);
+                    $snapshot = [...$this->inspector->inspect($execution, $binding->distribution, $path, $hash, $bytes),
+                        'source_access' => $sourceAccess,
+                        'terminal_reconciliation' => 'VERIFIED_PROCESS_GROUP_AND_SUPERVISOR_TERMINATED'];
                     if (($snapshot['producer_version'] ?? null) !== '7.4.2-linux') {
                         throw new ToolOperationBlocked('Las nuevas recolecciones requieren productor 7.4.2.');
                     }
@@ -266,6 +272,7 @@ final class CollectorWorkflow
             $inventory = json_decode((string) $zip->getFromName('inventario-origen.json', 1048576), true, 64, JSON_THROW_ON_ERROR);
             $visual = json_decode($this->smallOutput($execution, 'visual-inventory.json', 1048576), true, 64, JSON_THROW_ON_ERROR);
             $validation = json_decode($this->smallOutput($execution, 'validation.json', 65536), true, 32, JSON_THROW_ON_ERROR);
+            $sourceAccess = $this->sourceAccess($execution);
             $sidecar = $this->smallOutput($execution, 'source-package.zip.sha256', 256);
             if (! is_array($visual) || ! is_array($inventory) || ($visual['schema_version'] ?? null) !== 'collector-visual-inventory.v1'
                 || ($visual['themes'] ?? null) !== ($inventory['themes'] ?? null) || ($visual['theme_assignments'] ?? null) !== ($inventory['theme_assignments'] ?? null)
@@ -274,8 +281,11 @@ final class CollectorWorkflow
                 || ($validation['validator_version'] ?? null) !== '7.4.2-linux'
                 || ($validation['manifest_sha256'] ?? null) !== $audit->snapshot['manifest_sha256']
                 || ($validation['package_bytes'] ?? null) !== $audit->package_bytes || ($validation['result'] ?? null) !== 'VALID'
-                || ($validation['operation_uuid'] ?? null) !== $operation->operation_uuid || ($validation['source_write'] ?? null) !== false
-                || ($validation['destination_write'] ?? null) !== false
+                || ($validation['operation_uuid'] ?? null) !== $operation->operation_uuid
+                // PostgreSQL JSON objects may reorder keys; values are strictly
+                // typed by the closed source-access contract before comparison.
+                || $sourceAccess != ($audit->snapshot['source_access'] ?? null)
+                || ($audit->snapshot['terminal_reconciliation'] ?? null) !== 'VERIFIED_PROCESS_GROUP_AND_SUPERVISOR_TERMINATED'
                 || preg_match('/^'.preg_quote($audit->package_sha256, '/').'\s+(?:\*| )?source-package\.zip\s*$/D', trim($sidecar)) !== 1) {
                 throw new ToolOperationBlocked('La evidencia visual, de validación o sidecar no corresponde al paquete.');
             }
@@ -285,6 +295,32 @@ final class CollectorWorkflow
 
         return ['source-package.zip' => ['collector_audit' => $audit->snapshot,
             'manifest_sha256' => $audit->snapshot['manifest_sha256'], 'collector_audit_id' => $audit->id]];
+    }
+
+    /** @return array<string, mixed> */
+    private function sourceAccess(Execution $execution): array
+    {
+        $validation = json_decode($this->smallOutput($execution, 'validation.json', 65536), true, 32, JSON_THROW_ON_ERROR);
+        if (! is_array($validation) || array_diff(array_keys($validation), ['schema_version', 'result', 'package_sha256', 'package_bytes',
+            'manifest_sha256', 'validator_version', 'operation_uuid', 'runtime_sha256', 'counts', 'warnings_count', 'source_access', 'producer_write_declarations']) !== []
+            || ! is_array($validation['source_access'] ?? null)
+            || ($validation['producer_write_declarations'] ?? null) !== ['source_write_performed' => 'DECLARED_NOT_VERIFIED',
+                'destination_write_performed' => 'DECLARED_NOT_VERIFIED']) {
+            throw new ToolOperationBlocked('Falta evidencia medida y explícita de acceso al origen.');
+        }
+        try {
+            $binding = $this->binding($execution);
+            $runtime = ExecutionRuntimeConfiguration::query()->whereKey($binding->runtime_configuration_id)->firstOrFail();
+            $this->runtime->verify($execution, $runtime);
+            if (($validation['runtime_sha256'] ?? null) !== $runtime->content_sha256) {
+                throw new \RuntimeException('Source evidence belongs to a different approved runtime.');
+            }
+            (new CollectorSourceEvidence)->validate($validation['source_access']);
+        } catch (\RuntimeException) {
+            throw new ToolOperationBlocked('La evidencia de acceso al origen no cumple el contrato protegido.');
+        }
+
+        return $validation['source_access'];
     }
 
     private function outputPath(Execution $execution, string $name, int $maximumBytes): string

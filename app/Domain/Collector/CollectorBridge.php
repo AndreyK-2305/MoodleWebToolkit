@@ -18,6 +18,8 @@ final class CollectorBridge
 
     private string $operationUuid = '';
 
+    private string $runtimeHash = '';
+
     public function run(string $root, string $referenceRoot, string $projectUuid, string $executionUuid, string $runtimeHash, string $operationUuid): int
     {
         $this->operationUuid = preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/D', $operationUuid) === 1 ? $operationUuid : '';
@@ -41,6 +43,7 @@ final class CollectorBridge
             if (! hash_equals($runtimeHash, hash('sha256', $content))) {
                 throw new RuntimeException('Runtime changed.');
             }
+            $this->runtimeHash = $runtimeHash;
             $runtime = json_decode($content, true, 64, JSON_THROW_ON_ERROR);
             if (! is_array($runtime) || ($runtime['schema_version'] ?? null) !== 'collector-runtime.v1'
                 || ($runtime['project_uuid'] ?? null) !== $projectUuid || ($runtime['execution_uuid'] ?? null) !== $executionUuid
@@ -82,6 +85,9 @@ final class CollectorBridge
                 || file_exists($workspace.'/state/collector-work')) {
                 throw new RuntimeException('A new attempt requires an unused workspace.');
             }
+            $sourceEvidence = new CollectorSourceEvidence;
+            $before = $sourceEvidence->fingerprint($profile['code']);
+            $sourceEvidence->assertProtected($before);
             mkdir($workspace.'/state/collector-work', 0700);
             $quota = (int) ceil($settings['capacity_bytes'] * (100 + $settings['safety_margin_percent']) / 100);
             $provider = new LabFileSecretProvider($referenceRoot);
@@ -94,7 +100,7 @@ final class CollectorBridge
                 $this->cancelled = true;
             });
             /** @var array{name: string, root: string, code: string, data: string, base_url: string, db_host: string, db_port: int, db_name: string, db_user: string, db_prefix: string, credential_reference: string, credential_version: string, source_id: string, moodle_series: string} $profile */
-            $result = $materializer->consume($workspace.'/input/moodle-runtime.php', $profile, function (string $config) use ($workspace, $tool, $profile, $settings, $quota): int {
+            $result = $materializer->consume($workspace.'/input/moodle-runtime.php', $profile, function (string $config) use ($workspace, $tool, $profile, $settings, $quota, $sourceEvidence, $before): int {
                 $this->emit('started');
                 $work = $workspace.'/state/collector-work';
                 $package = $workspace.'/output/source-package.zip';
@@ -117,7 +123,8 @@ final class CollectorBridge
                 if ($audit !== 0 || ! is_array($report) || ($report['result'] ?? null) !== 'ok' || ($report['failures'] ?? null) !== []) {
                     return 1;
                 }
-                $this->publishEvidence($workspace, $package, $report);
+                $sourceAccess = $sourceEvidence->compare($before, $sourceEvidence->fingerprint($profile['code']));
+                $this->publishEvidence($workspace, $package, $report, $sourceAccess);
                 $this->emit('package_validated');
 
                 return 0;
@@ -246,8 +253,11 @@ final class CollectorBridge
         return $exit >= 0 ? $exit : $closed;
     }
 
-    /** @param array<string, mixed> $report */
-    private function publishEvidence(string $workspace, string $package, array $report): void
+    /**
+     * @param  array<string, mixed>  $report
+     * @param  array<string, mixed>  $sourceAccess
+     */
+    private function publishEvidence(string $workspace, string $package, array $report, array $sourceAccess): void
     {
         $zip = new ZipArchive;
         if ($zip->open($package, ZipArchive::RDONLY) !== true) {
@@ -277,9 +287,12 @@ final class CollectorBridge
                 'package_sha256' => hash_file('sha256', $package), 'package_bytes' => filesize($package),
                 'manifest_sha256' => hash('sha256', (string) $zip->getFromName('manifest.json')),
                 'validator_version' => '7.4.2-linux', 'operation_uuid' => $this->operationUuid,
+                'runtime_sha256' => $this->runtimeHash,
                 'counts' => array_filter(is_array($report['counts'] ?? null) ? $report['counts'] : [], 'is_int'),
                 'warnings_count' => count(is_array($report['warnings'] ?? null) ? $report['warnings'] : []),
-                'source_write' => false, 'destination_write' => false];
+                'source_access' => $sourceAccess,
+                'producer_write_declarations' => ['source_write_performed' => 'DECLARED_NOT_VERIFIED',
+                    'destination_write_performed' => 'DECLARED_NOT_VERIFIED']];
             $this->write($workspace.'/output/validation.json', json_encode($evidence, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
         } finally {
             $zip->close();

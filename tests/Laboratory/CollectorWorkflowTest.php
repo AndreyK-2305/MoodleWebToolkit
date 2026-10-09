@@ -86,6 +86,10 @@ class CollectorWorkflowTest extends TestCase
             $this->assertDatabaseCount('artifacts', 6);
             $this->assertDatabaseCount('source_packages', 1);
             $audit = CollectorPackageAudit::query()->sole();
+            $this->assertSame('VERIFIED_UNCHANGED', $audit->snapshot['source_access']['code']['result']);
+            $this->assertSame('TEMPORARY_ALLOWED', $audit->snapshot['source_access']['source_data_write']);
+            $this->assertSame('NOT_VERIFIED', $audit->snapshot['source_access']['source_database_mutation']);
+            $this->assertSame('VERIFIED_PROCESS_GROUP_AND_SUPERVISOR_TERMINATED', $audit->snapshot['terminal_reconciliation']);
             $beforeIds = $execution->artifacts()->orderBy('id')->pluck('id')->all();
             $again = app(LocalToolExecutionProvider::class)->collectArtifacts($operation->fresh(), ['source-package.zip' => [
                 'collector_audit' => $audit->snapshot, 'manifest_sha256' => $audit->snapshot['manifest_sha256'], 'collector_audit_id' => $audit->id]]);
@@ -142,6 +146,44 @@ class CollectorWorkflowTest extends TestCase
             } finally {
                 file_put_contents($manifestPath, $original);
                 chmod($manifestPath, 0400);
+            }
+            $validationArtifact = $execution->artifacts()->where('metadata->source_relative_path', 'validation.json')->sole();
+            $validationPath = Storage::disk($validationArtifact->disk)->path($validationArtifact->path);
+            $validationOriginal = file_get_contents($validationPath);
+            chmod($validationPath, 0600);
+            try {
+                $unsupported = json_decode($validationOriginal, true, 64, JSON_THROW_ON_ERROR);
+                $unsupported['source_write'] = false;
+                file_put_contents($validationPath, json_encode($unsupported, JSON_THROW_ON_ERROR));
+                try {
+                    $workflow->assertFinalizable($execution->fresh());
+                    $this->fail('Unmeasured favorable source evidence authorized FINALIZE.');
+                } catch (ToolOperationBlocked) {
+                    $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+                    $this->assertSame(0, $execution->commands()->where('command_type', 'FINALIZE')->count());
+                    $this->assertDatabaseCount('artifacts', 6);
+                    $this->assertDatabaseCount('source_packages', 1);
+                }
+            } finally {
+                file_put_contents($validationPath, $validationOriginal);
+                chmod($validationPath, 0400);
+            }
+            $runtimePath = app(ExecutionWorkspaceManager::class)->resolve($execution, 'state', $runtime->relative_path);
+            $runtimeOriginal = file_get_contents($runtimePath);
+            try {
+                $substituted = json_decode($runtimeOriginal, true, 64, JSON_THROW_ON_ERROR);
+                $substituted['profile']['code'] = '/unapproved/synthetic/code';
+                file_put_contents($runtimePath, json_encode($substituted, JSON_THROW_ON_ERROR));
+                try {
+                    $workflow->assertFinalizable($execution->fresh());
+                    $this->fail('Replacing the approved code scope authorized FINALIZE.');
+                } catch (ToolOperationBlocked) {
+                    $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+                    $this->assertSame(0, $execution->commands()->where('command_type', 'FINALIZE')->count());
+                    $this->assertDatabaseCount('artifacts', 6);
+                }
+            } finally {
+                file_put_contents($runtimePath, $runtimeOriginal);
             }
             $this->postJson(route('projects.executions.finalize', [$project, $execution]), [], ['Idempotency-Key' => 'lab-real-finalize'])->assertAccepted();
             $finalize = $execution->commands()->where('command_type', 'FINALIZE')->sole();

@@ -5,6 +5,7 @@ namespace Tests\Laboratory;
 use App\Domain\Collector\CollectorConfiguration;
 use App\Domain\Collector\CollectorPackageInspector;
 use App\Domain\Collector\CollectorRuntimeConfiguration;
+use App\Domain\Collector\CollectorSourceEvidence;
 use App\Domain\Collector\Contracts\SecretProvider;
 use App\Domain\Collector\LabMoodleProfiles;
 use App\Domain\Collector\SyntheticMoodleProbe;
@@ -58,7 +59,7 @@ class CollectorExportTest extends DomainTestCase
                     'COLLECTOR_REFERENCE_ROOT' => (string) config('collector.secret_root'), 'MOODLE_OPERATION_ID' => $operation,
                 ], timeout: 180);
             $this->assertSame(0, $process->run(), 'The copied collector must export and validate the synthetic fixture.');
-            $this->assertSame('', $process->getErrorOutput());
+            $this->assertTrue($process->getErrorOutput() === '', 'The bridge must not produce stderr.');
             $signals = array_map(fn (string $line): array => json_decode($line, true, 16, JSON_THROW_ON_ERROR),
                 explode("\n", trim($process->getOutput())));
             $this->assertSame('started', $signals[0]['type']);
@@ -79,6 +80,22 @@ class CollectorExportTest extends DomainTestCase
             $audit = json_decode(file_get_contents($output.'/validation.json'), true, 64, JSON_THROW_ON_ERROR);
             $this->assertSame('VALID', $audit['result']);
             $this->assertSame(hash_file('sha256', $output.'/source-package.zip'), $audit['package_sha256']);
+            $this->assertSame($runtime->content_sha256, $audit['runtime_sha256']);
+            $this->assertArrayNotHasKey('source_write', $audit);
+            $this->assertArrayNotHasKey('destination_write', $audit);
+            (new CollectorSourceEvidence)->validate($audit['source_access']);
+            $this->assertSame('PROHIBITED_AND_ENFORCED', $audit['source_access']['source_code_write']);
+            $this->assertSame('VERIFIED_UNCHANGED', $audit['source_access']['code']['result']);
+            $this->assertSame('READ_ONLY_MOUNT_OBSERVED_ALL_ENTRIES_AND_EFFECTIVE_WRITE_ACCESS_DENIED', $audit['source_access']['code']['enforcement']);
+            $this->assertSame($audit['source_access']['code']['before_sha256'], $audit['source_access']['code']['after_sha256']);
+            $this->assertSame('TEMPORARY_ALLOWED', $audit['source_access']['source_data_write']);
+            $this->assertSame('NOT_VERIFIED', $audit['source_access']['data']['cleanup']);
+            $this->assertSame('NOT_VERIFIED', $audit['source_access']['source_database_mutation']);
+            $this->assertSame('NOT_APPLICABLE', $audit['source_access']['destination_write']);
+            $this->assertSame('DECLARED_NOT_VERIFIED', $audit['producer_write_declarations']['source_write_performed']);
+            foreach ([$profile['root'], $profile['code'], $profile['data'], $profile['credential_reference']] as $private) {
+                $this->assertFalse(str_contains(json_encode($audit, JSON_THROW_ON_ERROR), $private), 'Source evidence exposed private scope metadata.');
+            }
             $zip = new ZipArchive;
             $this->assertTrue($zip->open($output.'/source-package.zip', ZipArchive::RDONLY));
             $mbz = 0;
@@ -157,8 +174,8 @@ class CollectorExportTest extends DomainTestCase
                     app(CollectorPackageInspector::class)->inspect($execution, $distribution, $leak, hash_file('sha256', $leak), filesize($leak));
                     $this->fail('Private material split across read boundaries must be rejected.');
                 } catch (ToolOperationBlocked $error) {
-                    $this->assertStringNotContainsString($testingValue, $error->getMessage());
-                    $this->assertStringContainsString('contenido privado', $error->getPrevious()->getMessage());
+                    $this->assertFalse(str_contains($error->getMessage(), $testingValue), 'The rejection exposed private material.');
+                    $this->assertTrue($error->getPrevious() !== null && str_contains($error->getPrevious()->getMessage(), 'contenido privado'), 'Private content must produce the expected rejection.');
                 }
             } finally {
                 app()->instance(SecretProvider::class, $actualSecrets);

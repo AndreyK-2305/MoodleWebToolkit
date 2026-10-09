@@ -169,6 +169,20 @@ export async function request(
 export function executionPath(project: string, execution: string) {
     return `/projects/${project}/executions/${execution}`;
 }
+export async function expireAuthorization(page: Page) {
+    const response = await request(
+        page,
+        '/__quality/expire-action-authorization',
+    );
+    expect(response.status()).toBe(204);
+    expect(await response.body()).toHaveLength(0);
+    // The API request shares this Page's context cookies; observation remains
+    // authenticated after StartSession has persisted the expired permission.
+    const observation = await page.request.get(page.url(), {
+        maxRedirects: 0,
+    });
+    expect(observation.status()).toBe(200);
+}
 export async function start(page: Page, project: Ready) {
     await page.goto(`/projects/${project.uuid}`);
     await page

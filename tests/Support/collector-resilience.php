@@ -30,7 +30,109 @@ try {
     }
     $action = $argv[1] ?? '';
     $inspector = app(LocalProcessInspector::class);
-    if ($action === 'prepare') {
+    if ($action === 'scan-reports') {
+        $stage = 'REPORT_SCAN';
+        if (count($argv) !== 2) {
+            throw new RuntimeException;
+        }
+        $directory = '/tmp/collector-report-scan';
+        $names = ['collector-lab-phpunit.xml', 'collector-lab-playwright.xml'];
+        $identity = static fn (array $stat): array => array_intersect_key($stat, array_flip(['dev', 'ino', 'mode', 'nlink', 'size', 'mtime', 'ctime']));
+        $directoryStat = @lstat($directory);
+        if ($directoryStat === false || is_link($directory) || realpath($directory) !== $directory
+            || ($directoryStat['mode'] & 0170000) !== 0040000 || ($directoryStat['mode'] & 0777) !== 0700
+            || $directoryStat['uid'] !== posix_geteuid()) {
+            throw new RuntimeException;
+        }
+        $bytes = 0;
+        try {
+            $entries = @scandir($directory);
+            if ($entries === false || array_values(array_diff($entries, ['.', '..'], $names)) !== []
+                || array_diff($names, $entries) !== []) {
+                throw new RuntimeException;
+            }
+            app(SecretProvider::class)->consume('moodle-lab-db', '1', static function (string $secret) use ($directory, $names, $identity, &$bytes): void {
+                $representations = [$secret,
+                    substr(json_encode($secret, JSON_THROW_ON_ERROR), 1, -1),
+                    substr(json_encode($secret, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), 1, -1)];
+                $needles = $representations;
+                foreach ($representations as $representation) {
+                    $needles[] = htmlspecialchars($representation, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8');
+                    $needles[] = htmlspecialchars($representation, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                }
+                $needles = array_values(array_unique($needles));
+                $overlap = max(1, max(array_map('strlen', $needles)) - 1);
+                foreach ($names as $name) {
+                    $path = $directory.'/'.$name;
+                    $stat = @lstat($path);
+                    if ($stat === false || is_link($path) || ($stat['mode'] & 0170000) !== 0100000 || $stat['nlink'] !== 1
+                        || $stat['size'] < 1 || $stat['size'] > 16777216) {
+                        throw new RuntimeException;
+                    }
+                    $stream = @fopen($path, 'rb');
+                    if ($stream === false) {
+                        throw new RuntimeException;
+                    }
+                    try {
+                        $opened = fstat($stream);
+                        if ($opened === false || $identity($opened) !== $identity($stat)) {
+                            throw new RuntimeException;
+                        }
+                        $tail = '';
+                        $read = 0;
+                        while (! feof($stream)) {
+                            $chunk = @fread($stream, 65536);
+                            if ($chunk === false || ($chunk === '' && ! feof($stream))) {
+                                throw new RuntimeException;
+                            }
+                            $window = $tail.$chunk;
+                            foreach ($needles as $needle) {
+                                if (str_contains($window, $needle)) {
+                                    throw new RuntimeException;
+                                }
+                            }
+                            $read += strlen($chunk);
+                            if ($read > 16777216) {
+                                throw new RuntimeException;
+                            }
+                            $tail = substr($window, -$overlap);
+                        }
+                        $closed = fstat($stream);
+                        clearstatcache(true, $path);
+                        $current = @lstat($path);
+                        if ($closed === false || $current === false || $read !== $stat['size']
+                            || $identity($closed) !== $identity($stat) || $identity($current) !== $identity($stat)) {
+                            throw new RuntimeException;
+                        }
+                        $bytes += $read;
+                    } finally {
+                        fclose($stream);
+                    }
+                }
+            });
+        } finally {
+            clearstatcache(true, $directory);
+            $currentDirectory = @lstat($directory);
+            if ($currentDirectory === false || is_link($directory) || realpath($directory) !== $directory
+                || $currentDirectory['dev'] !== $directoryStat['dev'] || $currentDirectory['ino'] !== $directoryStat['ino']
+                || ($currentDirectory['mode'] & 0170000) !== 0040000 || ($currentDirectory['mode'] & 0777) !== 0700
+                || $currentDirectory['uid'] !== posix_geteuid()) {
+                throw new RuntimeException;
+            }
+            foreach ($names as $name) {
+                $path = $directory.'/'.$name;
+                if (@lstat($path) !== false && ! @unlink($path)) {
+                    throw new RuntimeException;
+                }
+            }
+            if (! @rmdir($directory)) {
+                throw new RuntimeException;
+            }
+        }
+        $result = ['schema_version' => 'collector-report-hygiene.v1', 'result' => 'PASSED',
+            'method' => 'LAB_REAL_SECRET_RAW_XML_JSON_STREAMING_64K_WITH_OVERLAP', 'scope' => 'LAB_PHPUNIT_AND_PLAYWRIGHT_JUNIT',
+            'reports_scanned' => count($names), 'bytes_scanned' => $bytes, 'private_staging_removed' => true];
+    } elseif ($action === 'prepare') {
         $stage = 'PREPARE';
         $actor = User::factory()->create(['role' => UserRole::ADMIN]);
         $wizard = app(ProjectWizard::class);

@@ -100,7 +100,12 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: collector-lab-failure-${{ github.event.pull_request.head.sha || github.sha }}
-          path: quality-results/
+          # Cancellation can bypass PowerShell catch. Uninspected XML are
+          # published only by the success artifact after the real-secret scan.
+          path: |
+            quality-results/**
+            !quality-results/collector-lab-phpunit.xml
+            !quality-results/collector-lab-playwright.xml
           retention-days: 3
       - name: Preserve real integration validation with exact published SHA
         if: success()
@@ -115,6 +120,8 @@ jobs:
             quality-results/collector-lab-playwright.xml
             quality-results/collector-contracts.json
             quality-results/collector-resilience.json
+            quality-results/collector-report-hygiene.json
+            quality-results/collector-report-hygiene-contracts.json
           if-no-files-found: error
           retention-days: 30
       - name: Ensure isolated LAB stack is stopped even after interruption

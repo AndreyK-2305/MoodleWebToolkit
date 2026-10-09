@@ -11,7 +11,6 @@ use App\Jobs\RunExecutionUnit;
 use App\Models\Execution;
 use App\Models\Project;
 use App\Models\User;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
@@ -99,14 +98,6 @@ switch ($action) {
     case 'finalize':
         $execution = Execution::query()->where('uuid', $input['execution'])->sole();
         app(RequestExecutionFinalization::class)->request($execution, User::query()->where('email', 'admin@quality.test')->sole(), 'quality-finalize-'.Str::uuid());
-        break;
-    case 'expire':
-        $user = User::query()->where('email', ($input['user'] ?? 'admin').'@quality.test')->sole();
-        foreach (DB::table('sessions')->where('user_id', $user->id)->get() as $session) {
-            $payload = json_decode(base64_decode($session->payload), true, flags: JSON_THROW_ON_ERROR);
-            Arr::set($payload, 'auth.password_confirmed_at', now()->subHours(3)->timestamp);
-            DB::table('sessions')->where('id', $session->id)->update(['payload' => base64_encode(json_encode($payload, JSON_THROW_ON_ERROR))]);
-        }
         break;
     case 'revoke':
         $user = User::query()->where('email', $input['user'].'@quality.test')->sole();

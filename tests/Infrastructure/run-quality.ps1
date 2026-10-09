@@ -47,6 +47,7 @@ New-Item -ItemType Directory -Path quality-results -Force | Out-Null
 & ./tests/Infrastructure/verify-baseline-tracking.ps1
 & ./tests/Infrastructure/verify-baseline-integrity.ps1
 $validationWritten = $false
+$reportHygieneApproved = $false
 try {
     Invoke-QualityCompose config --quiet
     # Original development Compose is also a required gate.
@@ -124,6 +125,69 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'git diff --check del working tree falló.' }
     if ($CollectorLab) {
         Invoke-QualityCompose --profile e2e run --rm --no-deps playwright npm run test:e2e -- tests/E2E/collector-lab.spec.ts
+        $reportHygieneContractsOutput = @(& docker compose exec -T --user www-data tool-runner php tests/Support/collector-report-hygiene-contracts.php)
+        if ($LASTEXITCODE -ne 0) { throw 'Los contratos negativos de inspección de reportes LAB fallaron.' }
+        $reportHygieneContracts = ($reportHygieneContractsOutput -join [Environment]::NewLine) | ConvertFrom-Json
+        $reportHygieneContractFields = @('schema_version', 'result', 'method', 'cases', 'private_staging_removed')
+        if ($reportHygieneContracts -isnot [System.Management.Automation.PSCustomObject] -or
+            @($reportHygieneContracts.PSObject.Properties.Name).Count -ne $reportHygieneContractFields.Count -or
+            @($reportHygieneContracts.PSObject.Properties.Name | Where-Object { $_ -cnotin $reportHygieneContractFields }).Count -ne 0 -or
+            $reportHygieneContracts.schema_version -cne 'collector-report-hygiene-contracts.v1' -or
+            $reportHygieneContracts.result -cne 'PASSED' -or $reportHygieneContracts.method -cne 'REAL_LAB_SECRET_SCANNER_NEGATIVE_CONTRACTS_V1' -or
+            ($reportHygieneContracts.cases -isnot [int] -and $reportHygieneContracts.cases -isnot [long]) -or
+            $reportHygieneContracts.cases -ne 6 -or $reportHygieneContracts.private_staging_removed -isnot [bool] -or
+            -not $reportHygieneContracts.private_staging_removed) {
+            throw 'La evidencia de contratos negativos de reportes LAB está incompleta.'
+        }
+        $reportHygieneContracts | ConvertTo-Json | Set-Content quality-results/collector-report-hygiene-contracts.json
+        $reportScanPrepared = $false
+        $reportScanFailure = $null
+        try {
+            # The staging scope is fixed, private and newly created; no secret
+            # value crosses the CLI boundary or reaches the host process.
+            $prepareReportScan = 'umask(0077); $d="/tmp/collector-report-scan"; if (@lstat($d) !== false || !@mkdir($d, 0700)) { exit(1); }'
+            & docker compose exec -T --user www-data tool-runner php -r $prepareReportScan
+            if ($LASTEXITCODE -ne 0) { throw 'No se pudo preparar la inspección privada de reportes LAB.' }
+            $reportScanPrepared = $true
+            foreach ($reportName in @('collector-lab-phpunit.xml', 'collector-lab-playwright.xml')) {
+                Invoke-QualityCompose cp "quality-results/$reportName" "tool-runner:/tmp/collector-report-scan/$reportName"
+            }
+            $reportHygieneOutput = @(& docker compose exec -T --user www-data tool-runner php tests/Support/collector-resilience.php scan-reports)
+            if ($LASTEXITCODE -ne 0) { throw 'La inspección del secreto real en reportes JUnit/Playwright falló.' }
+            $reportHygiene = ($reportHygieneOutput -join [Environment]::NewLine) | ConvertFrom-Json
+            $reportHygieneFields = @('schema_version', 'result', 'method', 'scope', 'reports_scanned', 'bytes_scanned', 'private_staging_removed')
+            if ($reportHygiene -isnot [System.Management.Automation.PSCustomObject] -or
+                @($reportHygiene.PSObject.Properties.Name).Count -ne $reportHygieneFields.Count -or
+                @($reportHygiene.PSObject.Properties.Name | Where-Object { $_ -cnotin $reportHygieneFields }).Count -ne 0 -or
+                $reportHygiene.schema_version -cne 'collector-report-hygiene.v1' -or $reportHygiene.result -cne 'PASSED' -or
+                $reportHygiene.method -cne 'LAB_REAL_SECRET_RAW_XML_JSON_STREAMING_64K_WITH_OVERLAP' -or
+                $reportHygiene.scope -cne 'LAB_PHPUNIT_AND_PLAYWRIGHT_JUNIT' -or
+                ($reportHygiene.reports_scanned -isnot [int] -and $reportHygiene.reports_scanned -isnot [long]) -or
+                ($reportHygiene.bytes_scanned -isnot [int] -and $reportHygiene.bytes_scanned -isnot [long]) -or
+                $reportHygiene.reports_scanned -ne 2 -or $reportHygiene.bytes_scanned -lt 2 -or $reportHygiene.bytes_scanned -gt 33554432 -or
+                $reportHygiene.private_staging_removed -isnot [bool] -or -not $reportHygiene.private_staging_removed) {
+                throw 'La evidencia de higiene de reportes LAB está incompleta.'
+            }
+            $reportHygiene | ConvertTo-Json | Set-Content quality-results/collector-report-hygiene.json
+            $reportHygieneApproved = $true
+        } catch {
+            $reportScanFailure = $_
+            throw
+        } finally {
+            if ($reportScanPrepared) {
+                # Idempotent cleanup is limited to our exact owned 0700 scope
+                # and the two declared report basenames, including failed copies.
+                $cleanupReportScan = 'clearstatcache(); $d="/tmp/collector-report-scan"; $s=@lstat($d); if ($s === false) { exit(0); } if (is_link($d) || realpath($d) !== $d || ($s["mode"] & 0170000) !== 0040000 || ($s["mode"] & 0777) !== 0700 || $s["uid"] !== posix_geteuid()) { exit(1); } foreach (["collector-lab-phpunit.xml", "collector-lab-playwright.xml"] as $n) { $p=$d."/".$n; if (@lstat($p) !== false && !@unlink($p)) { exit(1); } } exit(@rmdir($d) ? 0 : 1);'
+                & docker compose exec -T --user www-data tool-runner php -r $cleanupReportScan
+                if ($LASTEXITCODE -ne 0) {
+                    if ($null -ne $reportScanFailure) {
+                        Write-Warning 'También falló la retirada de la inspección privada de reportes LAB.'
+                    } else {
+                        throw 'No se pudo retirar la inspección privada de reportes LAB.'
+                    }
+                }
+            }
+        }
     } else {
         Invoke-QualityCompose --profile e2e run --rm --no-deps playwright
     }
@@ -165,6 +229,8 @@ try {
         baseline_files = 423
         baseline_readonly_services = if ($CollectorLab) { 8 } else { 7 }
         collector_restart_proof = if ($CollectorLab) { 'collector-resilience.json' } else { $null }
+        collector_report_hygiene_proof = if ($CollectorLab -and $reportHygieneApproved) { 'collector-report-hygiene.json' } else { $null }
+        collector_report_hygiene_contracts_proof = if ($CollectorLab -and $reportHygieneApproved) { 'collector-report-hygiene-contracts.json' } else { $null }
         baseline_sha256 = 'd2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221'
         completed_at_utc = [DateTime]::UtcNow.ToString('o')
     }
@@ -172,7 +238,31 @@ try {
     $validationWritten = $true
     Write-Host 'Todas las puertas de calidad aprobaron.'
 } catch {
+    $qualityGateFailure = $_
     if ($CollectorLab) {
+        if (-not $reportHygieneApproved) {
+            # PHPUnit, formatting or Playwright can fail before scanning. Only
+            # an approved result from this invocation permits retaining the XML.
+            try {
+                [ordered] @{
+                    schema_version = 'collector-report-hygiene.v1'
+                    result = 'FAILED'
+                    reason = 'REPORT_SCAN_NOT_APPROVED'
+                    reports_expected = 2
+                } | ConvertTo-Json | Set-Content quality-results/collector-report-hygiene.json
+                foreach ($reportName in @('collector-lab-phpunit.xml', 'collector-lab-playwright.xml')) {
+                    $hostReportPath = Join-Path $root "quality-results/$reportName"
+                    if (Test-Path -LiteralPath $hostReportPath) {
+                        if ((Get-Item -LiteralPath $hostReportPath -Force).PSIsContainer) { throw 'Un reporte LAB no aprobado no es un archivo eliminable.' }
+                        Remove-Item -LiteralPath $hostReportPath -Force
+                    }
+                }
+            } catch {
+                # Preserve the original gate failure; CI also excludes these
+                # two XML from every failure or cancellation artifact.
+                Write-Warning 'No se pudo completar la retirada de reportes LAB no aprobados.'
+            }
+        }
         # The fixture emits only closed stage/error codes; raw Moodle output is discarded.
         & docker compose logs --no-log-prefix lab-init moodle-lab-fixture
         & docker compose cp moodle-lab-fixture:/tmp/toolkit-synthetic-fixture/diagnostic.json quality-results/collector-fixture-diagnostic.json
@@ -182,7 +272,7 @@ try {
     foreach ($id in $ids) {
         & docker inspect --format '{{.Name}} {{json .State.Health}}' $id
     }
-    throw
+    throw $qualityGateFailure
 } finally {
     # This project was proven absent before creation; never remove development volumes.
     & docker compose --profile e2e down --volumes --remove-orphans

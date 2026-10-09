@@ -9,20 +9,22 @@ Contiene el ancestro `d330fcc2e5c3cd2d24d1836977f47a1380e5a518` y la
 [CI de la base](https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/37813277514)
 aprobó. Este informe sustituye las notas provisionales de implementación.
 
-**Estado: implementada y entregada para revisión; aceptación de IT3 pendiente.**
-El recorrido real de navegador y la recuperación durante reinicios están
-acreditados en Moodle sintético. La última regresión general obtuvo 535 pruebas
-PHP aprobadas y 38 pruebas de navegador aprobadas, cuatro fallidas y dos casos
-LAB omitidos en esa puerta. A petición del usuario se detienen las baterías
-locales completas y se entrega el código en un PR borrador con estos pendientes
-visibles. No se declara IT3 aceptada ni CI verde sobre el SHA de entrega.
+**Estado: correcciones de revisión implementadas; puertas completas pendientes.**
+Se continúa sobre el [PR #9 borrador](https://github.com/AndreyK-2305/MoodleWebToolkit/pull/9),
+sin merge. La revisión del SHA `15870fdb6f92237addbc800238d0bf2ec329f4d8`
+obtuvo LAB SUCCESS y regresión general FAILURE: 41 casos de navegador aprobados,
+uno fallido y dos LAB omitidos. Los otros tres fallos locales anteriores aprobaron
+en esa CI. El fallo restante 423/202 se diagnosticó antes de corregirlo.
 
-Las puertas locales se identifican por separado: un resultado con working tree
-modificado es un candidato. La evidencia resumida y sus huellas se conservan en
+Las pruebas dirigidas de la corrección pasaron: 22 pruebas PHP/172 aserciones y
+tres ejecuciones aisladas del caso de más de 24 horas, un worker y `retries=0`.
+Estos resultados no sustituyen las puertas completas de un checkout limpio ni
+los dos jobs de CI del mismo SHA publicado. Los resultados anteriores conservan
+su carácter histórico en
 [`evidence/it3-review-validation.json`](evidence/it3-review-validation.json).
-El PR y el SHA de entrega se informan fuera de este commit para evitar una
-referencia circular. CI se ejecuta al abrir el PR y conserva resultados del
-checkout exacto; su resultado queda pendiente en esta entrega para revisión.
+La identidad definitiva procede de `head_sha` en ambos artifacts del
+[PR #9](https://github.com/AndreyK-2305/MoodleWebToolkit/pull/9/checks), evitando
+que este documento afirme validar un commit que cambia al escribir su propio SHA.
 
 El alcance es exclusivamente 3A–3H. Fake sigue siendo el modo predeterminado.
 `TOOL_RECOLECTOR_742_ENABLED` y `TOOL_LOCAL_RUNNER_ENABLED` siguen en `false` por
@@ -118,6 +120,9 @@ Los jobs reales se enrutan a `redis-tool-runs/tool-runs`.
 | Job Laravel           | Máximo 120 segundos; lanzamiento y observación separados |
 
 La política forma parte de la identidad/hash del comando. Cero es inválido.
+Los 20 GiB son exclusivamente el límite actual del laboratorio sintético; no son
+el límite productivo definitivo. Los paquetes institucionales de 53, 247 o
+245 GiB y la validación interna/AWS quedan fuera de esta iteración.
 El supervisor utiliza reloj monotónico; heartbeat no simula actividad de la
 herramienta. La ausencia de límite de pared conserva vigilancia de inactividad,
 recursos, capacidad y cancelación. Las pruebas de más de 24 horas usan reloj
@@ -184,6 +189,31 @@ traversal, enlaces inseguros, archivos especiales y archivos externos al workspa
 La captura repetida reutiliza la referencia propia verificada; no admite hardlinks
 ajenos como artefactos nuevos.
 
+### Evidencia de acceso al origen
+
+El bridge ya no publica el booleano fijo y ambiguo `source_write=false`.
+`collector-source-access.v1` define explícitamente cuatro ámbitos:
+
+| Ámbito        | Semántica y evidencia                                                                                                                                                                                                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Código Moodle | `PROHIBITED_AND_ENFORCED`: SHA-256 canónico de todos los archivos/directorios, tipo, permisos y contenido antes de exportar y después de exportar/auditar; igualdad verificada y montaje read-only observado para cada entrada, también ante mounts anidados, con escritura efectiva denegada. |
+| moodledata    | `TEMPORARY_ALLOWED`: el backup oficial necesita temporal, cache, locks y filepool. El resultado y la limpieza quedan `NOT_VERIFIED`; no se afirma inmutabilidad.                                                                                                                               |
+| Base Moodle   | `NOT_VERIFIED`: no existe observador de mutaciones SQL; no se declara `VERIFIED_NONE`.                                                                                                                                                                                                         |
+| Destino       | `NOT_APPLICABLE`: COLLECT no integra un destino.                                                                                                                                                                                                                                               |
+
+Se rechazan enlaces, hardlinks, archivos especiales, entradas ilegibles o
+cambiantes, código escribible, código alterado, evidencia incompleta y el booleano
+legacy. Solo salen hashes y conteos agregados, nunca rutas ni contenido Moodle.
+El intervalo medido termina después de auditar el paquete; no se atribuye una
+medición posterior ficticia al worker. Antes de registrar SourcePackage, el
+workflow verifica además que grupo y supervisor terminaron y liga la evidencia
+al runtime aprobado; FINALIZE vuelve a validar ese vínculo.
+
+El manifiesto original de la distribución declara `source_write_performed=false`.
+BaseLine se conserva intacta: esa declaración del productor se identifica como
+`DECLARED_NOT_VERIFIED` y no se usa como prueba de seguridad. La limpieza que
+intenta el backup de Moodle tampoco acredita ausencia de cambios en datos/base.
+
 La auditoría independiente comprueba ZIP/MBZ, manifiestos, inventarios, hashes,
 productor/capabilities y ausencia de contenido privado. `CollectorPackageAudit`
 persiste un snapshot inmutable ligado a operación y Execution. Solo entonces se
@@ -213,84 +243,61 @@ cancela; repetir su Idempotency-Key no duplica el comando.
 
 ## 3H y evidencia de calidad
 
-| Puerta                       | Evidencia actual                                                                           |
-| ---------------------------- | ------------------------------------------------------------------------------------------ |
-| PHP completo PostgreSQL      | 535 pruebas, 6813 aserciones, 0 fallos/errores/omisiones en el último corte local          |
-| Multiproceso                 | Lanzamiento concurrente, reconciliadores, cuota concurrente y worker SIGKILL incluidos     |
-| LAB real                     | 3 pruebas, 154 aserciones en el corte local de reinicios; sin fallos/omisiones             |
-| Contratos del Recolector     | Cuatro contratos desde copia verificada de 29 archivos/PHP 8.3                             |
-| Playwright COLLECT LAB       | 2/2, retries=0; salud final 12 servicios y teardown PASSED                                 |
-| Playwright Fake completo     | Último corte: 38 aprobadas, 4 fallidas, 2 LAB omitidas; retries=0; aceptación pendiente    |
-| Análisis/frontend            | Pint, PHPStan, Vite Plus, ESLint, TypeScript aplicación/E2E, Vitest 5 y build              |
-| Migraciones                  | Fresh, upgrade con datos, rollback y reapply incluidos en PHP completo                     |
-| BaseLine                     | 423 archivos/hash esperado; read-only en siete servicios persistentes y Playwright LAB     |
-| Reinicios con COLLECT activo | Redis, queue-worker y Reverb reales; mismo grupo/operación, seis artefactos y Source VALID |
-| Secretos                     | Inspección de HTTP, reportes, 47 tablas y 73 archivos; configuración privada eliminada     |
-| Publicación                  | Entrega para revisión mediante PR borrador hacia main; CI del SHA de entrega pendiente     |
+| Puerta                        | Estado de las correcciones                                                                                                                    |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| PHP dirigido PostgreSQL/Redis | 22 pruebas, 172 aserciones, 0 fallos; incluye 8 casos de guardas HTTP, FINALIZE sin efectos y concurrencia de dos sesiones del mismo usuario. |
+| Temporal aislado              | Tres ejecuciones aprobadas (11,1; 11,8; 9,8 s), un worker, retries=0; 423 antes de confirmar y cierre único después.                          |
+| Análisis dirigido             | PHPStan y TypeScript E2E aprobados.                                                                                                           |
+| Puertas completas locales     | Pendientes del checkout limpio de corrección.                                                                                                 |
+| CI final                      | Deben aprobar ci y collector-lab del mismo head_sha; consultar los dos artifacts del PR 9.                                                    |
 
-La cobertura incluye configuración/distribución alteradas, autorización vencida,
-ADMIN/OPERATOR asignado/AUDITOR/outsider/inactivo/revocación, idempotencia, secreto
-fragmentado, paquete/manifiesto alterados, capacidad insuficiente, truncación de log,
-reconciliación y limpieza conservadora. Las pruebas físicas de escritura/sync/exit
-siguen rechazando un resultado no comprobable.
+La puerta general conserva todas las pruebas PHP, PostgreSQL multiproceso,
+upgrade con datos, rollback/reapply, Vitest, Pint, PHPStan, Vite Plus, ESLint,
+TypeScript de aplicación/E2E, build y los 42 casos generales Playwright.
+Los dos casos LAB se omiten únicamente en general y se ejecutan en su job separado.
+Las dos puertas mantienen retries=0 y los mismos timeouts.
 
 La prueba de reinicios inicia una exportación con el worker real y conserva su
-identidad registrada. Un arnés CLI exclusivo de testing aplica SIGSTOP/SIGCONT al
-grupo verificado para mantener esta pequeña muestra activa durante los reinicios.
-No cambia las capabilities ni habilita una acción de pausa para usuarios. Después
-comprueba la misma identidad, una sola operación, secuencias continuas, terminación
-íntegra, cero checkpoints, progreso null y SourcePackage VALID. Por separado, una
-prueba multiproceso mata con SIGKILL al worker que efectivamente lanza el Recolector
-y acredita que el grupo continúa independiente antes de cancelarlo con seguridad.
+identidad registrada. Un CLI exclusivo de testing aplica SIGSTOP/SIGCONT al
+grupo verificado durante reinicios de Redis, queue-worker y Reverb. Después
+comprueba la misma operación, secuencias continuas, seis artefactos, terminación
+íntegra, cero checkpoints, progreso null y SourcePackage VALID. No habilita pausa
+para usuarios. La prueba multiproceso SIGKILL del worker sigue incluida.
 
-Las aserciones que examinan el secreto real usan resultados booleanos y mensajes
-cerrados: incluso un resultado JUnit fallido no imprime el valor esperado. La
-inspección posterior a reinicios recorre todas las tablas de la aplicación y los
-archivos del workspace/artefactos; la auditoría del paquete examina también contenido
-descomprimido. Los conteos de aserciones, archivos y eventos pueden variar con la
-observación idempotente; el JSON/JUnit del SHA publicado contiene el conteo definitivo.
+La inspección de secretos después de reinicios recorre las tablas de aplicación
+y archivos del workspace/artefactos. La auditoría del paquete examina contenido
+descomprimido. Las aserciones de material privado emiten booleanos y mensajes
+cerrados, también ante fallo. El scanner de los dos XML JUnit/Playwright usa el
+SecretProvider real, representaciones raw/XML/JSON, streaming 64 KiB con overlap,
+límites, identidad de archivos y staging privado retirado. Un reporte rechazado
+no se publica; el artifact de fallo/cancelación excluye siempre ambos XML LAB.
 
-Los reportes locales están en `quality-results/` (ignorados por Git). El corte
-`mt1g-it3-cut22-fake1` pasó PHP, frontend, integridad y read-only de BaseLine,
-pero falló la puerta Playwright. Sus once servicios terminaron saludables y
-el driver retiró sus contenedores, volumen y red. No emitió una validación global
-aprobada. El laboratorio completo anterior pasó con 3 pruebas PHP/154 aserciones,
-2 casos de navegador, cuatro contratos y prueba de reinicios; su metadata
-registra working tree modificado y construcción nativa de Podman, no una
-validación limpia del SHA de entrega. Una ejecución anterior de las 42 pruebas
-generales de navegador pasó; no sustituye los cuatro fallos del último corte.
+Los resultados locales están en quality-results/ (ignorados por Git). Los cortes
+anteriores se conservan como históricos en evidence/it3-review-validation.json,
+evidence/it3-collector-contracts.json y evidence/it3-collector-resilience.json;
+no se confunden con aceptación de esta corrección.
 
-La evidencia cerrada de contratos se conserva en
-[`evidence/it3-collector-contracts.json`](evidence/it3-collector-contracts.json),
-y la recuperación/inspección de secretos en
-[`evidence/it3-collector-resilience.json`](evidence/it3-collector-resilience.json).
-Son pruebas locales anteriores, no artifacts de CI del SHA de entrega.
+El driver registra SHA, working_tree_dirty, métricas, salud y teardown. CI
+construye imágenes desde el checkout exacto y conserva:
 
-El driver
-registra SHA, working tree dirty, métricas, salud y teardown. CI construye imágenes
-limpias y conserva `iteration2-validation-<SHA>` para la regresión completa y
-`iteration3-lab-validation-<SHA>` para el laboratorio, con JSON/JUnit ligados al
-checkout exacto. Ambos deben indicar `quality_gates=PASSED`, árbol limpio,
-`clean_images_built_in_driver=true` y `teardown=PASSED`. El LAB conserva además
-`collector-contracts.json` y `collector-resilience.json`. La publicación usa commits
-normales, push normal y PR borrador hacia main, sin force-push ni merge. Estos
-son los requisitos del cierre definitivo, que permanece pendiente.
+- iteration2-validation-<SHA>: regresión general, PHP y Playwright.
+- iteration3-lab-validation-<SHA>: LAB, contratos, reinicios y report hygiene.
 
-### Cuatro fallos abiertos de navegador
+Ambos deben indicar quality_gates=PASSED, working_tree_dirty=false,
+clean_images_built_in_driver=true y teardown=PASSED. Los JSON/JUnit son la fuente
+de los conteos definitivos, que pueden variar en aserciones/eventos idempotentes.
+El SHA final y los enlaces a ambos jobs se publican en el informe del PR 9 y en
+sus checks, ligados al mismo head_sha de los artifacts. No se usa el SHA del
+merge sintético de GitHub. Main no se modifica y el PR permanece borrador.
 
-| Caso                                              | Fallo observado                                                            | Comprobación pendiente                                                                                 |
-| ------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `execution.spec.ts:282`, INTERVENTION             | Timeout al llenar el correo en login; no llegó a probar la decisión        | Acceso y continuación idempotente de la misma ejecución                                                |
-| `review.spec.ts:83`, doble clic                   | `spawnSync runuser ETIMEDOUT` en `snapshot()` después del clic             | Verificar que existe una sola ejecución; el fallo no acredita duplicación                              |
-| `temporal-auth.spec.ts:15`, autorización caducada | La pantalla permaneció RUNNING al 35 % cuando esperaba WAITING_USER_ACTION | Acreditar llegada a intervención y luego probar caducidad/reintento; falló antes de caducar            |
-| `temporal-auth.spec.ts:157`, más de 24 horas      | Tras intentar caducar la autorización, FINALIZE devolvió 202 en vez de 423 | Determinar si caducidad del arnés y sesión concurrente fallaron o si existe un defecto de autorización |
+### Resultado de los cuatro escenarios de la revisión anterior
 
-Las causas no están confirmadas. El cuarto caso requiere atención prioritaria:
-la aceptación de FINALIZE después del intento de caducidad no puede descartarse
-como un simple timeout. No se han quitado aserciones, aumentado timeouts,
-habilitado reintentos ni ocultado casos para dar estas puertas por aprobadas.
-El requisito de regresiones completas y CI verde sigue abierto. La revisión del
-código puede comenzar ahora; esta entrega no autoriza merge ni despliegue.
+| Caso                  | Diagnóstico y cobertura conservada                                                                                                                                                       |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| INTERVENTION          | El fallo local fue anterior a la decisión, durante login; aprobó en CI 15870fd. Se conserva continuidad de la misma Execution e idempotencia. No se inventa una causa del timeout local. |
+| Doble clic            | El fallo local fue timeout de snapshot(), no duplicación demostrada; aprobó en CI 15870fd. Se conserva una Execution y un START.                                                         |
+| Autorización caducada | El corte local no llegó a intervención; aprobó en CI 15870fd. El helper nuevo caduca la sesión exacta y conserva el payload y la clave de la acción pendiente.                           |
+| Más de 24 horas       | CI mostró 202 en vez de 423. Se reprodujo la carrera del helper SQL con StartSession; el mecanismo HTTP corregido aprobó tres veces aislado. La suite completa sigue siendo obligatoria. |
 
 ## Commits y archivos principales
 
@@ -342,6 +349,64 @@ su identidad final se conserva fuera del commit en los artifacts y el informe de
 
 ## Fallos encontrados y desviaciones
 
+### Diagnóstico previo a la corrección de autorización
+
+El escenario original de más de 24 horas se ejecutó aislado sobre PostgreSQL y
+Redis reales, un worker y `retries=0`, sin modificar el helper ni el middleware.
+Pasó en dos ejecuciones locales; CI del SHA `15870fd` había fallado con 202 en vez de 423. Por eso una ejecución aprobada no descarta una carrera.
+
+Se reprodujo después la intercalación con `StartSession` real y el helper original
+intacto: una consulta cargó una autorización reciente y retuvo el bloqueo Redis
+de su sesión; el CLI modificó por SQL el payload y se comprobó que quedaba vencido;
+al terminar la consulta, Laravel persistió su snapshot anterior y repuso la
+autorización reciente. Todos esos pasos se verificaron mediante resultados
+booleanos, sin publicar identificadores de sesión ni timestamps privados.
+La evidencia está en
+[`evidence/it3-session-race-diagnosis.json`](evidence/it3-session-race-diagnosis.json).
+
+La causa demostrada es que `quality-control.php` evita el bloqueo de sesión HTTP
+y modifica todas las sesiones del usuario. FINALIZE sí tiene el middleware de
+confirmación; el timestamp restaurado permite que ese middleware acepte la
+petición. El mecanismo de caducidad del arnés debe usar la sesión HTTP exacta y
+persistirla bajo el bloqueo habitual antes de la siguiente mutación. Este
+diagnóstico precede a la corrección; no se cambió la expectativa 423.
+
+### Solución y regresiones de autorización
+
+Se retiró la acción CLI `expire`. Playwright usa ahora
+`POST /__quality/expire-action-authorization` desde el mismo contexto HTTP,
+cookies y CSRF del caso. Bajo el bloqueo normal de `StartSession`, elimina
+`auth.password_confirmed_at`, devuelve 204 vacío después de persistir y acredita
+que la consulta sigue autenticada antes de solicitar FINALIZE. No transmite IDs
+de sesión ni secretos. Una segunda sesión del mismo usuario no se modifica.
+
+La ruta se registra solo con APP_ENV testing tanto en configuración como en
+entorno real, QUALITY_HARNESS=1 y la base PostgreSQL E2E aislada. Una guarda
+repite los checks en runtime y devuelve 404 incluso ante un cache de rutas
+incorrecto. No se habilita en producción ni se modifica el middleware real.
+
+La prueba concurrente usa dos procesos HTTP y barreras Redis explícitas:
+caducar espera a que la consulta termine y ninguna escritura puede restaurar el
+timestamp. FINALIZE vencido responde 423 antes de comandos, cambios de estado,
+jobs, receipts, eventos, auditoría o artefactos. Contraseña incorrecta responde
+422; confirmación correcta responde 200 y permite 202 con exactamente el payload
+y el Idempotency-Key pendientes; una repetición devuelve 200 sin duplicar efectos.
+Polling, eventos, Reverb y REVIEW siguen disponibles durante la caducidad.
+La recuperación mediante Recordarme conserva consulta, nunca autorización.
+
+### Defecto de evidencia y protección de reportes
+
+La evidencia anterior afirmaba source_write=false sin medirlo, aunque Moodle
+necesita escritura en moodledata. La corrección protege y mide el código,
+documenta las escrituras temporales y mantiene datos/base/limpieza desconocidos
+como NOT_VERIFIED. Las pruebas detectan cambios de contenido, permisos,
+adición/borrado/rename, mounts RW y contratos favorables sin evidencia.
+
+La revisión también detectó que un fallo antes del scanner podía publicar XML
+LAB no inspeccionado. El driver mantiene aprobación únicamente para la invocación
+actual, retira los dos reportes no aprobados y conserva el fallo; el workflow
+excluye esos XML ante fallo o cancelación aunque el proceso sea interrumpido.
+
 - El runtime inicial de aproximadamente 900 MiB terminaba procesos con SIGKILL;
   se amplió WSL a 4 GiB con autorización del usuario.
 - Docker Desktop no proporcionó un socket operativo. La validación local usa
@@ -369,14 +434,14 @@ su identidad final se conserva fuera del commit en los artifacts y el informe de
   La causa de la lentitud inicial no quedó demostrada.
 - El arnés detenía su coordinador al vencer una unidad y contaminaba los casos
   posteriores. Ahora devuelve un fallo explícito y conserva solo etapas cerradas,
-  sin payloads. Una regresión completa anterior pasó, pero la última tiene los
-  cuatro pendientes descritos arriba. La prueba de lanzamiento reconcilia la misma
+  sin payloads. Los resultados anteriores se conservan como históricos.
+  La prueba de lanzamiento reconcilia la misma
   operación antes de exigir una identidad RUNNING, sin volver a lanzarla.
 - Traces/videos E2E se deshabilitaron porque pueden retener cuerpos con contraseñas
   sintéticas. Se conservan JUnit y capturas de fallo.
-- A petición del usuario se adelanta la revisión del código y se detienen las
-  baterías locales completas. Esta modificación de la secuencia de entrega no
-  convierte los fallos abiertos en pruebas aprobadas ni cierra la aceptación.
+- La entrega anterior se adelantó para revisión con aceptación pendiente. La
+  solicitud posterior de corrección exige de nuevo ambas puertas completas y CI
+  verde del mismo SHA, sin omitir pruebas ni introducir retries.
 
 ## Reproducción, rollback y límites
 

@@ -52,7 +52,7 @@ final class CollectorPreflight
         $checks[] = $this->check('collector.runtime', 'Runtime compatible con Moodle 4.5', $runtime, $runtime ? 'Linux/PHP 8.3 y dependencias disponibles; ejecución PHP directa sin prompts.' : 'Se requiere el perfil Linux/PHP 8.3 con las extensiones Moodle y los wrappers de proceso.');
         $paths = is_file($profile['code'].'/version.php') && is_readable($profile['code'].'/lib/setup.php')
             && is_dir($profile['data']) && is_readable($profile['data']) && is_writable($profile['data']);
-        $checks[] = $this->check('collector.paths', 'Código y almacenamiento Moodle', $paths, $paths ? 'Accesos dentro del ámbito sintético autorizado.' : 'Código o moodledata no están disponibles con los permisos requeridos.');
+        $checks[] = $this->check('collector.paths', 'Código y almacenamiento Moodle', $paths, $paths ? 'Lectura de código y escritura temporal en moodledata dentro del ámbito sintético; el bridge comprueba que su proceso no pueda escribir código.' : 'Código o moodledata no están disponibles con los permisos requeridos.');
         $available = $this->secrets->available($profile['credential_reference'], $profile['credential_version']);
         $checks[] = $this->check('collector.reference', 'Referencia privada versionada', $available, $available ? 'La referencia existe; su valor no se expone.' : 'La referencia LAB no está disponible o no cumple los permisos privados.');
         $access = false;
@@ -75,7 +75,7 @@ final class CollectorPreflight
         $capacity = ! is_link($root) && is_writable($volume) && is_float($space) && $space >= $quota;
         $checks[] = $this->check('collector.capacity', 'Capacidad y salida del workspace', $capacity, $capacity ? 'La cuota estimada con su margen cabe en el volumen de ejecución.' : 'No hay espacio o permisos suficientes para la cuota aprobada.');
         $checks[] = $this->check('collector.adapter', 'Integración de laboratorio', class_exists(CollectorAdapter::class) && CollectorAdapter::httpEnabled(), 'La integración debe estar instalada antes de confirmar una recolección real.');
-        $checks[] = ['id' => 'collector.laboratory', 'description' => 'Uso exclusivo de laboratorio', 'result' => 'WARNING', 'detail' => 'Acepta ejecutar sobre datos sintéticos y crear un paquete para validación experimental.'];
+        $checks[] = ['id' => 'collector.laboratory', 'description' => 'Uso exclusivo de laboratorio', 'result' => 'WARNING', 'detail' => 'Acepta ejecutar sobre datos sintéticos y crear un paquete experimental. Moodle requiere escrituras de backup en moodledata y base; su ausencia y limpieza no están verificadas.'];
 
         return $checks;
     }

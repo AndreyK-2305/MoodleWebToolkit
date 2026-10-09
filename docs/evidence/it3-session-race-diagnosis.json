@@ -1,0 +1,21 @@
+{
+    "schema_version": "it3-session-race-diagnosis.v1",
+    "checks": {
+        "observation_loaded_fresh_authorization": true,
+        "http_session_lock_is_held": true,
+        "original_cli_helper_expired_persisted_authorization": true,
+        "inflight_observation_still_contains_fresh_authorization": true,
+        "http_save_restored_fresh_authorization": true,
+        "unmodified_helper_sha256": "9d4b338673ef31320353d2d981bcf9a74992f7d7bf8ea3fca39b316d5fc53f34"
+    },
+    "reviewed_head_sha": "15870fdb6f92237addbc800238d0bf2ec329f4d8",
+    "original_isolated_browser": {
+        "tests": 1,
+        "passed": 1,
+        "retries": 0,
+        "workers": 1,
+        "code_modified": false,
+        "result_does_not_disprove_race": true
+    },
+    "method": "Real PostgreSQL/Redis StartSession holds its lock; original CLI expires persisted payload; HTTP save restores its earlier snapshot; synthetic session row removed in finally."
+}

@@ -8,6 +8,7 @@ import {
     control,
     executionPath,
     request,
+    expireAuthorization,
 } from './helpers';
 
 test.describe('Recolector 7.4.2 real en Moodle sintético', () => {
@@ -115,7 +116,7 @@ test.describe('Recolector 7.4.2 real en Moodle sintético', () => {
         ).toBe(artifact.sha256);
         await observer.reload();
         await expect(observer.getByText('SourcePackage · VALID')).toBeVisible();
-        control('expire');
+        await expireAuthorization(observer);
         await observer
             .getByRole('button', { name: 'Finalizar', exact: true })
             .click();
