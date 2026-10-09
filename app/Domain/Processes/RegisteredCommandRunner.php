@@ -237,6 +237,12 @@ class RegisteredCommandRunner
             // Also stop descendants when the original parent exited but its
             // inherited pipes remain open. This group was created by this run.
             $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
+            if (! isset($processId) && proc_get_status($process)['running']) {
+                // Before readiness, setsid may not have created the group yet.
+                // The tool is still gated; this handle owns the startup child.
+                // Kill that child as well so proc_close cannot retain the worker.
+                @proc_terminate($process, SIGKILL);
+            }
             throw $exception;
         } finally {
             foreach ($pipes as $pipe) {
@@ -282,7 +288,7 @@ class RegisteredCommandRunner
     private function awaitProcessReady(mixed $process, mixed $readyPipe, int $timeoutSeconds): int
     {
         stream_set_blocking($readyPipe, false);
-        $deadline = microtime(true) + $timeoutSeconds;
+        $deadline = hrtime(true) + $timeoutSeconds * 1_000_000_000;
         $ready = '';
         do {
             $chunk = stream_get_contents($readyPipe);
@@ -299,7 +305,7 @@ class RegisteredCommandRunner
                 break;
             }
             usleep(10_000);
-        } while (microtime(true) < $deadline);
+        } while (hrtime(true) < $deadline);
 
         throw new RuntimeException('El proceso registrado no confirmó el arranque antes de capturar su identidad.');
     }
@@ -310,13 +316,13 @@ class RegisteredCommandRunner
             return;
         }
         @posix_kill(-$pid, SIGTERM);
-        $deadline = microtime(true) + ($graceSeconds ?? (int) config('toolkit.runner.cancel_grace_seconds', 3));
+        $deadline = hrtime(true) + ($graceSeconds ?? (int) config('toolkit.runner.cancel_grace_seconds', 3)) * 1_000_000_000;
         do {
             if (@posix_kill(-$pid, 0) === false) {
                 return;
             }
             usleep(100_000);
-        } while (microtime(true) < $deadline);
+        } while (hrtime(true) < $deadline);
         if ($forceAfterGrace || (bool) config('toolkit.runner.allow_force_kill', false)) {
             @posix_kill(-$pid, SIGKILL);
         }

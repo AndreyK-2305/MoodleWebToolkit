@@ -391,6 +391,35 @@ class RegisteredCommandRunnerTest extends TestCase
         $this->assertFalse($this->processIsExecuting((int) $result->processId));
     }
 
+    public function test_startup_timeout_stops_its_owned_child_before_a_process_group_exists(): void
+    {
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $workspaces = app(ExecutionWorkspaceManager::class);
+        $pidPath = $workspaces->resolve($execution, 'state', 'startup-child.pid');
+        $wrapper = $workspaces->writeAtomic($execution, 'tools', 'delayed-session.sh', "#!/bin/sh\nexec ".escapeshellarg(PHP_BINARY)
+            .' -r '.escapeshellarg('file_put_contents($argv[1], (string) getmypid()); pcntl_async_signals(true); pcntl_signal(SIGTERM, SIG_IGN); sleep(5);')
+            .' '.escapeshellarg($pidPath)."\n");
+        chmod($wrapper, 0700);
+        config(['toolkit.runner.session_wrapper' => $wrapper,
+            'toolkit.runner.commands.platform_long.startup_timeout_seconds' => 1,
+            'toolkit.runner.commands.platform_long.cancellation_grace_seconds' => 1]);
+        $started = false;
+        $startedAt = microtime(true);
+        try {
+            app(RegisteredCommandRunner::class)->run($execution, 'platform_long', onStarted: function () use (&$started): void {
+                $started = true;
+            });
+            $this->fail('Startup without a ready identity must fail closed.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('no confirmó el arranque', $exception->getMessage());
+        }
+        $this->assertLessThan(4, microtime(true) - $startedAt, 'Startup failure must not wait for an ungrouped child to finish.');
+        $this->assertFalse($started);
+        $this->assertFileExists($pidPath);
+        $this->assertFalse($this->processIsExecuting((int) file_get_contents($pidPath)));
+    }
+
     public function test_time_and_resource_policy_cannot_change_under_an_idempotency_key(): void
     {
         Queue::fake();
