@@ -49,6 +49,10 @@ jobs:
             git show --check --format= --no-renames "$CURRENT_SHA" -- . ':(exclude)BaseLine/**'
           fi
 
+      - name: Configure documented Docker Hub cache on the empty CI runner
+        shell: bash
+        run: bash ./tests/Infrastructure/configure-ci-registry.sh
+
       - name: Clean installation and all quality gates including Playwright
         shell: pwsh
         run: ./tests/Infrastructure/run-quality.ps1 -ProjectName mt1g-ci
@@ -92,6 +96,10 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Configure documented Docker Hub cache on the empty CI runner
+        shell: bash
+        run: bash ./tests/Infrastructure/configure-ci-registry.sh
+
       - name: Synthetic Moodle, copied collector contracts and real browser flow
         shell: pwsh
         run: ./tests/Infrastructure/run-quality.ps1 -ProjectName mt1g-it3-ci -CollectorLab
