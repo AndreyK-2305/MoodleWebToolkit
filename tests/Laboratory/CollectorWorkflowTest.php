@@ -4,8 +4,11 @@ namespace Tests\Laboratory;
 
 use App\Domain\Collector\CollectorExecutionProvider;
 use App\Domain\Collector\CollectorRegisteredCommand;
+use App\Domain\Collector\CollectorRuntimeConfiguration;
+use App\Domain\Collector\CollectorSourceEvidence;
 use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Collector\Contracts\SecretProvider;
+use App\Domain\Executions\LocalProcessInspector;
 use App\Domain\Executions\LocalToolExecutionProvider;
 use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Domain\Tools\SourcePackageRegistry;
@@ -14,9 +17,12 @@ use App\Enums\ExecutionStatus;
 use App\Enums\ProjectStatus;
 use App\Enums\UserRole;
 use App\Exceptions\ToolOperationBlocked;
+use App\Models\CollectorObservationCursor;
 use App\Models\CollectorPackageAudit;
+use App\Models\Execution;
 use App\Models\ExecutionRuntimeConfiguration;
 use App\Models\Project;
+use App\Models\RemoteOperation;
 use App\Models\SourcePackage;
 use App\Models\ToolDistribution;
 use Database\Seeders\ToolCatalogSeeder;
@@ -74,10 +80,27 @@ class CollectorWorkflowTest extends TestCase
             'moodle-recolector-742-linux-tree');
         $deadline = microtime(true) + 240;
         try {
-            do {
-                $workflow->observe($operation->fresh());
-                usleep(200000);
-            } while ($execution->fresh()->status !== ExecutionStatus::REVIEW && microtime(true) < $deadline);
+            try {
+                do {
+                    $workflow->observe($operation->fresh());
+                    usleep(200000);
+                    $observed = $execution->fresh();
+                } while ($observed->status !== ExecutionStatus::REVIEW && ! $observed->status->isTerminal() && microtime(true) < $deadline);
+            } catch (\Throwable $observationFailure) {
+                $code = match (true) {
+                    $observationFailure instanceof ToolOperationBlocked => 'OPERATION_BLOCKED',
+                    $observationFailure instanceof QueryException => 'DATABASE_EXCEPTION',
+                    $observationFailure instanceof \JsonException => 'JSON_EXCEPTION',
+                    $observationFailure instanceof \InvalidArgumentException => 'INVALID_ARGUMENT',
+                    $observationFailure instanceof \RuntimeException => 'RUNTIME_EXCEPTION',
+                    default => 'OBSERVATION_EXCEPTION',
+                };
+                $this->retainObservationDiagnostic($execution, $operation, $runtime, 'OBSERVATION_EXCEPTION', $code);
+                $this->fail('Collector observation failed with closed code '.$code.'.');
+            }
+            if ($execution->fresh()->status !== ExecutionStatus::REVIEW) {
+                $this->retainObservationDiagnostic($execution, $operation, $runtime, 'REVIEW_EXPECTATION', null);
+            }
             $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
             $this->assertSame(ProjectStatus::REVIEW, $project->fresh()->status);
             $this->assertSame('TERMINATED', $operation->fresh()->communication_state->value);
@@ -221,6 +244,125 @@ class CollectorWorkflowTest extends TestCase
                 File::deleteDirectory($root);
                 Storage::disk('local')->deleteDirectory('executions/'.$execution->workspace_key);
             }
+        }
+    }
+
+    private function retainObservationDiagnostic(Execution $execution, RemoteOperation $operation,
+        ExecutionRuntimeConfiguration $runtime, string $stage, ?string $exceptionCode): void
+    {
+        if (PHP_SAPI !== 'cli' || ! app()->environment('testing') || getenv('QUALITY_HARNESS') !== '1'
+            || config('database.connections.pgsql.database') !== 'moodle_toolkit_testing'
+            || ! config('toolkit.features.recolector_742.enabled') || ! config('toolkit.features.local_runner.enabled')
+            || config('collector.profiles.synthetic-moodle.source_id') !== 'synthetic-lab' || gethostname() !== 'moodle-tool-runner') {
+            return;
+        }
+        $diagnostic = ['schema_version' => 'collector-lab-php-diagnostic.v1', 'stage' => $stage,
+            'exception_code' => $exceptionCode, 'diagnostic_health' => 'UNAVAILABLE'];
+        try {
+            $current = $execution->fresh();
+            $remote = $operation->fresh();
+            $cursor = CollectorObservationCursor::query()->where('remote_operation_id', $remote->id)->first();
+            $evidence = is_array($remote->evidence) ? $remote->evidence : [];
+            $exit = is_array($evidence['exit_evidence'] ?? null) ? $evidence['exit_evidence'] : [];
+            $flag = static function (string $key) use ($evidence, $exit): ?bool {
+                $value = $exit[$key] ?? $evidence[$key] ?? null;
+
+                return is_bool($value) ? $value : null;
+            };
+            $runtimeValid = false;
+            try {
+                app(CollectorRuntimeConfiguration::class)->verify($current, $runtime);
+                $runtimeValid = true;
+            } catch (\Throwable) {
+                // No document, exception argument or source-code hash is emitted.
+            }
+            $workspaces = app(ExecutionWorkspaceManager::class);
+            $validationPath = $workspaces->resolve($current, 'output', 'validation.json');
+            clearstatcache(true, $validationPath);
+            $validationStat = @lstat($validationPath);
+            $validation = null;
+            $sourceValid = false;
+            try {
+                if ($validationStat !== false && ! is_link($validationPath) && realpath($validationPath) === $validationPath
+                    && ($validationStat['mode'] & 0170000) === 0100000 && in_array($validationStat['nlink'], [1, 2], true)
+                    && $validationStat['size'] > 0 && $validationStat['size'] <= 65536) {
+                    $bytes = @file_get_contents($validationPath, length: 65537);
+                    $decoded = is_string($bytes) && strlen($bytes) <= 65536 ? json_decode($bytes, true, 32, JSON_THROW_ON_ERROR) : null;
+                    $validation = is_array($decoded) ? $decoded : null;
+                }
+                if (is_array($validation['source_access'] ?? null)) {
+                    (new CollectorSourceEvidence)->validate($validation['source_access']);
+                    $sourceValid = true;
+                }
+            } catch (\Throwable) {
+                // Missing, unreadable or unsupported evidence remains unapproved.
+            }
+            $terminalValid = $groupTerminated = $supervisorTerminated = null;
+            try {
+                $terminalValid = app(RemoteOperationCoordinator::class)->verifyTerminalEvidence($remote);
+                $inspector = app(LocalProcessInspector::class);
+                $groupTerminated = ! $inspector->hasActiveProcessGroup($remote);
+                $supervisorTerminated = ! $inspector->hasActiveOperation($remote);
+            } catch (\Throwable) {
+                // Unknown terminal observations remain null.
+            }
+            $source = $sourceValid ? $validation['source_access'] : [];
+            $health = in_array($cursor?->reader_health, ['OK', 'MISSING', 'UNSAFE', 'ROTATED', 'TRUNCATED', 'UNREADABLE', 'ALTERED'], true)
+                ? $cursor->reader_health : null;
+            $privateConfiguration = $workspaces->resolve($current, 'input', 'moodle-runtime.php');
+            clearstatcache(true, $privateConfiguration);
+            $diagnostic = [...$diagnostic, 'diagnostic_health' => 'AVAILABLE',
+                'execution_status' => $current->status->value, 'communication_state' => $remote->communication_state->value,
+                'functional_state' => $remote->functional_state->value, 'exit_code' => $remote->exit_code,
+                'timed_out' => $flag('timed_out'), 'resource_limit_exceeded' => $flag('resource_limit_exceeded'),
+                'cursor_health' => $health, 'cursor_complete' => $cursor?->read_complete,
+                'collector_started_received' => $current->events()->where('remote_operation_id', $remote->id)->where('type', 'collector.started')->exists(),
+                'collector_validation_started_received' => $current->events()->where('remote_operation_id', $remote->id)->where('type', 'collector.progress')->where('payload->stage', 'validation')->exists(),
+                'collector_package_validated_received' => $current->events()->where('remote_operation_id', $remote->id)->where('type', 'collector.package_validated')->exists(),
+                'collector_error_received' => $current->events()->where('remote_operation_id', $remote->id)->where('type', 'collector.error')->exists(),
+                'audits' => CollectorPackageAudit::query()->where('remote_operation_id', $remote->id)->count(),
+                'artifacts' => $current->artifacts()->where('remote_operation_id', $remote->id)->count(),
+                'source_packages' => SourcePackage::query()->where('producer_execution_id', $current->id)->count(),
+                'terminal_evidence_valid' => $terminalValid, 'process_group_terminated' => $groupTerminated,
+                'operation_supervisor_terminated' => $supervisorTerminated, 'validation_exists' => $validationStat !== false,
+                'source_access_valid' => $sourceValid, 'approved_runtime_sha_valid' => $runtimeValid,
+                'validation_runtime_sha_matches' => is_array($validation) && ($validation['runtime_sha256'] ?? null) === $runtime->content_sha256,
+                'private_configuration_exists' => @lstat($privateConfiguration) !== false,
+                'source_code_write' => $source['source_code_write'] ?? null, 'source_data_write' => $source['source_data_write'] ?? null,
+                'source_database_mutation' => $source['source_database_mutation'] ?? null, 'destination_write' => $source['destination_write'] ?? null];
+        } catch (\Throwable) {
+            // Diagnostic failure never changes the test's original failed expectation.
+        }
+        $path = '/tmp/collector-lab-php-diagnostic.json';
+        $handle = @fopen($path, 'xb');
+        if ($handle === false) {
+            return;
+        }
+        try {
+            if (! @chmod($path, 0600)) {
+                return;
+            }
+            $stat = fstat($handle);
+            if ($stat === false || ($stat['mode'] & 0170000) !== 0100000 || $stat['nlink'] !== 1 || ($stat['mode'] & 0777) !== 0600) {
+                return;
+            }
+            $json = json_encode($diagnostic, JSON_THROW_ON_ERROR);
+            if (strlen($json) > 65536) {
+                return;
+            }
+            $offset = 0;
+            while ($offset < strlen($json)) {
+                $written = @fwrite($handle, substr($json, $offset));
+                if (! is_int($written) || $written < 1) {
+                    return;
+                }
+                $offset += $written;
+            }
+            @fflush($handle);
+        } catch (\Throwable) {
+            // No exception messages or arguments enter JUnit or process output.
+        } finally {
+            fclose($handle);
         }
     }
 }

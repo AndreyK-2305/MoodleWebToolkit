@@ -84,6 +84,16 @@ try {
     try {
         Invoke-QualityCompose -Arguments $testArguments
     } finally {
+        if ($CollectorLab) {
+            # Retain only bounded, regular, private JSON written by the PHP
+            # observation failure path, before the outer catch retires XML.
+            $collectorPhpDiagnosticCheck = '$p="/tmp/collector-lab-php-diagnostic.json"; clearstatcache(true,$p); $s=@lstat($p); if($s===false||is_link($p)||realpath($p)!==$p||($s["mode"]&0170000)!==0100000||$s["nlink"]!==1||($s["mode"]&0777)!==0600||$s["size"]<1||$s["size"]>65536){exit(1);} $j=json_decode((string)@file_get_contents($p),true); exit(is_array($j)&&($j["schema_version"]??null)==="collector-lab-php-diagnostic.v1"&&in_array($j["stage"]??null,["OBSERVATION_EXCEPTION","REVIEW_EXPECTATION"],true)?0:1);'
+            & docker compose exec -T --user www-data tool-runner php -r $collectorPhpDiagnosticCheck
+            if ($LASTEXITCODE -eq 0) {
+                & docker compose cp tool-runner:/tmp/collector-lab-php-diagnostic.json quality-results/collector-lab-php-diagnostic.json
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'No se pudo retener el diagnóstico cerrado de observación PHP LAB.' }
+            }
+        }
         Invoke-QualityCompose cp "${testService}:/tmp/phpunit.xml" "quality-results/${reportPrefix}phpunit.xml"
     }
     if ($CollectorLab) {
