@@ -5,8 +5,12 @@ namespace App\Providers;
 use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\LocalArtifactStorage;
+use App\Domain\Collector\Contracts\SecretProvider;
+use App\Domain\Collector\LabFileSecretProvider;
 use App\Domain\Executions\Contracts\ExecutionProvider;
 use App\Domain\Executions\FakeExecutionProvider;
+use App\Domain\Realtime\Contracts\ExecutionEventTransport;
+use App\Domain\Realtime\ReverbExecutionEventTransport;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\FakeToolAdapter;
 use Carbon\CarbonImmutable;
@@ -22,8 +26,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        $this->app->bind(SecretProvider::class, LabFileSecretProvider::class);
         $this->app->bind(ToolAdapter::class, FakeToolAdapter::class);
         $this->app->bind(ExecutionProvider::class, FakeExecutionProvider::class);
+        $this->app->bind(ExecutionEventTransport::class, ReverbExecutionEventTransport::class);
         $this->app->bind(ArtifactStorage::class, LocalArtifactStorage::class);
         $this->app->bind(ArtifactReferenceStorage::class, LocalArtifactStorage::class);
     }

@@ -15,10 +15,19 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 
+$stagePath = '/tmp/concurrent-domain-'.hash('sha256', $argv[3] ?? '').'.json';
+$stage = static function (string $phase) use ($stagePath): void {
+    file_put_contents($stagePath.'.tmp', json_encode(['phase' => $phase, 'pid' => getmypid(),
+        'monotonic_ns' => hrtime(true), 'wall_seconds' => microtime(true)], JSON_THROW_ON_ERROR));
+    chmod($stagePath.'.tmp', 0600);
+    rename($stagePath.'.tmp', $stagePath);
+};
+$stage('BOOTSTRAP');
 require dirname(__DIR__, 2).'/vendor/autoload.php';
 
 $app = require dirname(__DIR__, 2).'/bootstrap/app.php';
 $app->make(Kernel::class)->bootstrap();
+$stage('BOOTSTRAPPED');
 
 [$script, $mode, $barrierKey, $marker, $resourceId, $actorId, $extra] = array_pad($argv, 7, null);
 
@@ -62,9 +71,11 @@ try {
         'value' => $script ?? 'worker',
         'expiration' => time() + 120,
     ]);
+    $stage('BARRIER_READY');
 
     DB::select('SELECT pg_advisory_lock_shared(CAST(? AS bigint))', [(int) $barrierKey]);
     $hasSharedLock = true;
+    $stage('DOMAIN_OPERATION');
 
     $result = match ($mode) {
         'queue' => (function () use ($resourceId, $actorId): array {

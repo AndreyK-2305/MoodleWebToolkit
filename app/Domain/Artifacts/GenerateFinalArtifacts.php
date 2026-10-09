@@ -5,7 +5,10 @@ namespace App\Domain\Artifacts;
 use App\Domain\Academic\AcademicPreview;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
+use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\Execution;
+use App\Models\SourcePackage;
 use App\Models\User;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Str;
@@ -33,6 +36,9 @@ class GenerateFinalArtifacts
         CarbonInterface $completionAt,
         ?callable $heartbeat = null,
     ): array {
+        if ($this->isCollector($execution)) {
+            throw new ToolOperationBlocked('COLLECT real requiere finalización incremental con evidencia auditada.');
+        }
         $execution->loadMissing(['project', 'steps', 'verifications', 'academicProposals.proposer']);
         $baseName = Str::slug($execution->project->name) ?: 'proyecto';
         $privateOwner = Str::slug($leaseOwner);
@@ -340,6 +346,10 @@ class GenerateFinalArtifacts
         $ownerPrefix = "executions/{$execution->workspace_key}/.staging/{$commandId}/".Str::slug($owner);
         $finalPrefix = "executions/{$execution->workspace_key}/final/{$commandId}";
         $latestVerification = $execution->verifications()->latest('proposal_version')->first();
+        $report = $this->isCollector($execution) ? $this->collectorReport($execution) : [
+            'academic_fingerprint' => $execution->review_fingerprint,
+            'academic_nodes' => $this->preview->state($execution),
+        ];
         $specifications = [
             [
                 'type' => 'JSON_REPORT',
@@ -348,8 +358,7 @@ class GenerateFinalArtifacts
                     'contract_version' => 1,
                     'project' => ['uuid' => $execution->project->uuid, 'name' => $execution->project->name, 'type' => $execution->project->type->value],
                     'execution' => ['uuid' => $execution->uuid, 'attempt' => $execution->attempt, 'proposal_version' => $execution->proposal_version],
-                    'academic_fingerprint' => $execution->review_fingerprint,
-                    'academic_nodes' => $this->preview->state($execution),
+                    ...$report,
                     'generated_at' => $generatedAt->toIso8601String(),
                 ],
             ],
@@ -432,7 +441,7 @@ class GenerateFinalArtifacts
                     'uuid' => $execution->uuid,
                     'attempt' => $execution->attempt,
                     'final_status' => 'COMPLETED',
-                    'progress' => 100,
+                    'progress' => $this->isCollector($execution) ? $execution->progress : 100,
                     'started_at' => $execution->started_at?->toIso8601String(),
                     'completed_at' => $completionAt->toIso8601String(),
                 ],
@@ -441,7 +450,7 @@ class GenerateFinalArtifacts
                 'generated_at' => $completionAt->toIso8601String(),
                 'finalized_by' => ['id' => $actor->getKey(), 'name' => $actor->name],
                 'proposal_version' => $execution->proposal_version,
-                'proposal_count' => $execution->academicProposals()->count(),
+                ...($this->isCollector($execution) ? $this->collectorReport($execution) : ['proposal_count' => $execution->academicProposals()->count()]),
                 'validated_fingerprint' => $execution->validated_fingerprint,
             ]),
         );
@@ -463,6 +472,25 @@ class GenerateFinalArtifacts
         $stored = $descriptor[$final ? 'final' : 'stored'];
 
         return new StoredArtifact($stored['disk'], $stored['path'], $stored['size'], $stored['checksum']);
+    }
+
+    private function isCollector(Execution $execution): bool
+    {
+        return $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY;
+    }
+
+    /** @return array<string, mixed> */
+    private function collectorReport(Execution $execution): array
+    {
+        $package = SourcePackage::query()->where('producer_execution_id', $execution->id)->sole();
+
+        return ['mode' => 'LABORATORY', 'adapter' => CollectorExecutionPreparation::ADAPTER_KEY,
+            'source_package' => ['uuid' => $package->uuid, 'name' => $package->name, 'producer_version' => $package->producer_tool_version,
+                'schema_version' => $package->schema_version, 'sha256' => $package->sha256, 'size_bytes' => $package->size_bytes,
+                'manifest_sha256' => $package->manifest_sha256, 'validation_state' => $package->validation_state,
+                'capabilities' => $package->capabilities],
+            'audit' => $package->evidence['collector_audit'] ?? null,
+            'source_fingerprint' => $execution->review_fingerprint];
     }
 
     /** @param list<array<string, mixed>> $artifacts */

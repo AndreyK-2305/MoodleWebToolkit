@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\EnsureActionPasswordConfirmed;
 use App\Http\Middleware\EnsurePasswordWasChanged;
+use App\Http\Middleware\EnsureQualityHttpHarness;
 use App\Http\Middleware\EnsureUserIsActive;
 use App\Http\Middleware\EnsureUserIsAdmin;
 use App\Http\Middleware\HandleAppearance;
@@ -18,6 +19,11 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         channels: __DIR__.'/../routes/channels.php',
         health: '/up',
+        then: function (): void {
+            if (EnsureQualityHttpHarness::enabled()) {
+                require __DIR__.'/../tests/Support/quality-http-routes.php';
+            }
+        },
     )
     ->withCommands()
     ->withMiddleware(function (Middleware $middleware): void {

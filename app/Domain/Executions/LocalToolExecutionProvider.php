@@ -4,7 +4,12 @@ namespace App\Domain\Executions;
 
 use App\Domain\Artifacts\RegisterReferencedArtifact;
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Collector\CollectorExecutionProvider;
+use App\Domain\Collector\CollectorRegisteredCommand;
+use App\Domain\Collector\CollectorRuntimeConfiguration;
 use App\Domain\Executions\Contracts\ExecutionRuntimeProvider;
+use App\Domain\Tools\CollectorAdapter;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\DeployToolDistribution;
 use App\Domain\Tools\ToolDistributionVerifier;
@@ -43,6 +48,11 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
 
     public function execute(ExecutionCommand $command, ToolAdapter $adapter): void
     {
+        if ($adapter instanceof CollectorAdapter && $command->execution->toolBinding?->adapter_key === $adapter->key()) {
+            app(CollectorExecutionProvider::class)->execute($command);
+
+            return;
+        }
         throw new ToolOperationBlocked('El provider real requiere un binding de catálogo y una operación explícita; la cola Fake se conserva como provider predeterminado.');
     }
 
@@ -97,6 +107,15 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
 
         if ($binding->toolVersion->tool->key === 'moodle-consolidador') {
             $this->assertApprovedV8RuntimeConfiguration($execution, $binding);
+        }
+        if ($binding->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY) {
+            $runtime = ExecutionRuntimeConfiguration::query()->whereKey($binding->runtime_configuration_id)
+                ->where('execution_id', $execution->id)->firstOrFail();
+            app(CollectorRuntimeConfiguration::class)->verify($execution, $runtime);
+            if ($commandKey !== CollectorRegisteredCommand::KEY || $parameters !== ['project_uuid' => $execution->project->uuid,
+                'execution_uuid' => $execution->uuid, 'runtime_sha256' => $runtime->content_sha256]) {
+                throw new ToolOperationBlocked('El comando real solo acepta identidades y el hash de su runtime aprobado.');
+            }
         }
 
         $this->gate->assertRunnable($binding->toolVersion, $binding->workflow_key);
@@ -208,8 +227,11 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
         throw new ToolOperationBlocked('La parada de un runtime completo no está implementada. Use la cancelación granular de esta operación.');
     }
 
-    /** @return list<Artifact> */
-    public function collectArtifacts(RemoteOperation $operation): array
+    /**
+     * @param  array<string, array<string, mixed>>  $metadataByPath
+     * @return list<Artifact>
+     */
+    public function collectArtifacts(RemoteOperation $operation, array $metadataByPath = []): array
     {
         if (! $this->verifyTermination($operation)) {
             throw new RuntimeException('No se recogen artefactos hasta verificar la terminación del proceso registrado.');
@@ -249,7 +271,10 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
                 throw new RuntimeException('La recolección de artefactos rechazó un enlace simbólico.');
             }
             if (! $item->isFile()) {
-                continue;
+                if ($item->isDir()) {
+                    continue;
+                }
+                throw new RuntimeException('La recolección de artefactos rechazó un archivo especial.');
             }
             $relative = str_replace('\\', '/', substr($item->getPathname(), strlen($root) + 1));
             $actual[$relative] = $item->getPathname();
@@ -287,6 +312,7 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
                 throw new RuntimeException('La categoría del descriptor no está permitida.');
             }
             $artifacts[] = $this->artifacts->register($execution, $path, $category, $descriptor['name'], [
+                ...($metadataByPath[$relative] ?? []),
                 'remote_operation_uuid' => $operation->operation_uuid,
                 'command_key' => $operation->command_key,
                 'source_relative_path' => $relative,
@@ -302,6 +328,10 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
     public function verifyTermination(RemoteOperation $operation): bool
     {
         $operation->refresh();
+
+        if ($operation->command_key === CollectorRegisteredCommand::KEY) {
+            return $this->operations->verifyTerminalEvidence($operation);
+        }
 
         return $operation->communication_state->value === 'TERMINATED'
             && $operation->terminated_at !== null

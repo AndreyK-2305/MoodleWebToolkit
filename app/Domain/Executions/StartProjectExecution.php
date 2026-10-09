@@ -2,15 +2,19 @@
 
 namespace App\Domain\Executions;
 
+use App\Domain\Collector\CollectorConfiguration;
+use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Executions\DTOs\StartExecutionResult;
 use App\Domain\Projects\ConfirmedProjectValidator;
 use App\Domain\Projects\ProjectExecutionManager;
+use App\Domain\Tools\CollectorAdapter;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
 use App\Exceptions\ExecutionAlreadyActive;
 use App\Exceptions\IdempotencyKeyConflict;
 use App\Exceptions\NewExecutionBlocked;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\AuditLog;
 use App\Models\ExecutionCommand;
 use App\Models\Project;
@@ -87,9 +91,17 @@ class StartProjectExecution
             }
 
             $snapshot = $this->validator->validateForStart($lockedProject, $configurationVersion);
+            $real = app(CollectorConfiguration::class)->selected($lockedProject->configuration);
+            if ($real && ! CollectorAdapter::httpEnabled()) {
+                throw new ToolOperationBlocked('La integración HTTP de COLLECT LAB todavía no está habilitada.');
+            }
+            $adapter = $real ? app(CollectorAdapter::class) : $this->adapter;
             $execution = $this->executionManager->queue($lockedProject, $actor);
+            if ($real) {
+                app(CollectorExecutionPreparation::class)->prepare($execution, $lockedProject->configuration, $actor);
+            }
 
-            foreach ($this->adapter->plan($lockedProject) as $definition) {
+            foreach ($adapter->plan($lockedProject) as $definition) {
                 $execution->steps()->create([
                     'step_key' => $definition->key,
                     'attempt' => 1,
@@ -97,7 +109,7 @@ class StartProjectExecution
                     'position' => $definition->position,
                     'status' => 'PENDING',
                     'progress' => null,
-                    'metadata' => ['adapter' => $this->adapter->key()],
+                    'metadata' => ['adapter' => $adapter->key()],
                 ]);
             }
 
@@ -108,7 +120,7 @@ class StartProjectExecution
                 'idempotency_key' => $idempotencyKey,
                 'idempotency_scope' => $scope,
                 'payload_hash' => $payloadHash,
-                'payload' => [...$requestPayload, ...$snapshot, 'adapter' => $this->adapter->key()],
+                'payload' => [...$requestPayload, ...$snapshot, 'adapter' => $adapter->key()],
                 'created_by' => $actor->getKey(),
             ]);
 

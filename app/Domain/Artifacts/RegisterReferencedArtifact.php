@@ -3,10 +3,13 @@
 namespace App\Domain\Artifacts;
 
 use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
+use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Enums\ArtifactCategory;
 use App\Models\Artifact;
 use App\Models\Execution;
 use App\Models\RemoteOperation;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
@@ -28,6 +31,23 @@ class RegisterReferencedArtifact
         ?int $expectedSize = null,
         ?int $remoteOperationId = null,
     ): Artifact {
+        if ($remoteOperationId === null) {
+            throw new InvalidArgumentException('El artefacto requiere una operación productora terminada.');
+        }
+
+        return DB::transaction(function () use ($execution, $sourceAbsolutePath, $category, $filename, $metadata,
+            $expectedSha256, $expectedSize, $remoteOperationId): Artifact {
+            RemoteOperation::query()->whereKey($remoteOperationId)->lockForUpdate()->firstOrFail();
+
+            return $this->registerLocked($execution, $sourceAbsolutePath, $category, $filename, $metadata,
+                $expectedSha256, $expectedSize, $remoteOperationId);
+        });
+    }
+
+    /** @param array<string, mixed> $metadata */
+    private function registerLocked(Execution $execution, string $sourceAbsolutePath, ArtifactCategory $category,
+        string $filename, array $metadata, ?string $expectedSha256, ?int $expectedSize, ?int $remoteOperationId): Artifact
+    {
         $operation = $remoteOperationId === null
             ? null
             : RemoteOperation::query()
@@ -51,7 +71,32 @@ class RegisterReferencedArtifact
             throw new InvalidArgumentException('El nombre del artefacto no es válido.');
         }
 
-        $relativePath = 'artifacts/'.$execution->uuid.'/'.Str::uuid().'-'.$filename;
+        $relativeSource = $metadata['source_relative_path'] ?? null;
+        $existing = is_string($relativeSource) ? Artifact::query()->where('remote_operation_id', $remoteOperationId)
+            ->where('metadata->source_relative_path', $relativeSource)->first() : null;
+        if ($existing !== null) {
+            $target = Storage::disk($existing->disk)->path($existing->path);
+            clearstatcache(true, $sourceAbsolutePath);
+            clearstatcache(true, $target);
+            $sourceStat = @lstat($sourceAbsolutePath);
+            $targetStat = @lstat($target);
+            $hash = is_file($sourceAbsolutePath) && ! is_link($sourceAbsolutePath) ? hash_file('sha256', $sourceAbsolutePath) : false;
+            if ($sourceStat === false || $targetStat === false || ($sourceStat['mode'] & 0170000) !== 0100000
+                || ($targetStat['mode'] & 0170000) !== 0100000 || $sourceStat['nlink'] !== 2 || $targetStat['nlink'] !== 2
+                || $sourceStat['dev'] !== $targetStat['dev'] || $sourceStat['ino'] !== $targetStat['ino']
+                || $sourceStat['size'] !== $existing->size || ! is_string($hash) || ! hash_equals($existing->sha256, $hash)
+                || ($expectedSha256 !== null && ! hash_equals($expectedSha256, $hash))
+                || ($expectedSize !== null && $expectedSize !== $existing->size) || $existing->category !== $category->value
+                || $existing->filename !== $filename || $this->canonical($existing->metadata) !== $this->canonical($this->redactor->redact($metadata))) {
+                throw new InvalidArgumentException('La referencia existente perdió su identidad, contenido o metadata declarada.');
+            }
+
+            return $existing;
+        }
+
+        $prefix = ($metadata['command_key'] ?? null) === CollectorRegisteredCommand::KEY
+            ? 'executions/'.$execution->workspace_key.'/collector/' : 'artifacts/'.$execution->uuid.'/';
+        $relativePath = $prefix.Str::uuid().'-'.$filename;
         $stored = $this->storage->referenceExisting($sourceAbsolutePath, $relativePath, $expectedSha256, $expectedSize);
 
         try {
@@ -73,5 +118,17 @@ class RegisterReferencedArtifact
             $this->storage->delete($stored->path);
             throw $exception;
         }
+    }
+
+    private function canonical(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return array_map($this->canonical(...), $value);
     }
 }

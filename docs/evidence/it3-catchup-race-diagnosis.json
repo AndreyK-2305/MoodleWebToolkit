@@ -1,0 +1,31 @@
+{
+    "schema_version": "it3-catchup-race-diagnosis.v1",
+    "reviewed_head_sha": "4549f01ff0fee51d8734cd91650a483d9c7e7996",
+    "ci_failure_job": "https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/37972833900/job/113963554409",
+    "original_controlled_browser": {
+        "tests": 1,
+        "failed": 1,
+        "backend_reached_verifying": true,
+        "final_reverb_notification_delivered_before_http_release": true,
+        "older_http_snapshot_held_until_notification": true,
+        "browser_failed_to_observe_verifying": true,
+        "periodic_polling_disabled": true,
+        "workers": 1,
+        "retries": 0
+    },
+    "corrected_controlled_browser": {
+        "tests": 1,
+        "passed": 1,
+        "duration_seconds": 7.6,
+        "workers": 1,
+        "retries": 0
+    },
+    "corrected_related_browser_suite": {
+        "tests": 6,
+        "passed": 6,
+        "workers": 1,
+        "retries": 0
+    },
+    "method": "Real Redis workers and Reverb; hold an older HTTP response, prove the backend transition and notification delivery, release that response, require VERIFYING without reload or periodic polling.",
+    "full_clean_gates": "REQUIRED_SEPARATELY"
+}

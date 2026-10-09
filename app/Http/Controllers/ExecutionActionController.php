@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Collector\RetryCollectorExecution;
 use App\Domain\Executions\RequestExecutionCancellation;
 use App\Domain\Executions\ResolveExecutionConflict;
 use App\Domain\Executions\ResumeProjectExecution;
@@ -18,6 +19,21 @@ use Inertia\Inertia;
 
 class ExecutionActionController extends Controller
 {
+    public function freshExport(Request $request, Project $project, Execution $execution, RetryCollectorExecution $retry): JsonResponse|RedirectResponse
+    {
+        $this->ensureBelongsToProject($project, $execution);
+        $key = $this->idempotencyKey($request);
+        $input = $request->validate(['configuration_version' => ['required', 'integer', 'min:1'], 'accept_laboratory' => ['required', 'accepted']]);
+        try {
+            $result = $retry->retry($execution, $request->user(), $key, (int) $input['configuration_version'], true);
+        } catch (ExecutionDispatchFailed $exception) {
+            return $this->dispatchFailure($request, $project, $exception);
+        }
+
+        return $this->response($request, $project, $result->execution, $result->created,
+            $result->created ? 'Nueva exportación LAB en otro workspace; la evidencia anterior se conserva.' : 'El nuevo intento ya estaba registrado.', 201);
+    }
+
     public function cancel(
         Request $request,
         Project $project,

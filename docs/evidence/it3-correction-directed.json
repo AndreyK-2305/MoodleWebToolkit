@@ -1,0 +1,39 @@
+{
+    "schema_version": "it3-correction-directed.v1",
+    "scope": "Pre-publication directed verification; does not replace clean full gates or final CI artifacts",
+    "reviewed_head_sha": "15870fdb6f92237addbc800238d0bf2ec329f4d8",
+    "working_tree_dirty": true,
+    "php": {
+        "tests": 22,
+        "assertions": 172,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "covered": [
+            "QualityHttpHarnessTest",
+            "FinalizationAuthorizationTest",
+            "SessionAuthorizationConcurrencyTest",
+            "CollectorBridgeTest",
+            "CollectorSourceEvidenceTest"
+        ]
+    },
+    "isolated_temporal_browser": {
+        "independent_runs": 3,
+        "tests_per_run": 1,
+        "passed_per_run": 1,
+        "workers": 1,
+        "retries": 0,
+        "test_duration_seconds": [11.1, 11.8, 9.8],
+        "expired_finalize_status": 423,
+        "incorrect_password_status": 422,
+        "correct_confirmation_status": 200,
+        "accepted_finalize_status": 202,
+        "idempotent_repeat_status": 200,
+        "finalize_commands": 1,
+        "payload_and_idempotency_key_preserved": true,
+        "observation_remains_available": true
+    },
+    "phpstan": "PASSED",
+    "typescript_e2e": "PASSED",
+    "final_identity_source": "Same head_sha in both successful clean CI artifacts of PR 9"
+}
