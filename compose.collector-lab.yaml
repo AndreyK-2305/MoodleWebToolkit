@@ -43,7 +43,13 @@ services:
         environment:
             PHP_INI_SCAN_DIR: /opt/collector-php/conf.d
         volumes: *lab-volumes
-        command: [/opt/collector-php/bin/php, -c, /opt/collector-php/php.ini, docker/collector-lab/prepare-fixture.php]
+        command:
+            [
+                /opt/collector-php/bin/php,
+                -c,
+                /opt/collector-php/php.ini,
+                docker/collector-lab/prepare-fixture.php,
+            ]
         depends_on:
             moodle-lab-db:
                 condition: service_healthy
@@ -72,7 +78,15 @@ services:
         environment: *lab-environment
         volumes: *lab-volumes
     playwright:
-        environment: *lab-environment
+        environment:
+            <<: *lab-environment
+            QUALITY_COLLECTOR_LAB: 'true'
+            QUALITY_JUNIT_FILE: quality-results/collector-lab-playwright.xml
+        volumes:
+            - lab_source:/opt/moodle-lab:ro
+            - lab_data:/opt/moodle-lab/data
+            - lab_references:/run/secrets/moodle-toolkit-lab:ro
+            - ${QUALITY_BASELINE_ROOT:-./BaseLine}:/var/www/html/BaseLine:ro
 
 volumes:
     lab_source:

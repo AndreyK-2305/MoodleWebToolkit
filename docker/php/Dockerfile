@@ -50,8 +50,7 @@ CMD ["php-fpm"]
 
 # Reproducible synthetic source; never used by the ordinary development profile.
 FROM node AS synthetic-moodle-code
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-COPY --from=development /etc/ssl/certs /etc/ssl/certs
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=120 \
         clone --quiet --depth 1 --branch v4.5.10 https://github.com/moodle/moodle.git /moodle \
     && test "$(git -C /moodle rev-parse HEAD)" = "b2c2f2a0c5f9a141896df6c322a0b6b29bb77646" \
@@ -76,6 +75,7 @@ RUN printf 'extension_dir=/opt/collector-php/extensions/no-debug-non-zts-2023083
 
 # Immutable quality image: no host vendor/, node_modules/, .env or storage.
 FROM collector-lab AS quality
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep && rm -rf /var/lib/apt/lists/*
 RUN touch .env
 ENV VITE_REVERB_APP_KEY=quality-key \
     VITE_REVERB_HOST=localhost \
@@ -83,12 +83,19 @@ ENV VITE_REVERB_APP_KEY=quality-key \
     VITE_REVERB_SCHEME=http
 RUN npm run build
 
-FROM mcr.microsoft.com/playwright:v1.63.0-noble AS browsers
+# Browser files depend on the lockfile, not on application source revisions.
+FROM node AS browser-files
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+WORKDIR /browser
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund && npx playwright install chromium
+
 FROM quality AS e2e
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-COPY --from=browsers /ms-playwright /ms-playwright
+COPY --from=browser-files /ms-playwright /ms-playwright
 RUN npx playwright install-deps chromium && command -v runuser
 
 FROM nginx:1.27-alpine AS quality-nginx
+ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
 COPY --from=quality /var/www/html/public /var/www/html/public
-COPY docker/quality/nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker/quality/nginx.conf /etc/nginx/templates/default.conf.template

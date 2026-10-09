@@ -36,7 +36,7 @@ x-app: &app
     environment: *environment
     volumes:
         - quality_storage:/var/www/html/storage
-        - ./BaseLine:/var/www/html/BaseLine:ro
+        - ${QUALITY_BASELINE_ROOT:-./BaseLine}:/var/www/html/BaseLine:ro
     depends_on:
         postgres:
             condition: service_healthy
@@ -53,7 +53,7 @@ services:
         tmpfs: [/var/lib/postgresql/data]
         healthcheck:
             test: [CMD-SHELL, 'pg_isready -U quality -d moodle_toolkit_e2e']
-            interval: 2s
+            interval: 5s
             timeout: 5s
             retries: 30
     postgres-testing:
@@ -65,14 +65,14 @@ services:
         tmpfs: [/var/lib/postgresql/data]
         healthcheck:
             test: [CMD-SHELL, 'pg_isready -U moodle_toolkit_testing']
-            interval: 2s
+            interval: 5s
             timeout: 5s
             retries: 30
     redis:
         image: redis:7.4-alpine
         healthcheck:
             test: [CMD, redis-cli, ping]
-            interval: 2s
+            interval: 5s
             timeout: 5s
             retries: 30
     app:
@@ -85,7 +85,7 @@ services:
             ]
         healthcheck:
             test: [CMD, php, artisan, about, --only=environment]
-            interval: 5s
+            interval: 15s
             timeout: 10s
             retries: 30
     queue-worker:
@@ -94,7 +94,7 @@ services:
         command: [php, tests/Support/quality-worker.php]
         healthcheck:
             test: [CMD, php, tests/Support/quality-control.php, worker-health]
-            interval: 5s
+            interval: 15s
             timeout: 10s
             retries: 30
         depends_on:
@@ -123,7 +123,7 @@ services:
                     CMD-SHELL,
                     "grep -aq 'artisan' /proc/1/cmdline && grep -aq 'redis-tool-runs' /proc/1/cmdline",
                 ]
-            interval: 5s
+            interval: 15s
             timeout: 5s
             retries: 30
         depends_on:
@@ -135,7 +135,7 @@ services:
         command: [php, artisan, schedule:work, --no-interaction]
         healthcheck:
             test: [CMD-SHELL, "grep -aq 'schedule:work' /proc/1/cmdline"]
-            interval: 5s
+            interval: 15s
             timeout: 5s
             retries: 30
     reverb:
@@ -145,7 +145,7 @@ services:
         command: [php, artisan, reverb:start, --host=0.0.0.0, --port=8080]
         healthcheck:
             test: [CMD, php, -r, "exit(@fsockopen('127.0.0.1', 8080) ? 0 : 1);"]
-            interval: 5s
+            interval: 15s
             timeout: 5s
             retries: 30
     vite:
@@ -159,23 +159,24 @@ services:
                     -e,
                     "fetch('http://localhost:5173/@vite/client').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
                 ]
-            interval: 5s
+            interval: 15s
             timeout: 5s
             retries: 30
     mailpit:
         image: axllent/mailpit:v1.27
         healthcheck:
             test: [CMD, /mailpit, readyz]
-            interval: 5s
+            interval: 15s
             timeout: 5s
             retries: 30
     nginx:
+        image: moodle-toolkit-quality-nginx:local
         build:
             context: .
             dockerfile: docker/php/Dockerfile
             target: quality-nginx
         volumes:
-            - ./BaseLine:/var/www/html/BaseLine:ro
+            - ${QUALITY_BASELINE_ROOT:-./BaseLine}:/var/www/html/BaseLine:ro
         depends_on:
             app:
                 condition: service_healthy
@@ -190,10 +191,11 @@ services:
                     --spider,
                     'http://127.0.0.1:8080/nginx-health',
                 ]
-            interval: 5s
+            interval: 15s
             timeout: 5s
             retries: 30
     playwright:
+        image: moodle-toolkit-playwright:local
         profiles: [e2e]
         build:
             context: .
@@ -205,7 +207,7 @@ services:
         shm_size: 1gb
         volumes:
             - quality_storage:/var/www/html/storage
-            - ./quality-results:/var/www/html/quality-results
+            - ${QUALITY_RESULTS_ROOT:-./quality-results}:/var/www/html/quality-results
         command: [npm, run, test:e2e]
 
 volumes:

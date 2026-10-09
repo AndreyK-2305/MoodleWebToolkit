@@ -50,7 +50,15 @@ export type Snapshot = {
     execution: {
         uuid: string;
         status: string;
-        progress: number;
+        progress: number | null;
+        retried_from_execution_uuid: string | null;
+        collector: {
+            operation: {
+                uuid: string;
+                communication_state: string;
+                functional_state: string;
+            } | null;
+        } | null;
         last_event_sequence: number;
         started_at: string;
         finished_at: string;
@@ -69,12 +77,19 @@ export type Snapshot = {
         validation_current: boolean;
         artifacts: Array<{
             id: number;
+            type: string;
             sha256: string;
             filename: string;
             size: number;
         }>;
         completion_summary: Record<string, unknown>;
         tree: unknown[];
+        source_packages: Array<{
+            uuid: string;
+            producer_version: string;
+            sha256: string;
+            courses: number;
+        }>;
     };
     events: Array<{
         sequence: number;
@@ -134,7 +149,7 @@ export async function request(
     page: Page,
     path: string,
     data: Record<string, unknown> = {},
-    key = randomUUID(),
+    key: string = randomUUID(),
     method = 'POST',
 ) {
     const token = (await page.context().cookies()).find(
@@ -216,11 +231,21 @@ export async function wizard(
         );
     }
     await page.getByRole('button', { name: 'Guardar y continuar' }).click();
+    await expect(page.locator('#simulation-scenario')).toBeVisible();
+    await expect(
+        page.getByRole('button', { name: 'Guardar y continuar' }),
+    ).toBeEnabled();
     await page.locator('#simulation-scenario').selectOption(scenario);
     await page.locator('#processing-scenario').selectOption(processing);
     if (type === 'COLLECT')
         await page.locator('#artifact-name').fill('paquete-e2e');
+    const optionsSaved = page.waitForResponse(
+        (response) =>
+            response.url().endsWith(`/projects/${uuid}/wizard/options`) &&
+            response.request().method() === 'PUT',
+    );
     await page.getByRole('button', { name: 'Guardar y continuar' }).click();
+    expect((await optionsSaved).status()).toBe(303);
     await expect(
         page.getByRole('button', { name: 'Ejecutar preflight', exact: true }),
     ).toBeVisible();

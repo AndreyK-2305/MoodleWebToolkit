@@ -76,6 +76,14 @@ final class SanitizedOutputCapture
         return $this->observed;
     }
 
+    public function discardPending(): void
+    {
+        $this->truncated = true;
+        $this->tail = '';
+        $this->redactor->discard();
+        $this->finished = true;
+    }
+
     public function persistedBytes(): int
     {
         return $this->persisted;

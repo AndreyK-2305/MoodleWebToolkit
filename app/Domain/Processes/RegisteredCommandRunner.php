@@ -6,6 +6,7 @@ use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Artifacts\StreamingSensitiveValueRedactor;
 use App\Domain\Processes\DTOs\RegisteredProcessResult;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
+use App\Exceptions\WorkspaceCapacityExceeded;
 use App\Models\Execution;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -183,12 +184,52 @@ class RegisteredCommandRunner
                 }
                 usleep(50_000);
             } while (true);
+            $this->workspaces->measure($execution);
             foreach ($captures as $capture) {
                 $capture->finish();
             }
             foreach ($files as $file) {
                 if (! @fflush($file) || (function_exists('fsync') && ! @fsync($file))) {
                     throw new RuntimeException('No se pudo cerrar y sincronizar el log durable de la operación.');
+                }
+            }
+        } catch (WorkspaceCapacityExceeded $exception) {
+            if (! isset($processId, $captures['stdout'], $captures['stderr'])) {
+                throw $exception;
+            }
+            $resourceLimitExceeded = true;
+            $exitCode = 125;
+            $status = proc_get_status($process);
+            $this->terminateProcessGroup($status['pid'], forceAfterGrace: true);
+            foreach ($captures as $capture) {
+                $capture->discardPending();
+            }
+            // Continue accounting for pipes without persisting more output.
+            $deadline = hrtime(true) + 2_000_000_000;
+            do {
+                foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $name) {
+                    for ($read = 0; $read < 64; $read++) {
+                        $chunk = stream_get_contents($pipes[$index], 8192);
+                        if ($chunk === false) {
+                            throw new RuntimeException('No se pudo drenar la salida después del límite de capacidad.');
+                        }
+                        if ($chunk === '') {
+                            break;
+                        }
+                        $captures[$name]->observe($chunk);
+                    }
+                }
+                if (feof($pipes[1]) && feof($pipes[2])) {
+                    break;
+                }
+                if (hrtime(true) >= $deadline) {
+                    throw new RuntimeException('No se confirmó el cierre de los pipes después del límite de capacidad.');
+                }
+                usleep(50000);
+            } while (true);
+            foreach ($files as $file) {
+                if (! @fflush($file) || (function_exists('fsync') && ! @fsync($file))) {
+                    throw new RuntimeException('No se pudo sincronizar el log tras el límite de capacidad.');
                 }
             }
         } catch (Throwable $exception) {

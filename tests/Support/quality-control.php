@@ -1,9 +1,11 @@
 <?php
 
+use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Executions\ExecutionEventRecorder;
 use App\Domain\Executions\ExecutionPresenter;
 use App\Domain\Executions\RequestExecutionFinalization;
 use App\Domain\Executions\StartProjectExecution;
+use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\UserRole;
 use App\Jobs\RunExecutionUnit;
 use App\Models\Execution;
@@ -43,6 +45,11 @@ switch ($action) {
                 'is_active' => $name !== 'inactive', 'must_change_password' => $name === 'temporary',
                 'email_verified_at' => now(),
             ]);
+        }
+        if (config('toolkit.features.recolector_742.enabled') && config('collector.profiles.synthetic-moodle')) {
+            if (Artisan::call('tools:catalog:sync') !== 0 || Artisan::call('collector:enable-laboratory') !== 0) {
+                throw new RuntimeException('Synthetic collector catalog authorization failed.');
+            }
         }
         $result = ['users' => User::query()->count()];
         break;
@@ -128,6 +135,29 @@ switch ($action) {
         break;
     case 'reverb-restart':
         Artisan::call('reverb:restart');
+        break;
+    case 'lab-capacity-fault':
+        if (! config('toolkit.features.recolector_742.enabled') || ! config('collector.profiles.synthetic-moodle')) {
+            throw new RuntimeException('LAB-only capacity fault.');
+        }
+        $execution = Execution::query()->where('uuid', $input['execution'])->sole();
+        if ($execution->toolBinding?->adapter_key !== CollectorExecutionPreparation::ADAPTER_KEY || ! $execution->status->isActive()) {
+            throw new RuntimeException('Capacity fault requires an active real LAB execution.');
+        }
+        $path = app(ExecutionWorkspaceManager::class)->resolve($execution, 'temporary', 'quality-capacity-fault');
+        $handle = fopen($path, 'xb');
+        if ($handle === false) {
+            throw new RuntimeException('Capacity fault already exists.');
+        }
+        try {
+            chmod($path, 0600);
+            if (! ftruncate($handle, 536870912)) {
+                throw new RuntimeException('Cannot simulate capacity consumption.');
+            }
+        } finally {
+            fclose($handle);
+        }
+        $result = ['injected' => true];
         break;
     case 'event':
         $execution = Execution::query()->where('uuid', $input['execution'])->sole();

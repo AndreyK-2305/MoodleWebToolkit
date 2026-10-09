@@ -92,4 +92,24 @@ class SanitizedOutputCaptureTest extends TestCase
             $this->assertSame(hash('sha256', ''), $stream->sha256());
         }
     }
+
+    public function test_capacity_stop_discards_pending_bytes_but_keeps_counting_and_hashing_only_persisted_output(): void
+    {
+        $persisted = '';
+        $stream = new SanitizedOutputCapture(new StreamingSensitiveValueRedactor(new SensitiveValueRedactor), 128, 128,
+            function (string $safe) use (&$persisted): void {
+                $persisted .= $safe;
+            });
+        $stream->observe("safe\npassword=private");
+        $before = $persisted;
+        $stream->discardPending();
+        $stream->observe("-value\nmore raw output\n");
+        $stream->finish();
+        $this->assertSame($before, $persisted);
+        $this->assertSame(strlen("safe\npassword=private-value\nmore raw output\n"), $stream->observedBytes());
+        $this->assertSame(strlen($persisted), $stream->persistedBytes());
+        $this->assertSame(hash('sha256', $persisted), $stream->sha256());
+        $this->assertTrue($stream->truncated());
+        $this->assertStringNotContainsString('private', $persisted);
+    }
 }

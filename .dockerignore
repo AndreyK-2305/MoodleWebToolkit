@@ -1,5 +1,9 @@
 .git
+.agents
+.codex
 .env
+.env.*
+!.env.example
 BaseLine
 node_modules
 vendor

@@ -69,6 +69,7 @@ jobs:
           path: |
             quality-results/iteration2-validation.json
             quality-results/health.json
+            quality-results/final-health.json
             quality-results/phpunit.xml
             quality-results/playwright.xml
           if-no-files-found: error
@@ -81,3 +82,44 @@ jobs:
           QUALITY_DB_PASSWORD: teardown-only
           QUALITY_REVERB_SECRET: teardown-only
         run: docker compose -f compose.quality.yaml -p mt1g-ci --profile e2e down -v --remove-orphans
+
+  collector-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact published code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Synthetic Moodle, copied collector contracts and real browser flow
+        shell: pwsh
+        run: ./tests/Infrastructure/run-quality.ps1 -ProjectName mt1g-it3-ci -CollectorLab
+      - name: Preserve failure evidence temporarily
+        if: always() && (failure() || cancelled())
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: collector-lab-failure-${{ github.event.pull_request.head.sha || github.sha }}
+          path: quality-results/
+          retention-days: 3
+      - name: Preserve real integration validation with exact published SHA
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: iteration3-lab-validation-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            quality-results/iteration3-lab-validation.json
+            quality-results/collector-lab-health.json
+            quality-results/collector-lab-final-health.json
+            quality-results/collector-lab-phpunit.xml
+            quality-results/collector-lab-playwright.xml
+            quality-results/collector-contracts.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Ensure isolated LAB stack is stopped even after interruption
+        if: always()
+        env:
+          QUALITY_APP_KEY: teardown-only
+          QUALITY_DB_PASSWORD: teardown-only
+          QUALITY_REVERB_SECRET: teardown-only
+        run: docker compose -f compose.quality.yaml -f compose.collector-lab.yaml -p mt1g-it3-ci --profile e2e down -v --remove-orphans

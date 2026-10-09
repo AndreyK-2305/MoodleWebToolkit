@@ -10,6 +10,7 @@ use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\LogStream;
 use App\Enums\RemoteCommunicationState;
 use App\Enums\RemoteFunctionalState;
+use App\Exceptions\WorkspaceCapacityExceeded;
 use App\Jobs\RunRegisteredRemoteOperation;
 use App\Models\AuditLog;
 use App\Models\Execution;
@@ -1027,23 +1028,28 @@ class RemoteOperationCoordinator
     private function persistState(RemoteOperation $operation): void
     {
         $operation->refresh();
-        $this->workspaces->writeState($operation->execution, 'remote-op-'.$operation->operation_uuid.'.json', [
-            'operation_uuid' => $operation->operation_uuid,
-            'idempotency_key' => $operation->idempotency_key,
-            'provider_key' => $operation->provider_key,
-            'host_id' => $operation->host_id,
-            'runtime_key' => $operation->runtime_key,
-            'process_id' => $operation->process_id,
-            'command_key' => $operation->command_key,
-            'command_sha256' => $operation->command_sha256,
-            'communication_state' => $operation->communication_state->value,
-            'functional_state' => $operation->functional_state->value,
-            'launch_claimed_at' => $operation->launch_claimed_at?->toIso8601String(),
-            'last_heartbeat_at' => $operation->last_heartbeat_at?->toIso8601String(),
-            'last_observed_at' => $operation->last_observed_at?->toIso8601String(),
-            'terminated_at' => $operation->terminated_at?->toIso8601String(),
-            'exit_code' => $operation->exit_code,
-            'evidence' => $operation->evidence,
-        ]);
+        try {
+            $this->workspaces->writeState($operation->execution, 'remote-op-'.$operation->operation_uuid.'.json', [
+                'operation_uuid' => $operation->operation_uuid,
+                'idempotency_key' => $operation->idempotency_key,
+                'provider_key' => $operation->provider_key,
+                'host_id' => $operation->host_id,
+                'runtime_key' => $operation->runtime_key,
+                'process_id' => $operation->process_id,
+                'command_key' => $operation->command_key,
+                'command_sha256' => $operation->command_sha256,
+                'communication_state' => $operation->communication_state->value,
+                'functional_state' => $operation->functional_state->value,
+                'launch_claimed_at' => $operation->launch_claimed_at?->toIso8601String(),
+                'last_heartbeat_at' => $operation->last_heartbeat_at?->toIso8601String(),
+                'last_observed_at' => $operation->last_observed_at?->toIso8601String(),
+                'terminated_at' => $operation->terminated_at?->toIso8601String(),
+                'exit_code' => $operation->exit_code,
+                'evidence' => $operation->evidence,
+            ]);
+        } catch (WorkspaceCapacityExceeded) {
+            // PostgreSQL and the bounded launch/exit proof remain authoritative.
+            // An auxiliary state snapshot must not invalidate terminal evidence.
+        }
     }
 }

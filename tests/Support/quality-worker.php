@@ -21,10 +21,18 @@ while (true) {
     ], base_path(), timeout: 45);
     $process->start();
     $pid = $process->getPid();
-    $exit = $process->wait();
+    try {
+        $exit = $process->wait();
+        $error = $process->getErrorOutput();
+    } catch (Throwable) {
+        // A failed browser case must fail explicitly without killing the
+        // coordinator and poisoning every subsequent independent case.
+        $exit = 124;
+        $error = 'The bounded quality worker unit did not complete.';
+    }
     Redis::rpush('quality:worker:result:'.$data['id'], json_encode([
         'exit' => $exit, 'pid' => $pid,
-        'output' => $process->getOutput(), 'error' => $process->getErrorOutput(),
+        'error' => $error,
     ], JSON_THROW_ON_ERROR));
     Redis::expire('quality:worker:result:'.$data['id'], 120);
 }

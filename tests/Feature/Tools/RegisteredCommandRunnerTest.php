@@ -423,6 +423,13 @@ class RegisteredCommandRunnerTest extends TestCase
 
         $operation->refresh();
         $this->assertLessThan(4.5, $elapsed, 'Laravel must release its worker before the registered process finishes.');
+        // /proc can be temporarily unreadable while the identity-preserving
+        // entrypoint execs the target. Reconcile that same operation; never launch again.
+        $deadline = microtime(true) + 3;
+        while ($operation->functional_state->value !== 'RUNNING' && microtime(true) < $deadline) {
+            usleep(50000);
+            $operation = app(RemoteOperationCoordinator::class)->reconcile($operation);
+        }
         $this->assertSame('RUNNING', $operation->functional_state->value);
         $this->assertTrue(app(LocalProcessInspector::class)->isRunning($operation));
         $this->assertSame('TERMINATED', $this->waitForTerminal($operation, 15)->communication_state->value);
@@ -636,6 +643,40 @@ class RegisteredCommandRunnerTest extends TestCase
             }
             proc_close($process);
         }
+    }
+
+    public function test_capacity_consumed_by_a_running_tool_stops_its_group_and_preserves_real_exit_evidence(): void
+    {
+        config(['queue.default' => 'sync', 'toolkit.runner.host_id' => gethostname() ?: 'local']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $coordinator = app(RemoteOperationCoordinator::class);
+        $operation = $coordinator->schedule($execution, 'capacity-consumed', 'platform_long');
+        $deadline = microtime(true) + 10;
+        do {
+            usleep(50000);
+            $operation->refresh();
+        } while ($operation->process_id === null && microtime(true) < $deadline);
+        $this->assertTrue(app(LocalProcessInspector::class)->isRunning($operation));
+        $path = app(ExecutionWorkspaceManager::class)->resolve($execution, 'temporary', 'tool-consumption');
+        $handle = fopen($path, 'xb');
+        $this->assertNotFalse($handle);
+        try {
+            $this->assertTrue(ftruncate($handle, 64 * 1024 * 1024));
+        } finally {
+            fclose($handle);
+        }
+        $operation = $this->waitForTerminal($operation, 20);
+        $this->assertSame('FAILED', $operation->functional_state->value);
+        $this->assertSame(125, $operation->exit_code);
+        $this->assertTrue($operation->evidence['exit_evidence']['resource_limit_exceeded']);
+        $deadline = microtime(true) + 5;
+        do {
+            usleep(50000);
+        } while (! $coordinator->verifyTerminalEvidence($operation) && microtime(true) < $deadline);
+        $this->assertTrue($coordinator->verifyTerminalEvidence($operation));
+        $this->assertFalse(app(LocalProcessInspector::class)->hasActiveProcessGroup($operation));
+        $this->assertFileExists(app(ExecutionWorkspaceManager::class)->operationEvidencePath($execution, $operation->operation_uuid, 'exit.json'));
     }
 
     private function approveCapacity(Execution $execution): void
