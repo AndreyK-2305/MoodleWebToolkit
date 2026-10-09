@@ -25,21 +25,24 @@ La cuota queda aprobada por ejecución y se fija en el binding. Las comprobacion
 
 La inspección histórica de Fase 0 y el cierre de IT2 anteriores conservan su fecha
 y alcance. IT3 incorpora un recorrido real verificado desde una copia aislada del
-Recolector 7.4.2, exclusivamente sobre Moodle sintético. La estabilización final
-y la publicación siguen en validación; la evidencia vigente está en
+Recolector 7.4.2, exclusivamente sobre Moodle sintético. El laboratorio acredita
+reinicios reales de Redis, queue-worker y Reverb con el mismo grupo/operación;
+se entrega para revisión con cuatro fallos abiertos de navegador y CI del SHA
+de entrega pendiente. IT3 no se declara aceptada. La evidencia y los pendientes están en
 [`ITERACION-3-RECOLECTOR.md`](ITERACION-3-RECOLECTOR.md).
 
-| Capacidad en IT3 | Estado comprobado                                                                                             |
-| ---------------- | ------------------------------------------------------------------------------------------------------------- |
-| Inicio           | CollectorAdapter + proveedor local + `collector.742.lab`, argv cerrado, host y distribución fijados           |
-| Configuración    | Revisiones/actor/fecha/SHA, runtime aprobado y SecretProvider LAB versionado; preflight real                  |
-| Duración         | Wall/CPU null; heartbeat, stall, cancelación, recursos y jobs Laravel de 120 segundos separados               |
-| Eventos          | Parser/cursor durables, PostgreSQL → commit → outbox → Reverb; polling y progreso nullable                    |
-| Paquetes         | Auditoría independiente, seis artefactos declarados, SourcePackage VALID y cierre con cuatro reportes         |
-| Productores      | 7.4.2 para nuevas exportaciones; 7.4.1 reconocido en paquetes existentes sin cambiar productor/MBZ            |
-| Cancelación      | Grupo registrado de la operación y terminación verificable; no detiene el servidor Moodle                     |
-| Resume/pausa     | No acreditados para el binding real; nuevo intento con linaje explícito y evidencia anterior conservada       |
-| Habilitación     | Fake predeterminado; flags reales false; Recolector LABORATORY, Consolidador BLOCKED, Integrador INCOMPATIBLE |
+| Capacidad en IT3 | Estado comprobado                                                                                                    |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Inicio           | CollectorAdapter + proveedor local + `collector.742.lab`, argv cerrado, host y distribución fijados                  |
+| Configuración    | Revisiones/actor/fecha/SHA, runtime aprobado y SecretProvider LAB versionado; preflight real                         |
+| Duración         | Wall/CPU null; heartbeat, stall, cancelación, recursos y jobs Laravel de 120 segundos separados                      |
+| Eventos          | Parser/cursor durables, PostgreSQL → commit → outbox → Reverb; polling y progreso nullable                           |
+| Paquetes         | Auditoría independiente, seis artefactos declarados, SourcePackage VALID y cierre con cuatro reportes                |
+| Productores      | 7.4.2 para nuevas exportaciones; 7.4.1 reconocido en paquetes existentes sin cambiar productor/MBZ                   |
+| Cancelación      | Grupo registrado de la operación y terminación verificable; no detiene el servidor Moodle                            |
+| Recuperación     | Worker de lanzamiento SIGKILL y reinicios Redis/queue-worker/Reverb; misma operación, paquete y secretos comprobados |
+| Resume/pausa     | No acreditados para el binding real; nuevo intento con linaje explícito y evidencia anterior conservada              |
+| Habilitación     | Fake predeterminado; flags reales false; Recolector LABORATORY, Consolidador BLOCKED, Integrador INCOMPATIBLE        |
 
 ## Matriz histórica de capacidades al cierre de IT2
 

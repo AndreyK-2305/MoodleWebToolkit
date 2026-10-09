@@ -1,0 +1,14 @@
+{
+    "schema_version": "collector-contract-validation.v1",
+    "result": "PASSED",
+    "distribution_sha256": "4daaa16d278991f098b7f9c85361f7800193c4825e1f8cb6cb2c4b2870103c2e",
+    "file_count": 29,
+    "contracts": [
+        "verify-package",
+        "theme-contracts",
+        "resume-theme-metadata",
+        "static-regressions"
+    ],
+    "php_series": "8.3",
+    "executed_from_verified_copy": true
+}

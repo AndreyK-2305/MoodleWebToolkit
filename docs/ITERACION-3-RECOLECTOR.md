@@ -7,12 +7,22 @@ Rama `codex/3-recolector-real`, creada desde `main` en
 [PR #8](https://github.com/AndreyK-2305/MoodleWebToolkit/pull/8).
 Contiene el ancestro `d330fcc2e5c3cd2d24d1836977f47a1380e5a518` y la
 [CI de la base](https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/37813277514)
-aprobó. Este informe sustituye las notas provisionales de los cortes 1–18.
+aprobó. Este informe sustituye las notas provisionales de implementación.
 
-El recorrido real de navegador ya está acreditado en Moodle sintético. La
-estabilización final y la publicación permanecen en validación. El cierre exige
-las puertas completas y la CI del SHA publicado; los resultados locales de un
-working tree modificado se identifican como candidatos, no como ese SHA final.
+**Estado: implementada y entregada para revisión; aceptación de IT3 pendiente.**
+El recorrido real de navegador y la recuperación durante reinicios están
+acreditados en Moodle sintético. La última regresión general obtuvo 535 pruebas
+PHP aprobadas y 38 pruebas de navegador aprobadas, cuatro fallidas y dos casos
+LAB omitidos en esa puerta. A petición del usuario se detienen las baterías
+locales completas y se entrega el código en un PR borrador con estos pendientes
+visibles. No se declara IT3 aceptada ni CI verde sobre el SHA de entrega.
+
+Las puertas locales se identifican por separado: un resultado con working tree
+modificado es un candidato. La evidencia resumida y sus huellas se conservan en
+[`evidence/it3-review-validation.json`](evidence/it3-review-validation.json).
+El PR y el SHA de entrega se informan fuera de este commit para evitar una
+referencia circular. CI se ejecuta al abrir el PR y conserva resultados del
+checkout exacto; su resultado queda pendiente en esta entrega para revisión.
 
 El alcance es exclusivamente 3A–3H. Fake sigue siendo el modo predeterminado.
 `TOOL_RECOLECTOR_742_ENABLED` y `TOOL_LOCAL_RUNNER_ENABLED` siguen en `false` por
@@ -203,19 +213,20 @@ cancela; repetir su Idempotency-Key no duplica el comando.
 
 ## 3H y evidencia de calidad
 
-| Puerta                                         | Evidencia actual                                                                          |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| PHP completo PostgreSQL                        | 534 pruebas, 6808 aserciones, 0 fallos/errores/omisiones                                  |
-| Multiproceso                                   | Lanzamiento concurrente, reconciliadores, cuota concurrente y worker SIGKILL incluidos    |
-| LAB real                                       | 3 pruebas; aserciones varían con observaciones idempotentes; sin fallos/omisiones         |
-| Contratos del Recolector                       | Cuatro contratos desde copia verificada de 29 archivos/PHP 8.3                            |
-| Playwright COLLECT LAB                         | 2/2, retries=0; salud final 12 servicios y teardown PASSED                                |
-| Playwright Fake completo                       | 42/42 ejecutadas; los dos casos LAB se ejecutan en su puerta separada; retries=0          |
-| Análisis/frontend                              | Pint, PHPStan, Vite Plus, ESLint, TypeScript aplicación/E2E, Vitest 5 y build             |
-| Migraciones                                    | Fresh, upgrade con datos, rollback y reapply incluidos en PHP completo                    |
-| BaseLine                                       | 423 archivos/hash esperado; prueba de escritura read-only en siete servicios persistentes |
-| Reinicio Redis/queue-worker con COLLECT activo | Prueba específica final pendiente                                                         |
-| Publicación                                    | CI de SHA final y PR borrador pendientes                                                  |
+| Puerta                       | Evidencia actual                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------ |
+| PHP completo PostgreSQL      | 535 pruebas, 6813 aserciones, 0 fallos/errores/omisiones en el último corte local          |
+| Multiproceso                 | Lanzamiento concurrente, reconciliadores, cuota concurrente y worker SIGKILL incluidos     |
+| LAB real                     | 3 pruebas, 154 aserciones en el corte local de reinicios; sin fallos/omisiones             |
+| Contratos del Recolector     | Cuatro contratos desde copia verificada de 29 archivos/PHP 8.3                             |
+| Playwright COLLECT LAB       | 2/2, retries=0; salud final 12 servicios y teardown PASSED                                 |
+| Playwright Fake completo     | Último corte: 38 aprobadas, 4 fallidas, 2 LAB omitidas; retries=0; aceptación pendiente    |
+| Análisis/frontend            | Pint, PHPStan, Vite Plus, ESLint, TypeScript aplicación/E2E, Vitest 5 y build              |
+| Migraciones                  | Fresh, upgrade con datos, rollback y reapply incluidos en PHP completo                     |
+| BaseLine                     | 423 archivos/hash esperado; read-only en siete servicios persistentes y Playwright LAB     |
+| Reinicios con COLLECT activo | Redis, queue-worker y Reverb reales; mismo grupo/operación, seis artefactos y Source VALID |
+| Secretos                     | Inspección de HTTP, reportes, 47 tablas y 73 archivos; configuración privada eliminada     |
+| Publicación                  | Entrega para revisión mediante PR borrador hacia main; CI del SHA de entrega pendiente     |
 
 La cobertura incluye configuración/distribución alteradas, autorización vencida,
 ADMIN/OPERATOR asignado/AUDITOR/outsider/inactivo/revocación, idempotencia, secreto
@@ -223,13 +234,111 @@ fragmentado, paquete/manifiesto alterados, capacidad insuficiente, truncación d
 reconciliación y limpieza conservadora. Las pruebas físicas de escritura/sync/exit
 siguen rechazando un resultado no comprobable.
 
-Los reportes locales están en `quality-results/` (ignorados por Git). El driver
+La prueba de reinicios inicia una exportación con el worker real y conserva su
+identidad registrada. Un arnés CLI exclusivo de testing aplica SIGSTOP/SIGCONT al
+grupo verificado para mantener esta pequeña muestra activa durante los reinicios.
+No cambia las capabilities ni habilita una acción de pausa para usuarios. Después
+comprueba la misma identidad, una sola operación, secuencias continuas, terminación
+íntegra, cero checkpoints, progreso null y SourcePackage VALID. Por separado, una
+prueba multiproceso mata con SIGKILL al worker que efectivamente lanza el Recolector
+y acredita que el grupo continúa independiente antes de cancelarlo con seguridad.
+
+Las aserciones que examinan el secreto real usan resultados booleanos y mensajes
+cerrados: incluso un resultado JUnit fallido no imprime el valor esperado. La
+inspección posterior a reinicios recorre todas las tablas de la aplicación y los
+archivos del workspace/artefactos; la auditoría del paquete examina también contenido
+descomprimido. Los conteos de aserciones, archivos y eventos pueden variar con la
+observación idempotente; el JSON/JUnit del SHA publicado contiene el conteo definitivo.
+
+Los reportes locales están en `quality-results/` (ignorados por Git). El corte
+`mt1g-it3-cut22-fake1` pasó PHP, frontend, integridad y read-only de BaseLine,
+pero falló la puerta Playwright. Sus once servicios terminaron saludables y
+el driver retiró sus contenedores, volumen y red. No emitió una validación global
+aprobada. El laboratorio completo anterior pasó con 3 pruebas PHP/154 aserciones,
+2 casos de navegador, cuatro contratos y prueba de reinicios; su metadata
+registra working tree modificado y construcción nativa de Podman, no una
+validación limpia del SHA de entrega. Una ejecución anterior de las 42 pruebas
+generales de navegador pasó; no sustituye los cuatro fallos del último corte.
+
+La evidencia cerrada de contratos se conserva en
+[`evidence/it3-collector-contracts.json`](evidence/it3-collector-contracts.json),
+y la recuperación/inspección de secretos en
+[`evidence/it3-collector-resilience.json`](evidence/it3-collector-resilience.json).
+Son pruebas locales anteriores, no artifacts de CI del SHA de entrega.
+
+El driver
 registra SHA, working tree dirty, métricas, salud y teardown. CI construye imágenes
 limpias y conserva `iteration2-validation-<SHA>` para la regresión completa y
 `iteration3-lab-validation-<SHA>` para el laboratorio, con JSON/JUnit ligados al
-checkout exacto. La lista completa de commits se obtiene con
-`git log --reverse 05f858bde44c4162bbec4a8710171b4b42d285f0..HEAD`; la publicación
-mantendrá commits normales, push normal y PR borrador hacia main, sin merge.
+checkout exacto. Ambos deben indicar `quality_gates=PASSED`, árbol limpio,
+`clean_images_built_in_driver=true` y `teardown=PASSED`. El LAB conserva además
+`collector-contracts.json` y `collector-resilience.json`. La publicación usa commits
+normales, push normal y PR borrador hacia main, sin force-push ni merge. Estos
+son los requisitos del cierre definitivo, que permanece pendiente.
+
+### Cuatro fallos abiertos de navegador
+
+| Caso                                              | Fallo observado                                                            | Comprobación pendiente                                                                                 |
+| ------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `execution.spec.ts:282`, INTERVENTION             | Timeout al llenar el correo en login; no llegó a probar la decisión        | Acceso y continuación idempotente de la misma ejecución                                                |
+| `review.spec.ts:83`, doble clic                   | `spawnSync runuser ETIMEDOUT` en `snapshot()` después del clic             | Verificar que existe una sola ejecución; el fallo no acredita duplicación                              |
+| `temporal-auth.spec.ts:15`, autorización caducada | La pantalla permaneció RUNNING al 35 % cuando esperaba WAITING_USER_ACTION | Acreditar llegada a intervención y luego probar caducidad/reintento; falló antes de caducar            |
+| `temporal-auth.spec.ts:157`, más de 24 horas      | Tras intentar caducar la autorización, FINALIZE devolvió 202 en vez de 423 | Determinar si caducidad del arnés y sesión concurrente fallaron o si existe un defecto de autorización |
+
+Las causas no están confirmadas. El cuarto caso requiere atención prioritaria:
+la aceptación de FINALIZE después del intento de caducidad no puede descartarse
+como un simple timeout. No se han quitado aserciones, aumentado timeouts,
+habilitado reintentos ni ocultado casos para dar estas puertas por aprobadas.
+El requisito de regresiones completas y CI verde sigue abierto. La revisión del
+código puede comenzar ahora; esta entrega no autoriza merge ni despliegue.
+
+## Commits y archivos principales
+
+| Corte | Commit    | Resultado                                                  |
+| ----- | --------- | ---------------------------------------------------------- |
+| 1     | `ad9199e` | Duración y recursos independientes                         |
+| 2     | `42bc8a7` | Configuración LAB versionada y secretos efímeros           |
+| 3     | `d360469` | Preflight real y pantalla de configuración                 |
+| 4     | `9bc9192` | Host/namespace fijado y reconciliación local               |
+| 5     | `095fc1f` | Señales reales y progreso sin éxito sintético              |
+| 6     | `86de30f` | Runtime inmutable aprobado                                 |
+| 7     | `6554736` | PHP compatible aislado                                     |
+| 8     | `eefae99` | Bridge y comando LAB cerrado                               |
+| 9     | `fe45263` | Moodle sintético y exportación real                        |
+| 10    | `bdc79ac` | Auditoría de paquetes y productor legacy                   |
+| 11    | `59b224d` | Outbox transaccional de eventos                            |
+| 12    | `035a15c` | Observación/cursor durables                                |
+| 13    | `d1e4b36` | Terminación verificada y captura idempotente               |
+| 14    | `e04bf7c` | Binding y workflow con auditoría                           |
+| 15    | `4e0257b` | Routing real y recuperación de observadores                |
+| 16    | `f579a39` | Finalización real en jobs acotados                         |
+| 17    | `d9ed2c0` | Nueva exportación con linaje inmutable                     |
+| 18    | `4add843` | HTTP/UI LAB y revisión de paquetes reales                  |
+| 19    | `c624a91` | Navegador real, evidencia de cuota y puertas reproducibles |
+| 20    | `259c55e` | Reinicios reales, worker SIGKILL e higiene de secretos     |
+| 21    | `44c6194` | Arranque fallido acotado y relojes monotónicos             |
+| 22    | `8b7c7a6` | Barrera multiproceso monotónica y diagnóstico cerrado      |
+
+El corte final actualiza esta documentación. La lista íntegra, incluido ese corte,
+se obtiene con `git log --reverse 05f858bde44c4162bbec4a8710171b4b42d285f0..HEAD`;
+su identidad final se conserva fuera del commit en los artifacts y el informe de entrega.
+
+| Archivo o grupo                                                                                                                                            | Responsabilidad                                                      |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `app/Domain/Collector/CollectorConfiguration.php`, `CollectorRuntimeConfiguration.php`                                                                     | Revisiones y aprobación del runtime                                  |
+| `app/Domain/Collector/Contracts/SecretProvider.php`, `LabFileSecretProvider.php`, `MoodleConfigurationMaterializer.php`                                    | Referencias opacas y CFG efímero                                     |
+| `app/Domain/Collector/CollectorPreflight.php`, `SyntheticMoodleProbe.php`                                                                                  | Checks reales, fingerprint y acceso sintético                        |
+| `app/Domain/Tools/CollectorAdapter.php`, `app/Domain/Collector/CollectorExecutionProvider.php`                                                             | Adaptador y despacho por binding                                     |
+| `app/Domain/Collector/CollectorRegisteredCommand.php`, `CollectorBridge.php`, `bin/collector-bridge.php`                                                   | Comando registrado y exportación desde copia verificada              |
+| `app/Domain/Processes/RegisteredCommandRunner.php`, `RegisteredExecutionPolicy.php`                                                                        | Supervisor, duración, recursos y evidencia terminal                  |
+| `app/Domain/Collector/CollectorLogReader.php`, `CollectorEventObserver.php`, `app/Domain/Realtime/ExecutionEventOutboxPublisher.php`                       | Cursor, transacción y publicación después del commit                 |
+| `app/Domain/Collector/CollectorWorkflow.php`, `CollectorPackageInspector.php`, `app/Domain/Tools/SourcePackageRegistry.php`                                | Auditoría, captura, SourcePackage y revisión                         |
+| `app/Domain/Collector/RetryCollectorExecution.php`                                                                                                         | Nuevo intento y linaje sin checkpoint ficticio                       |
+| `database/migrations/2026_10_08_*.php`                                                                                                                     | Revisiones, cursor, identidad de captura, auditoría, outbox y linaje |
+| `resources/js/pages/projects/collector.tsx`, `resources/js/components/collector-configuration-form.tsx`, `resources/js/pages/projects/executions/show.tsx` | Configuración, seguimiento, revisión y acciones autorizadas          |
+| `compose.collector-lab.yaml`, `docker/collector-lab/`, `docker/php/Dockerfile`                                                                             | Fixture aislado y runtimes compatibles                               |
+| `tests/Laboratory/`, `tests/E2E/collector-lab.spec.ts`, `tests/Support/collector-resilience.php`                                                           | Exportación real, navegador y fallos de infraestructura              |
+| `tests/Infrastructure/run-quality.ps1`, `.github/workflows/tests.yml`                                                                                      | Puertas completas y artifacts del SHA exacto                         |
 
 ## Fallos encontrados y desviaciones
 
@@ -245,15 +354,29 @@ mantendrá commits normales, push normal y PR borrador hacia main, sin merge.
   cambió a resolución dinámica con el DNS del contenedor.
 - Consumir la cuota bloqueaba también exit evidence. Se agregó reserva técnica
   acotada y se conservó el rechazo ante errores físicos de escritura/sync.
+- Un arranque sin identidad confirmada dejó al supervisor esperando un hijo que
+  aún no había creado su grupo. La nueva prueba detecta esa espera en el código
+  anterior y pasa con la corrección: se detiene únicamente el hijo propio antes
+  de abrir la compuerta. Arranque y gracia de cancelación usan reloj monotónico.
+  La causa del primer arranque no confirmado no se atribuye a esta corrección.
 - Una interrupción del transporte local invalidó un candidato de navegador;
   no se contó como prueba aprobada. La repetición completa COLLECT LAB pasó.
+- La barrera de una prueba multiproceso falló antes de enviar las solicitudes
+  HTTP. Se alineó su presupuesto monotónico de preparación con los 30 segundos
+  permitidos al proceso, se añadieron etapas cerradas y se detienen los hijos
+  propios antes de desbloquear una preparación fallida. Los 14 casos dirigidos
+  pasaron, y el corte PHP completo posterior pasó 535 pruebas/6813 aserciones.
+  La causa de la lentitud inicial no quedó demostrada.
 - El arnés detenía su coordinador al vencer una unidad y contaminaba los casos
   posteriores. Ahora devuelve un fallo explícito y conserva solo etapas cerradas,
-  sin payloads. La regresión completa de navegador pasó; los candidatos fallidos
-  se descartaron. La prueba de lanzamiento reconcilia de forma acotada la misma
+  sin payloads. Una regresión completa anterior pasó, pero la última tiene los
+  cuatro pendientes descritos arriba. La prueba de lanzamiento reconcilia la misma
   operación antes de exigir una identidad RUNNING, sin volver a lanzarla.
 - Traces/videos E2E se deshabilitaron porque pueden retener cuerpos con contraseñas
   sintéticas. Se conservan JUnit y capturas de fallo.
+- A petición del usuario se adelanta la revisión del código y se detienen las
+  baterías locales completas. Esta modificación de la secuencia de entrega no
+  convierte los fallos abiertos en pruebas aprobadas ni cierra la aceptación.
 
 ## Reproducción, rollback y límites
 

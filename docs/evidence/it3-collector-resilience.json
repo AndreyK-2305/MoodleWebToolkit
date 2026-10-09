@@ -1,0 +1,18 @@
+{
+    "schema_version": "collector-resilience.v1",
+    "result": "PASSED",
+    "execution_uuid": "add4a825-da3b-4a4a-8434-5aa8b4de5ab7",
+    "operation_uuid": "9971a1c0-f7fa-419a-ac99-65249da5f4a4",
+    "same_registered_group_after_restart": true,
+    "remote_operations": 1,
+    "artifacts": 6,
+    "checkpoints": 0,
+    "progress": null,
+    "source_sha256": "dfa7d2a0207d4df24256f04c948fa9130ef415e815aaa9b980e0093536aef22e",
+    "events": 7,
+    "database_tables_scanned": 47,
+    "files_scanned": 73,
+    "private_configuration_removed": true,
+    "secret_hygiene": "PASSED",
+    "restarted_services": ["redis", "queue-worker", "reverb"]
+}
