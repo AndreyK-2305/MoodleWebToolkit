@@ -27,8 +27,9 @@ La inspección histórica de Fase 0 y el cierre de IT2 anteriores conservan su f
 y alcance. IT3 incorpora un recorrido real verificado desde una copia aislada del
 Recolector 7.4.2, exclusivamente sobre Moodle sintético. El laboratorio acredita
 reinicios reales de Redis, queue-worker y Reverb con el mismo grupo/operación;
-el PR #9 continúa borrador mientras se corrigen la caducidad del arnés y una
-consulta que descartaba notificaciones Reverb concurrentes. La evidencia del
+el PR #9 continúa borrador. La caducidad del arnés y la consulta que descartaba
+notificaciones Reverb concurrentes están corregidas y las puertas locales
+completas aprobaron desde checkouts limpios. La evidencia del
 origen diferencia código protegido, datos temporales y base no verificada.
 El cierre exige ambas puertas completas verdes del mismo SHA limpio. Los cortes están en
 [`ITERACION-3-RECOLECTOR.md`](ITERACION-3-RECOLECTOR.md).

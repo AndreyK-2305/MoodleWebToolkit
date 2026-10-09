@@ -9,7 +9,9 @@ Contiene el ancestro `d330fcc2e5c3cd2d24d1836977f47a1380e5a518` y la
 [CI de la base](https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/37813277514)
 aprobó. Este informe sustituye las notas provisionales de implementación.
 
-**Estado: correcciones de revisión implementadas; puertas completas pendientes.**
+**Estado: correcciones de revisión implementadas y puertas locales completas aprobadas.**
+La aceptación del SHA publicado requiere los dos jobs de CI verdes y sus artifacts
+del mismo `head_sha`, con árbol limpio. No basta la aprobación local ni un solo job.
 Se continúa sobre el [PR #9 borrador](https://github.com/AndreyK-2305/MoodleWebToolkit/pull/9),
 sin merge. La revisión del SHA `15870fdb6f92237addbc800238d0bf2ec329f4d8`
 obtuvo LAB SUCCESS y regresión general FAILURE: 41 casos de navegador aprobados,
@@ -248,12 +250,13 @@ cancela; repetir su Idempotency-Key no duplica el comando.
 | PHP dirigido PostgreSQL/Redis | 22 pruebas, 172 aserciones, 0 fallos; incluye 8 casos de guardas HTTP, FINALIZE sin efectos y concurrencia de dos sesiones del mismo usuario. |
 | Temporal aislado              | Tres ejecuciones aprobadas (11,1; 11,8; 9,8 s), un worker, retries=0; 423 antes de confirmar y cierre único después.                          |
 | Análisis dirigido             | PHPStan y TypeScript E2E aprobados.                                                                                                           |
-| Puertas completas locales     | Pendientes del checkout limpio de corrección.                                                                                                 |
+| General local limpio          | `e247812`: 553 PHP/6955 aserciones, 5 Vitest y 43 Playwright aprobados; solo dos LAB omitidos, retries=0, 11 servicios saludables y teardown aprobado. |
+| LAB local limpio              | `a16fc6b`: 3 PHP/181 aserciones, 2 Playwright, 4 contratos, reinicios y 6 negativos del scanner; 12 servicios saludables, retries=0 y teardown aprobado. |
 | CI final                      | Deben aprobar ci y collector-lab del mismo head_sha; consultar los dos artifacts del PR 9.                                                    |
 
 La puerta general conserva todas las pruebas PHP, PostgreSQL multiproceso,
 upgrade con datos, rollback/reapply, Vitest, Pint, PHPStan, Vite Plus, ESLint,
-TypeScript de aplicación/E2E, build y los 42 casos generales Playwright.
+TypeScript de aplicación/E2E, build y los 43 casos generales Playwright.
 Los dos casos LAB se omiten únicamente en general y se ejecutan en su job separado.
 Las dos puertas mantienen retries=0 y los mismos timeouts.
 
@@ -264,6 +267,45 @@ caducidad y más de 24 horas. La suite PHP del CI `4549f01` pasó 553 pruebas y
 6955 aserciones; ese corte no aprobó la puerta global, pues falló la vertical
 COLLECT en el navegador. LAB pasó tres pruebas PHP/179 aserciones, pero falló
 la comprobación posterior a reinicios; no se presenta como CI verde.
+
+Los resultados locales completos, sus SHA y la construcción nativa de tres imágenes
+se conservan en [`evidence/it3-local-closure-validation.json`](evidence/it3-local-closure-validation.json).
+General aprobó con el código `e2478126131ef910151856041f87a1b342826b8e`;
+LAB con `a16fc6bd783f20956faf13ac9312490df64601b0`, que añade únicamente
+configuración de CI. Ambos reportes registran `working_tree_dirty=false`.
+Local usó imágenes nuevas construidas por Podman y `-SkipBuild`; se conserva
+`clean_images_built_in_driver=false`. CI construye sus imágenes en el driver y
+debe registrar `true`. El escenario de más de 24 horas aprobó también dentro
+del general completo (14,1 s); navegador general 7,0 min y LAB 2,5 min.
+
+El [job general de a16fc6b](https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/37998000888/job/114048841802)
+aprobó 553 PHP/6955 aserciones y 43 Playwright, con dos LAB omitidos, árbol limpio,
+construcción en el driver y teardown aprobado. El
+[job LAB del mismo corte](https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/37998000888/job/114048841575)
+falló en PHP: dos aprobadas y una fallida, 120 aserciones; el workflow llegó a
+FAILED antes de REVIEW. Ese corte no acredita aceptación conjunta. La causa de
+esa salida no se infiere del timeout de la aserción: se conserva un diagnóstico
+cerrado antes de retirar el workspace. La prueba abandona la espera cuando ve
+un estado terminal y mantiene el plazo de 240 segundos, REVIEW y todas sus
+aserciones. Excepciones de observación publican códigos constantes; no mensajes,
+rutas, IDs, credenciales ni salida cruda. La comprobación posterior a reinicios
+tiene un diagnóstico cerrado independiente por etapa.
+
+Dos intentos del CI `e247812` se detuvieron en build por HTTP 429 de Docker Hub,
+con cero pruebas ejecutadas. CI configura exclusivamente el daemon de runners
+Linux vacíos de GitHub con la
+[caché documentada de Docker Hub](https://docs.cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images).
+Se compararon los digests de las ocho imágenes públicas y coincidían; se mantienen
+Dockerfile, Compose, etiquetas, expectativas, timeouts y retries. Una ausencia
+en la caché puede volver a Docker Hub; no se oculta un fallo mediante bucles.
+
+El SHA literal definitivo y los enlaces nominales de ambos jobs finales se
+publican en el informe de cierre del PR 9. Dentro del commit documental se usa
+la identidad de sus dos artifacts y los
+[checks del PR](https://github.com/AndreyK-2305/MoodleWebToolkit/pull/9/checks),
+pues insertar su propio SHA cambiaría el commit. Solo son pruebas finales los
+artifacts `iteration2-validation-<SHA>` e `iteration3-lab-validation-<SHA>` del
+mismo checkout, ambos PASSED, limpios y con `retries=0`.
 
 La prueba de reinicios inicia una exportación con el worker real y conserva su
 identidad registrada. Un CLI exclusivo de testing aplica SIGSTOP/SIGCONT al

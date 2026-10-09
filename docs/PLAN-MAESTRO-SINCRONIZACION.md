@@ -650,7 +650,7 @@ Ejecutar sobre Moodle sintético:
 - inventario visual;
 - OAuth de laboratorio;
 - interrupción controlada;
-- reanudación;
+- nuevo intento de exportación con linaje; reanudación entre workspaces no habilitada;
 - validación del paquete.
 
 ## 3H — Estabilización
@@ -659,7 +659,7 @@ Probar:
 
 - Redis reiniciado;
 - worker reiniciado;
-- runner reiniciado;
+- reinicio completo del contenedor del runner pendiente de acreditación;
 - navegador cerrado;
 - sesión expirada;
 - Reverb desconectado;
@@ -676,7 +676,7 @@ Probar:
 - Paquete válido.
 - Inventario visual.
 - Eventos reales.
-- Reanudación real.
+- Nuevo intento real con linaje; no se declara reanudación segura entre workspaces.
 - Artefactos por referencia.
 - Ejecución superior a la sesión del usuario.
 - Modo Fake conservado.
