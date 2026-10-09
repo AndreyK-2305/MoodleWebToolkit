@@ -164,9 +164,9 @@ class CollectorExportTest extends DomainTestCase
                 app()->instance(SecretProvider::class, $actualSecrets);
             }
             app(SecretProvider::class)->consume('moodle-lab-db', '1', function (string $secret) use ($process, $output): void {
-                $this->assertStringNotContainsString($secret, $process->getOutput().$process->getErrorOutput());
+                $this->assertFalse(str_contains($process->getOutput().$process->getErrorOutput(), $secret), 'Private material reached process output.');
                 foreach (glob($output.'/*.json') as $path) {
-                    $this->assertStringNotContainsString($secret, file_get_contents($path));
+                    $this->assertFalse(str_contains(file_get_contents($path), $secret), 'Private material reached output metadata.');
                 }
             });
         } finally {

@@ -91,6 +91,26 @@ try {
         $contracts = @(& docker compose exec -T --user www-data tool-runner php tests/Support/collector-contracts.php)
         if ($LASTEXITCODE -ne 0) { throw 'Las pruebas de la copia verificada del Recolector fallaron.' }
         $contracts | Set-Content quality-results/collector-contracts.json
+        $holdOutput = @(& docker compose exec -T --user www-data tool-runner php tests/Support/collector-resilience.php prepare)
+        if ($LASTEXITCODE -ne 0) { throw 'No se pudo iniciar el Recolector para la prueba de reinicios.' }
+        $held = ($holdOutput -join [Environment]::NewLine) | ConvertFrom-Json
+        if ($held.phase -ne 'HELD' -or $held.execution_uuid -notmatch '^[a-f0-9-]{36}$') { throw 'Identidad de la prueba de reinicios inválida.' }
+        try {
+            Invoke-QualityCompose restart redis
+            Invoke-QualityCompose up -d --no-deps --wait --wait-timeout 60 redis
+            Invoke-QualityCompose restart queue-worker
+            Invoke-QualityCompose up -d --no-deps --wait --wait-timeout 60 queue-worker
+            Invoke-QualityCompose restart reverb
+            Invoke-QualityCompose up -d --no-deps --wait --wait-timeout 60 reverb
+            $resilienceOutput = @(& docker compose exec -T --user www-data tool-runner php tests/Support/collector-resilience.php continue $held.execution_uuid)
+            if ($LASTEXITCODE -ne 0) { throw 'El Recolector no acreditó recuperación después de los reinicios.' }
+            $resilience = ($resilienceOutput -join [Environment]::NewLine) | ConvertFrom-Json
+            if ($resilience.result -ne 'PASSED' -or $resilience.secret_hygiene -ne 'PASSED') { throw 'La prueba de recuperación no aprobó.' }
+            $resilience | Add-Member -NotePropertyName restarted_services -NotePropertyValue @('redis', 'queue-worker', 'reverb')
+            $resilience | ConvertTo-Json | Set-Content quality-results/collector-resilience.json
+        } finally {
+            Invoke-QualityCompose exec -T --user www-data tool-runner php tests/Support/collector-resilience.php release $held.execution_uuid
+        }
     }
     Invoke-QualityCompose exec -T vite npm run test
     Invoke-QualityCompose exec -T vite npm run check
@@ -98,7 +118,7 @@ try {
     Invoke-QualityCompose exec -T vite npm run types:check
     Invoke-QualityCompose exec -T vite npm run build
     & ./tests/Infrastructure/verify-baseline-integrity.ps1
-    & ./tests/Infrastructure/verify-baseline-readonly.ps1
+    & ./tests/Infrastructure/verify-baseline-readonly.ps1 -IncludePlaywright:$CollectorLab
     # Additional local working-tree check; CI checks committed ranges separately.
     & git -c "safe.directory=$root" diff --check
     if ($LASTEXITCODE -ne 0) { throw 'git diff --check del working tree falló.' }
@@ -137,9 +157,14 @@ try {
         php_skipped = Measure-JUnitAttribute $phpReport 'skipped'
         playwright_tests = Measure-JUnitAttribute $browserReport 'tests'
         playwright_failures = Measure-JUnitAttribute $browserReport 'failures'
+        playwright_errors = Measure-JUnitAttribute $browserReport 'errors'
+        playwright_skipped = Measure-JUnitAttribute $browserReport 'skipped'
+        playwright_retries = 0
         healthy_services = $expectedServices
         clean_images_built_in_driver = -not $SkipBuild
         baseline_files = 423
+        baseline_readonly_services = if ($CollectorLab) { 8 } else { 7 }
+        collector_restart_proof = if ($CollectorLab) { 'collector-resilience.json' } else { $null }
         baseline_sha256 = 'd2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221'
         completed_at_utc = [DateTime]::UtcNow.ToString('o')
     }

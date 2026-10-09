@@ -54,6 +54,9 @@ class CollectorWorkflowTest extends TestCase
             'package_name' => 'durable-proof', 'capacity_bytes' => 268435456, 'safety_margin_percent' => 20])->assertRedirect();
         $this->post(route('projects.wizard.preflight', $project))->assertRedirect()->assertSessionHasNoErrors();
         $this->post(route('projects.wizard.confirm', $project), ['configuration_version' => 2, 'accepted_warning_ids' => ['collector.laboratory']])->assertRedirect()->assertSessionHasNoErrors();
+        $this->post(route('projects.wizard.confirm', $project), ['configuration_version' => 2, 'accepted_warning_ids' => ['collector.laboratory']])->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertSame(ProjectStatus::READY, $project->fresh()->status);
+        $this->assertSame(1, DB::table('audit_logs')->where('project_id', $project->id)->where('action', 'PROJECT_CONFIGURATION_CONFIRMED')->count());
         $this->postJson(route('projects.executions.store', $project), ['configuration_version' => 2], ['Idempotency-Key' => 'lab-real-start'])->assertCreated()->assertJsonPath('created', true);
         $this->postJson(route('projects.executions.store', $project), ['configuration_version' => 2], ['Idempotency-Key' => 'lab-real-start'])->assertOk()->assertJsonPath('created', false);
         $execution = $project->executions()->sole();
@@ -107,10 +110,16 @@ class CollectorWorkflowTest extends TestCase
             $this->assertSame($sequence, $execution->fresh()->last_event_sequence);
             $this->assertDatabaseCount('artifacts', 6);
             $this->assertDatabaseCount('source_packages', 1);
-            app(SecretProvider::class)->consume('moodle-lab-db', '1', function (string $value) use ($execution): void {
-                $this->assertStringNotContainsString($value, $execution->events()->get()->toJson());
-                $this->assertStringNotContainsString($value, $execution->logs()->get()->toJson());
-                $this->assertStringNotContainsString($value, $execution->artifacts()->get()->toJson());
+            $projectHttp = $this->get(route('projects.show', $project))->assertOk();
+            $executionHttp = $this->get(route('projects.executions.show', [$project, $execution]))->assertOk();
+            $httpSurfaces = $projectHttp->getContent()
+                .$executionHttp->getContent()
+                .$eventsResponse->getContent();
+            app(SecretProvider::class)->consume('moodle-lab-db', '1', function (string $value) use ($execution, $httpSurfaces): void {
+                $this->assertFalse(str_contains($execution->events()->get()->toJson(), $value), 'Private material reached events.');
+                $this->assertFalse(str_contains($execution->logs()->get()->toJson(), $value), 'Private material reached logs.');
+                $this->assertFalse(str_contains($execution->artifacts()->get()->toJson(), $value), 'Private material reached artifact metadata.');
+                $this->assertFalse(str_contains($httpSurfaces, $value), 'Private material reached an HTTP surface.');
             });
             try {
                 DB::transaction(fn () => DB::table('collector_package_audits')->where('id', CollectorPackageAudit::query()->sole()->id)->update(['package_bytes' => 1]));
@@ -152,7 +161,7 @@ class CollectorWorkflowTest extends TestCase
             $this->assertSame(2, $reportJson['audit']['courses']);
             app(SecretProvider::class)->consume('moodle-lab-db', '1', function (string $secret) use ($execution): void {
                 foreach ($execution->artifacts()->whereIn('type', ['JSON_REPORT', 'VERIFICATION_REPORT', 'LOG_EXPORT', 'FINAL_SUMMARY'])->get() as $artifact) {
-                    $this->assertStringNotContainsString($secret, Storage::disk($artifact->disk)->get($artifact->path));
+                    $this->assertFalse(str_contains(Storage::disk($artifact->disk)->get($artifact->path), $secret), 'Private material reached a report.');
                 }
             });
             $path = Storage::disk($package->artifact->disk)->path($package->artifact->path);

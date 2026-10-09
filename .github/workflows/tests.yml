@@ -114,6 +114,7 @@ jobs:
             quality-results/collector-lab-phpunit.xml
             quality-results/collector-lab-playwright.xml
             quality-results/collector-contracts.json
+            quality-results/collector-resilience.json
           if-no-files-found: error
           retention-days: 30
       - name: Ensure isolated LAB stack is stopped even after interruption

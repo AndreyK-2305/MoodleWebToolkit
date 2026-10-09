@@ -8,6 +8,7 @@ use App\Domain\Collector\CollectorExecutionProvider;
 use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Collector\RetryCollectorExecution;
+use App\Domain\Executions\LocalProcessInspector;
 use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Domain\Executions\RequestExecutionCancellation;
 use App\Domain\Projects\ProjectExecutionManager;
@@ -21,6 +22,7 @@ use App\Models\RemoteOperation;
 use App\Models\ToolDistribution;
 use Database\Seeders\ToolCatalogSeeder;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -58,8 +60,24 @@ class CollectorRecoveryTest extends TestCase
         $executions = [$first];
         try {
             app(CollectorExecutionProvider::class)->execute($start);
-            $operation = $this->launch($first);
+            // Kill the actual launch worker after detachment; its supervisor and
+            // registered Recolector process must remain independently identifiable.
+            DB::purge();
+            $pid = pcntl_fork();
+            $this->assertNotSame(-1, $pid);
+            if ($pid === 0) {
+                DB::reconnect();
+                $this->launch($first);
+                posix_kill(getmypid(), SIGKILL);
+                exit(1);
+            }
+            pcntl_waitpid($pid, $status);
+            DB::reconnect();
+            $this->assertTrue(pcntl_wifsignaled($status));
+            $this->assertSame(SIGKILL, pcntl_wtermsig($status));
+            $operation = $first->remoteOperations()->sole();
             $this->assertNotNull($operation->process_id);
+            $this->assertTrue(app(LocalProcessInspector::class)->isRunning($operation));
             $cancel = app(RequestExecutionCancellation::class)->request($first, $actor, 'recovery-cancel');
             $this->assertTrue($cancel->created);
             $this->assertFalse(app(RequestExecutionCancellation::class)->request($first, $actor, 'recovery-cancel')->created);
