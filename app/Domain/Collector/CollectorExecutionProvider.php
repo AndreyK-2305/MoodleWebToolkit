@@ -6,12 +6,15 @@ use App\Domain\Executions\ExecutionCommandLease;
 use App\Domain\Executions\ExecutionEventRecorder;
 use App\Domain\Executions\ExecutionLifecycle;
 use App\Domain\Executions\LocalToolExecutionProvider;
+use App\Domain\Executions\ProcessExecutionFinalization;
+use App\Domain\Tools\CollectorAdapter;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
 use App\Enums\ExecutionStepStatus;
 use App\Exceptions\ExecutionCommandLeaseLost;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\AuditLog;
+use App\Models\Execution;
 use App\Models\ExecutionCommand;
 use Illuminate\Support\Facades\DB;
 
@@ -27,13 +30,28 @@ final class CollectorExecutionProvider
         if ($claimed === null) {
             return;
         }
+        if ($claimed->command->command_type === ExecutionCommandType::FINALIZE) {
+            app(ProcessExecutionFinalization::class)->process($claimed->command->id, $claimed->owner);
+
+            return;
+        }
         if ($claimed->command->command_type === ExecutionCommandType::CANCEL) {
             $this->cancel($claimed->command, $claimed->owner);
         } elseif ($claimed->command->command_type === ExecutionCommandType::START) {
             if ($claimed->command->execution->status === ExecutionStatus::CANCELLING) {
                 $this->cancel($claimed->command, $claimed->owner);
             } elseif (! $claimed->command->execution->status->isTerminal()) {
-                $this->workflow->start($claimed->command->execution);
+                $execution = $claimed->command->execution;
+                $step = $execution->steps()->where('step_key', 'collection')->firstOrFail();
+                foreach (app(CollectorAdapter::class)->executeUnit($execution, $step) as $event) {
+                    DB::transaction(function () use ($execution, $event): void {
+                        $locked = Execution::query()->whereKey($execution->id)->lockForUpdate()->firstOrFail();
+                        $operation = $locked->remoteOperations()->where('command_key', CollectorRegisteredCommand::KEY)->sole();
+                        if (! $locked->events()->where('remote_operation_id', $operation->id)->where('type', $event->type)->exists()) {
+                            $this->events->recordNormalized($locked, $event, operation: $operation);
+                        }
+                    }, attempts: 3);
+                }
             }
         } else {
             throw new ToolOperationBlocked('El comando no está habilitado para el Recolector real.');

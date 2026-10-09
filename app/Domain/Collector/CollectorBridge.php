@@ -54,7 +54,8 @@ final class CollectorBridge
             $settings = $runtime['settings'] ?? null;
             if (! is_array($profile) || ! is_array($settings) || ! is_int($settings['workers'] ?? null)
                 || $settings['workers'] < 1 || $settings['workers'] > 4 || ! is_int($settings['capacity_bytes'] ?? null)
-                || ! is_int($settings['safety_margin_percent'] ?? null) || $settings['capacity_bytes'] < 16777216
+                || ! is_int($settings['safety_margin_percent'] ?? null) || ! is_string($settings['package_name'] ?? null)
+                || preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/D', $settings['package_name']) !== 1 || $settings['capacity_bytes'] < 16777216
                 || $settings['capacity_bytes'] > 21474836480 || $settings['safety_margin_percent'] < 10 || $settings['safety_margin_percent'] > 100) {
                 throw new RuntimeException('Invalid settings.');
             }
@@ -98,7 +99,7 @@ final class CollectorBridge
                 $work = $workspace.'/state/collector-work';
                 $package = $workspace.'/output/source-package.zip';
                 $args = [PHP_BINARY, '-c', (string) php_ini_loaded_file(), $tool.'/scripts/source-export.php',
-                    '--config='.$config, '--sourceid='.$profile['source_id'], '--sourcename='.$profile['name'],
+                    '--config='.$config, '--sourceid='.$profile['source_id'], '--sourcename='.$settings['package_name'],
                     '--outputdir='.$work, '--outputzip='.$package, '--scope=lab', '--workers='.$settings['workers'],
                     '--workersrequested='.$settings['workers'], '--cputhreads='.$settings['workers'], '--autoworkerscap=4',
                     '--notifyevery=0', '--smtpconfig=', '--statusfile='.$work.'/status.json', '--progressfile='.$work.'/export-progress.json',

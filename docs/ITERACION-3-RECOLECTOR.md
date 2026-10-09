@@ -381,3 +381,19 @@ pruebas/6745 aserciones. Pint y PHPStan pasan. Reportes:
 `quality-results/it3-cut15.xml`, `it3-cut15-lab.xml`, `it3-cut15-regression.xml`.
 La finalización, el nuevo intento y la interfaz real siguen pendientes; la
 confirmación HTTP permanece cerrada durante este corte.
+
+## Corte 16 — cierre incremental del paquete real
+
+CollectorAdapter inicia la unidad registrada y entrega su evento normalizado;
+el provider persiste ese registro una sola vez. FINALIZE utiliza las etapas
+incrementales existentes, revalidando en cada job la terminación, auditoría,
+paquete y seis salidas declaradas. Un manifiesto alterado bloquea el cierre.
+Los informes muestran SourcePackage, productor, capacidades y auditoría real;
+no generan propuestas académicas simuladas. El cierre conserva diez artefactos
+y mantiene progreso indeterminado cuando no existe una unidad global acreditada.
+El nombre aprobado del paquete se aplica al parámetro real del productor.
+
+Validación: 19 pruebas/138 aserciones, más LAB real 1 prueba/46 aserciones,
+incluyendo cierre completo, manifiesto alterado y ausencia de secretos en
+los cuatro informes. Pint y PHPStan pasan. Reportes:
+`quality-results/it3-cut16.xml`, `it3-cut16-lab.xml`.

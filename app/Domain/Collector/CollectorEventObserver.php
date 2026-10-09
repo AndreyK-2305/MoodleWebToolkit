@@ -35,7 +35,7 @@ final class CollectorEventObserver
             $cursor = CollectorObservationCursor::query()->firstOrCreate(['remote_operation_id' => $operation->getKey()],
                 ['execution_id' => $execution->getKey(), 'prefix_sha256' => hash('sha256', '')]);
             $lostCursor = $cursor->wasRecentlyCreated && $execution->events()->where('remote_operation_id', $operation->id)
-                ->where('type', 'like', 'collector.%')->exists();
+                ->whereJsonContainsKey('payload->collector_wire_sequence')->exists();
             $cursor = CollectorObservationCursor::query()->whereKey($cursor->getKey())->lockForUpdate()->firstOrFail();
             $seed = ['offset' => $cursor->stdout_offset, 'wire_sequence' => $cursor->last_wire_sequence,
                 'device' => $cursor->file_device, 'inode' => $cursor->file_inode, 'prefix_sha256' => $cursor->prefix_sha256, 'discarding' => $cursor->discarding];

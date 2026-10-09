@@ -3,7 +3,9 @@
 namespace App\Domain\Tools;
 
 use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Tools\Contracts\ToolAdapter;
+use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Execution;
 use App\Models\ExecutionStep;
@@ -34,6 +36,12 @@ final class CollectorAdapter implements ToolAdapter
 
     public function executeUnit(Execution $execution, ExecutionStep $step): iterable
     {
-        throw new ToolOperationBlocked('COLLECT real se procesa mediante su operación registrada y observación durable.');
+        if ($step->execution_id !== $execution->id || $step->step_key !== 'collection') {
+            throw new ToolOperationBlocked('Esta unidad no inicia una recolección real.');
+        }
+        $operation = app(CollectorWorkflow::class)->start($execution);
+        yield new NormalizedToolEvent('collector.operation_registered', 'collection',
+            message: 'La operación real está registrada y continuará en el runner.',
+            payload: ['operation_uuid' => $operation->operation_uuid, 'command_sha256' => $operation->command_sha256]);
     }
 }

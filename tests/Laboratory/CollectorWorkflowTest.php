@@ -4,11 +4,13 @@ namespace Tests\Laboratory;
 
 use App\Domain\Collector\CollectorConfiguration;
 use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Collector\CollectorExecutionProvider;
 use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Collector\Contracts\SecretProvider;
 use App\Domain\Executions\LocalToolExecutionProvider;
 use App\Domain\Executions\RemoteOperationCoordinator;
+use App\Domain\Executions\RequestExecutionFinalization;
 use App\Domain\Projects\ProjectExecutionManager;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Tools\SourcePackageRegistry;
@@ -61,7 +63,14 @@ class CollectorWorkflowTest extends TestCase
         $binding = app(CollectorExecutionPreparation::class)->prepare($execution, $project->configuration, $actor);
         $runtime = ExecutionRuntimeConfiguration::query()->findOrFail($binding->runtime_configuration_id);
         $workflow = app(CollectorWorkflow::class);
-        $operation = $workflow->start($execution->fresh());
+        $start = $execution->commands()->create(['step_key' => '__execution__', 'attempt' => 1, 'command_type' => 'START',
+            'idempotency_key' => 'lab-real-start', 'idempotency_scope' => 'lab:'.$execution->id,
+            'payload_hash' => hash('sha256', 'lab-real-start'), 'payload' => ['adapter' => CollectorExecutionPreparation::ADAPTER_KEY],
+            'created_by' => $actor->id]);
+        app(CollectorExecutionProvider::class)->execute($start);
+        $operation = $execution->remoteOperations()->sole();
+        $this->assertNotNull($start->fresh()->processed_at);
+        $this->assertSame(1, $execution->events()->where('type', 'collector.operation_registered')->count());
         $this->assertSame($operation->id, $workflow->start($execution->fresh())->id);
         $operation = app(RemoteOperationCoordinator::class)->runScheduled($operation->id, CollectorRegisteredCommand::KEY,
             ['project_uuid' => $project->uuid, 'execution_uuid' => $execution->uuid, 'runtime_sha256' => $runtime->content_sha256],
@@ -89,6 +98,7 @@ class CollectorWorkflowTest extends TestCase
             $package = SourcePackage::query()->sole();
             $this->assertSame('7.4.2-linux', $package->producer_tool_version);
             $this->assertSame('VALID', $package->validation_state);
+            $this->assertSame('durable-proof', $package->name);
             $this->assertSame('1.0', $package->capabilities['theme_inventory']);
             $this->assertSame(2, $package->evidence['collector_audit']['courses']);
             $this->assertFileDoesNotExist(app(ExecutionWorkspaceManager::class)->resolve($execution, 'input', 'moodle-runtime.php'));
@@ -110,6 +120,43 @@ class CollectorWorkflowTest extends TestCase
             } catch (QueryException) {
                 $this->assertSame($package->sha256, CollectorPackageAudit::query()->sole()->package_sha256);
             }
+            $manifest = $execution->artifacts()->where('metadata->source_relative_path', 'manifest.json')->sole();
+            $manifestPath = Storage::disk($manifest->disk)->path($manifest->path);
+            $original = file_get_contents($manifestPath);
+            chmod($manifestPath, 0600);
+            try {
+                file_put_contents($manifestPath, 'changed');
+                try {
+                    $workflow->assertFinalizable($execution->fresh());
+                    $this->fail('Altered manifest authorized closure.');
+                } catch (ToolOperationBlocked) {
+                    $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+                }
+            } finally {
+                file_put_contents($manifestPath, $original);
+                chmod($manifestPath, 0400);
+            }
+            app(RequestExecutionFinalization::class)->request($execution, $actor, 'lab-real-finalize');
+            $finalize = $execution->commands()->where('command_type', 'FINALIZE')->sole();
+            for ($job = 0; $job < 80 && $finalize->fresh()->processed_at === null; $job++) {
+                app(CollectorExecutionProvider::class)->execute($finalize->fresh());
+            }
+            $this->assertSame(ExecutionStatus::COMPLETED, $execution->fresh()->status);
+            $this->assertSame(ProjectStatus::COMPLETED, $project->fresh()->status);
+            $this->assertDatabaseCount('artifacts', 10);
+            $this->assertDatabaseCount('checkpoints', 0);
+            $this->assertNull($execution->academicSnapshot);
+            $this->assertSame(10, $execution->fresh()->completion_summary['artifact_count']);
+            $report = $execution->artifacts()->where('type', 'JSON_REPORT')->sole();
+            $reportJson = json_decode(Storage::disk($report->disk)->get($report->path), true, 64, JSON_THROW_ON_ERROR);
+            $this->assertArrayNotHasKey('academic_nodes', $reportJson);
+            $this->assertSame($package->uuid, $reportJson['source_package']['uuid']);
+            $this->assertSame(2, $reportJson['audit']['courses']);
+            app(SecretProvider::class)->consume('moodle-lab-db', '1', function (string $secret) use ($execution): void {
+                foreach ($execution->artifacts()->whereIn('type', ['JSON_REPORT', 'VERIFICATION_REPORT', 'LOG_EXPORT', 'FINAL_SUMMARY'])->get() as $artifact) {
+                    $this->assertStringNotContainsString($secret, Storage::disk($artifact->disk)->get($artifact->path));
+                }
+            });
             $path = Storage::disk($package->artifact->disk)->path($package->artifact->path);
             chmod($path, 0600);
             file_put_contents($path, 'tampered', FILE_APPEND);

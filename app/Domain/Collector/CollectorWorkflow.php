@@ -193,6 +193,30 @@ final class CollectorWorkflow
         }, attempts: 3);
     }
 
+    public function assertFinalizable(Execution $execution): SourcePackage
+    {
+        $this->binding($execution);
+        $operation = $execution->remoteOperations()->where('command_key', CollectorRegisteredCommand::KEY)->sole();
+        if (! $this->provider->verifyTermination($operation) || $operation->exit_code !== 0
+            || $operation->functional_state->value !== 'SUCCEEDED') {
+            throw new ToolOperationBlocked('La finalización requiere terminación íntegra en el runner.');
+        }
+        $this->removePrivateConfiguration($execution);
+        $audit = CollectorPackageAudit::query()->where('remote_operation_id', $operation->id)->sole();
+        $artifacts = $this->provider->collectArtifacts($operation, $this->artifactMetadata($execution, $operation, $audit));
+        if (count($artifacts) !== 6 || $execution->artifacts()->where('remote_operation_id', $operation->id)->count() !== 6) {
+            throw new ToolOperationBlocked('La captura real no coincide con los seis artefactos declarados.');
+        }
+        $package = SourcePackage::query()->where('producer_execution_id', $execution->id)->sole();
+        $package = $this->packages->validate($package);
+        $fingerprint = hash('sha256', $execution->uuid.'|'.$package->uuid.'|'.$package->sha256.'|'.$package->manifest_sha256);
+        if (! is_string($execution->review_fingerprint) || ! hash_equals($fingerprint, $execution->review_fingerprint)) {
+            throw new ToolOperationBlocked('La identidad del paquete cambió después de la revisión.');
+        }
+
+        return $package;
+    }
+
     private function binding(Execution $execution): ExecutionToolBinding
     {
         $binding = $execution->toolBinding()->with('distribution')->first();
