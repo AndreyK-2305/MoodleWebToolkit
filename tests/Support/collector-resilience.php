@@ -12,6 +12,7 @@ use App\Domain\Tools\SourcePackageRegistry;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\ExecutionStatus;
 use App\Enums\UserRole;
+use App\Models\CollectorObservationCursor;
 use App\Models\Execution;
 use App\Models\SourcePackage;
 use App\Models\User;
@@ -205,16 +206,27 @@ try {
                 && ! $execution->fresh()->status->isTerminal() && microtime(true) < $deadline);
             $execution->refresh();
             $operation->refresh();
-            if ($execution->status !== ExecutionStatus::REVIEW || $execution->progress !== null
-                || $execution->remoteOperations()->count() !== 1 || $execution->artifacts()->count() !== 6
-                || $execution->checkpoints()->count() !== 0
-                || ! app(RemoteOperationCoordinator::class)->verifyTerminalEvidence($operation)
-                || $inspector->hasActiveOperation($operation)) {
-                throw new RuntimeException;
+            // Keep each invariant mandatory while identifying the exact failed
+            // check without exposing exception arguments or private payloads.
+            foreach ([
+                'OBSERVE_REVIEW' => fn (): bool => $execution->status === ExecutionStatus::REVIEW,
+                'OBSERVE_PROGRESS' => fn (): bool => $execution->progress === null,
+                'OBSERVE_OPERATIONS' => fn (): bool => $execution->remoteOperations()->count() === 1,
+                'OBSERVE_ARTIFACTS' => fn (): bool => $execution->artifacts()->count() === 6,
+                'OBSERVE_CHECKPOINTS' => fn (): bool => $execution->checkpoints()->count() === 0,
+                'OBSERVE_TERMINAL_EVIDENCE' => fn (): bool => app(RemoteOperationCoordinator::class)->verifyTerminalEvidence($operation),
+                'OBSERVE_GROUP_TERMINATED' => fn (): bool => ! $inspector->hasActiveOperation($operation),
+            ] as $check => $verify) {
+                $stage = $check;
+                if (! $verify()) {
+                    throw new RuntimeException;
+                }
             }
+            $stage = 'PACKAGE_VALIDATE';
             $package = SourcePackage::query()->where('producer_execution_id', $execution->id)->where('project_id', $execution->project_id)->sole();
             app(SourcePackageRegistry::class)->validate($package);
             $sequences = $execution->events()->orderBy('sequence')->pluck('sequence')->all();
+            $stage = 'PACKAGE_EVENTS';
             if ($sequences !== range(1, count($sequences)) || $package->validation_state !== 'VALID'
                 || $package->producer_tool_version !== '7.4.2-linux') {
                 throw new RuntimeException;
@@ -274,6 +286,29 @@ try {
     }
     echo json_encode($result, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES).PHP_EOL;
 } catch (Throwable) {
+    if (($action ?? null) === 'continue' && isset($execution, $operation)) {
+        try {
+            $current = $execution->fresh();
+            $remote = $operation->fresh();
+            $cursor = CollectorObservationCursor::query()->where('remote_operation_id', $remote->id)->first();
+            $diagnostic = ['schema_version' => 'collector-resilience-diagnostic.v1', 'stage' => $stage,
+                'execution_status' => $current->status->value, 'communication_state' => $remote->communication_state->value,
+                'functional_state' => $remote->functional_state->value, 'exit_code' => $remote->exit_code,
+                'artifacts' => $current->artifacts()->count(), 'cursor_health' => $cursor?->reader_health,
+                'cursor_complete' => $cursor?->read_complete];
+            $handle = @fopen('/tmp/collector-resilience-diagnostic.json', 'xb');
+            if ($handle !== false) {
+                try {
+                    @chmod('/tmp/collector-resilience-diagnostic.json', 0600);
+                    fwrite($handle, json_encode($diagnostic, JSON_THROW_ON_ERROR));
+                } finally {
+                    fclose($handle);
+                }
+            }
+        } catch (Throwable) {
+            // Best-effort closed diagnostics never replace the original failure.
+        }
+    }
     // No exception arguments, private paths, SQL bindings or provider value in output.
     fwrite(STDERR, 'Collector resilience failed at '.$stage.".\n");
     exit(1);

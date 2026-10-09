@@ -519,11 +519,13 @@ perfil Moodle sintético de laboratorio, desde el main aprobado del PR #8.
 Configuración/revisiones, preflight, CollectorAdapter, bridge, eventos durables,
 auditoría de paquetes, SourcePackage, cierre y nuevo intento con linaje están
 instalados. El recorrido real de navegador y los reinicios de Redis, queue-worker
-y Reverb con la misma operación están acreditados en el laboratorio. IT3 pasa a
-revisión en PR borrador por petición del usuario: la última regresión general de
-navegador tiene cuatro fallos abiertos y CI sobre el SHA de entrega está pendiente.
-Se detienen las baterías locales completas; IT3 no se declara aceptada. Las puertas,
-desviaciones y pendientes se describen en el informe.
+y Reverb con la misma operación están acreditados en el laboratorio. El PR #9
+continúa en borrador durante las correcciones de revisión. Se reprodujo y corrigió
+la carrera de caducidad de sesión del arnés y se sustituyó source_write=false por
+evidencia medida y semántica explícita. También se reprodujo y corrigió la pérdida
+de una notificación Reverb durante una consulta HTTP pendiente. El cierre exige
+las puertas completas y ambos jobs verdes del mismo SHA limpio; los cortes y
+limitaciones se describen en el informe. No se habilita la iteración siguiente.
 
 El estado y la evidencia se mantienen en
 [`ITERACION-3-RECOLECTOR.md`](ITERACION-3-RECOLECTOR.md). Ambas flags reales siguen

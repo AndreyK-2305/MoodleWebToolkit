@@ -27,8 +27,10 @@ La inspección histórica de Fase 0 y el cierre de IT2 anteriores conservan su f
 y alcance. IT3 incorpora un recorrido real verificado desde una copia aislada del
 Recolector 7.4.2, exclusivamente sobre Moodle sintético. El laboratorio acredita
 reinicios reales de Redis, queue-worker y Reverb con el mismo grupo/operación;
-se entrega para revisión con cuatro fallos abiertos de navegador y CI del SHA
-de entrega pendiente. IT3 no se declara aceptada. La evidencia y los pendientes están en
+el PR #9 continúa borrador mientras se corrigen la caducidad del arnés y una
+consulta que descartaba notificaciones Reverb concurrentes. La evidencia del
+origen diferencia código protegido, datos temporales y base no verificada.
+El cierre exige ambas puertas completas verdes del mismo SHA limpio. Los cortes están en
 [`ITERACION-3-RECOLECTOR.md`](ITERACION-3-RECOLECTOR.md).
 
 | Capacidad en IT3 | Estado comprobado                                                                                                    |

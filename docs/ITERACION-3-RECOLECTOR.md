@@ -257,6 +257,14 @@ TypeScript de aplicación/E2E, build y los 42 casos generales Playwright.
 Los dos casos LAB se omiten únicamente en general y se ejecutan en su job separado.
 Las dos puertas mantienen retries=0 y los mismos timeouts.
 
+La corrección de consulta añade un caso general: la puerta de navegador queda
+en 43 casos generales y dos LAB separados. Los seis casos dirigidos relacionados
+pasaron juntos: carrera de Reverb, vertical COLLECT, INTERVENTION, doble clic,
+caducidad y más de 24 horas. La suite PHP del CI `4549f01` pasó 553 pruebas y
+6955 aserciones; ese corte no aprobó la puerta global, pues falló la vertical
+COLLECT en el navegador. LAB pasó tres pruebas PHP/179 aserciones, pero falló
+la comprobación posterior a reinicios; no se presenta como CI verde.
+
 La prueba de reinicios inicia una exportación con el worker real y conserva su
 identidad registrada. Un CLI exclusivo de testing aplica SIGSTOP/SIGCONT al
 grupo verificado durante reinicios de Redis, queue-worker y Reverb. Después
@@ -393,6 +401,31 @@ jobs, receipts, eventos, auditoría o artefactos. Contraseña incorrecta respond
 y el Idempotency-Key pendientes; una repetición devuelve 200 sin duplicar efectos.
 Polling, eventos, Reverb y REVIEW siguen disponibles durante la caducidad.
 La recuperación mediante Recordarme conserva consulta, nunca autorización.
+
+### Consulta concurrente: notificación recibida durante HTTP
+
+En el CI `4549f01`, la vertical COLLECT quedó mostrando RUNNING al 50 % con los
+eventos hasta la secuencia 9. `catchUp()` descartaba la petición de actualización
+si ya había una consulta en curso. La última notificación podía llegar antes de
+terminar de leer el snapshot anterior, y no quedaba ninguna consulta pendiente.
+Al desactivar el fallback para acreditar Reverb, la pantalla no recogía VERIFYING.
+
+La prueba nueva `catchup-race.spec.ts` reproduce la intercalación con workers,
+PostgreSQL y Reverb reales: retiene una respuesta RUNNING, acredita VERIFYING en
+backend y la entrega de su última notificación antes de liberar la respuesta.
+Falló sobre el frontend original y pasó con la corrección, sin recarga, polling,
+timeouts nuevos ni retries. El cliente ahora conserva una solicitud pendiente y
+realiza otra consulta al terminar la anterior; limpia esa marca al cambiar de
+Execution, abortar o cerrar la suscripción. La evidencia está en
+[`evidence/it3-catchup-race-diagnosis.json`](evidence/it3-catchup-race-diagnosis.json).
+
+La secuencia LAB se reprodujo después de las tres pruebas PHP y los contratos
+copiados: reinicios, misma operación, seis artefactos, Source VALID, cero
+checkpoints, progreso null y configuración privada retirada aprobaron localmente.
+Los seis contratos negativos del scanner también aprobaron con el secreto real,
+incluido el cruce de 64 KiB. El fallo LAB de CI no tiene causa confirmada todavía:
+el CLI ahora distingue cada invariante mediante códigos cerrados, conservando
+su orden y rigor. El siguiente corte limpio debe aprobar ambos jobs.
 
 ### Defecto de evidencia y protección de reportes
 

@@ -264,6 +264,10 @@ try {
             }
         }
         # The fixture emits only closed stage/error codes; raw Moodle output is discarded.
+        & docker compose exec -T --user www-data tool-runner test -f /tmp/collector-resilience-diagnostic.json
+        if ($LASTEXITCODE -eq 0) {
+            & docker compose cp tool-runner:/tmp/collector-resilience-diagnostic.json quality-results/collector-resilience-diagnostic.json
+        }
         & docker compose logs --no-log-prefix lab-init moodle-lab-fixture
         & docker compose cp moodle-lab-fixture:/tmp/toolkit-synthetic-fixture/diagnostic.json quality-results/collector-fixture-diagnostic.json
     }

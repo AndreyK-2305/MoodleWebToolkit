@@ -239,6 +239,7 @@ function ExecutionTracker({
         initialTrackingCursor(initialExecution, initialEvents),
     );
     const catchingUp = useRef(false);
+    const catchUpPending = useRef(false);
     const requestGeneration = useRef(0);
     const inFlightRequest = useRef<AbortController | null>(null);
     const trackedExecutionUuid = useRef(initialExecution.uuid);
@@ -259,6 +260,7 @@ function ExecutionTracker({
         inFlightRequest.current?.abort();
         inFlightRequest.current = null;
         catchingUp.current = false;
+        catchUpPending.current = false;
         lastSequence.current = replacement.cursor;
         setExecution(initialExecution);
         setReview(initialReview);
@@ -289,6 +291,9 @@ function ExecutionTracker({
 
     const catchUp = useCallback(async () => {
         if (catchingUp.current) {
+            // Preserve notifications arriving while an older HTTP snapshot is
+            // in flight. They require another pull once that snapshot is read.
+            catchUpPending.current = true;
             return;
         }
 
@@ -301,6 +306,7 @@ function ExecutionTracker({
             let hasMore = true;
 
             while (hasMore) {
+                catchUpPending.current = false;
                 const response = await fetch(
                     `/projects/${project.uuid}/executions/${initialExecution.uuid}/events?after=${lastSequence.current}`,
                     {
@@ -353,7 +359,9 @@ function ExecutionTracker({
                 setRealtimeChannel(data.realtime_channel);
                 setUpdatesPaused(false);
                 mergeEvents(data.events);
-                hasMore = data.has_more && data.events.length > 0;
+                hasMore =
+                    (data.has_more && data.events.length > 0) ||
+                    catchUpPending.current;
             }
         } catch {
             if (
@@ -367,6 +375,7 @@ function ExecutionTracker({
             if (inFlightRequest.current === controller) {
                 inFlightRequest.current = null;
                 catchingUp.current = false;
+                catchUpPending.current = false;
             }
         }
     }, [initialExecution.uuid, mergeEvents, project.uuid]);
@@ -417,6 +426,7 @@ function ExecutionTracker({
             inFlightRequest.current?.abort();
             inFlightRequest.current = null;
             catchingUp.current = false;
+            catchUpPending.current = false;
             connection.unbind('state_change', reflectConnectionState);
             channel.stopListening('.execution.event', listener);
             echo.leave(realtimeChannel);
