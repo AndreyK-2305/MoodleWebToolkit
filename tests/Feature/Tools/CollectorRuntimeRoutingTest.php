@@ -7,9 +7,14 @@ use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Collector\CollectorExecutionProvider;
 use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Collector\CollectorWorkflow;
+use App\Domain\Collector\Contracts\SecretProvider;
+use App\Domain\Collector\RetryCollectorExecution;
+use App\Domain\Collector\SyntheticMoodleProbe;
+use App\Domain\Collector\TestingSecretProvider;
 use App\Domain\Executions\ExecutionCommandDispatcher;
 use App\Domain\Executions\ExecutionCommandLease;
 use App\Domain\Executions\ExecutionFailureCloser;
+use App\Domain\Executions\ExecutionLifecycle;
 use App\Domain\Executions\ExecutionRuntimeResolver;
 use App\Domain\Executions\FakeExecutionProvider;
 use App\Domain\Executions\LocalToolExecutionProvider;
@@ -29,9 +34,13 @@ use App\Models\ExecutionCommand;
 use App\Models\ExecutionRuntimeConfiguration;
 use App\Models\ToolDistribution;
 use Database\Seeders\ToolCatalogSeeder;
+use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 use Mockery;
 use Tests\Feature\Domain\DomainTestCase;
 
@@ -97,6 +106,87 @@ class CollectorRuntimeRoutingTest extends DomainTestCase
             'idempotency_key' => 'routing-start-key', 'idempotency_scope' => 'routing:'.$execution->id,
             'payload_hash' => hash('sha256', 'routing-start'), 'payload' => ['adapter' => CollectorExecutionPreparation::ADAPTER_KEY],
             'created_by' => $execution->created_by]);
+    }
+
+    private function failedWithoutProcess(): Execution
+    {
+        $execution = $this->prepared();
+        $execution = app(ExecutionLifecycle::class)->transitionForWorker($execution, ExecutionStatus::RUNNING);
+
+        return app(ExecutionLifecycle::class)->transitionForWorker($execution, ExecutionStatus::FAILED);
+    }
+
+    public function test_fresh_export_creates_new_immutable_lineage_and_never_reuses_a_checkpoint(): void
+    {
+        $previous = $this->failedWithoutProcess();
+        config(['collector.integration_ready' => true]);
+        File::ensureDirectoryExists($this->root.'/code/lib');
+        File::put($this->root.'/code/version.php', '<?php');
+        File::put($this->root.'/code/lib/setup.php', '<?php');
+        app()->instance(SecretProvider::class, new TestingSecretProvider(['routing-db' => ['1' => 'synthetic-only-value']]));
+        $probe = Mockery::mock(SyntheticMoodleProbe::class);
+        $probe->shouldReceive('inspect')->andReturn(['courses' => 2, 'users' => 5, 'oauth' => 1, 'database_version' => '2024100710']);
+        app()->instance(SyntheticMoodleProbe::class, $probe);
+        $service = app(RetryCollectorExecution::class);
+        $version = $previous->project->configuration->version;
+        $result = $service->retry($previous, $previous->creator, 'fresh-real-export-key', $version, true);
+        $next = $result->execution;
+        $this->assertTrue($result->created);
+        $this->assertNotSame($previous->id, $next->id);
+        $this->assertNotSame($previous->workspace_key, $next->workspace_key);
+        $this->assertSame($previous->id, $next->retried_from_execution_id);
+        $this->assertNull($next->resumed_from_execution_id);
+        $this->assertNull($next->resume_checkpoint_id);
+        $this->assertNull($next->progress);
+        $this->assertSame(0, $next->last_event_sequence);
+        $this->assertSame(ExecutionStatus::FAILED, $previous->fresh()->status);
+        $this->assertSame(0, $next->checkpoints()->count());
+        $this->assertSame(4, $next->steps()->where('status', 'PENDING')->count());
+        $this->assertNotSame($previous->toolBinding->id, $next->toolBinding->id);
+        $this->assertSame('START', $next->commands()->sole()->command_type->value);
+        $this->assertTrue($next->commands()->sole()->payload['fresh_export']);
+        $this->assertFalse($service->retry($previous, $previous->creator, 'fresh-real-export-key', $version, true)->created);
+        $this->assertDatabaseCount('executions', 2);
+        Queue::assertPushed(RunExecutionUnit::class, 1);
+        $migration = require database_path('migrations/2026_10_08_230000_add_collector_retry_lineage.php');
+        $migration->down();
+        $this->assertSame($previous->id, $next->fresh()->retried_from_execution_id);
+        $migration->up();
+        try {
+            DB::transaction(fn () => DB::table('executions')->where('id', $next->id)->update(['retried_from_execution_id' => null]));
+            $this->fail('Historical retry lineage changed.');
+        } catch (QueryException) {
+            $this->assertSame($previous->id, $next->fresh()->retried_from_execution_id);
+        }
+    }
+
+    public function test_fresh_export_rejects_read_only_revoked_and_inactive_actors(): void
+    {
+        $previous = $this->failedWithoutProcess();
+        foreach ([$this->user(UserRole::AUDITOR), $this->user(UserRole::OPERATOR), $this->user(UserRole::ADMIN, false)] as $actor) {
+            try {
+                app(RetryCollectorExecution::class)->retry($previous, $actor, 'fresh-role-'.$actor->id, 2, true);
+                $this->fail('Unauthorized fresh export accepted.');
+            } catch (AuthorizationException) {
+                $this->assertDatabaseCount('executions', 1);
+            }
+        }
+    }
+
+    public function test_fresh_export_requires_current_configuration_explicit_acceptance_and_live_preflight(): void
+    {
+        $previous = $this->failedWithoutProcess();
+        config(['collector.integration_ready' => true]);
+        foreach ([[2, false], [1, true], [2, true]] as [$version, $accepted]) {
+            try {
+                app(RetryCollectorExecution::class)->retry($previous, $previous->creator, 'fresh-guard-'.$version.'-'.(int) $accepted, $version, $accepted);
+                $this->fail('Unverified fresh export accepted.');
+            } catch (ValidationException) {
+                $this->assertDatabaseCount('executions', 1);
+                $this->assertSame(ExecutionStatus::FAILED, $previous->fresh()->status);
+            }
+        }
+        Queue::assertNothingPushed();
     }
 
     public function test_job_resolves_real_provider_from_binding_after_flags_and_project_options_change(): void

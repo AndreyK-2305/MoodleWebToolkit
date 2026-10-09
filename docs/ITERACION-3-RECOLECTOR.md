@@ -397,3 +397,21 @@ Validación: 19 pruebas/138 aserciones, más LAB real 1 prueba/46 aserciones,
 incluyendo cierre completo, manifiesto alterado y ausencia de secretos en
 los cuatro informes. Pint y PHPStan pasan. Reportes:
 `quality-results/it3-cut16.xml`, `it3-cut16-lab.xml`.
+
+## Corte 17 — nuevo intento con linaje propio
+
+El nuevo intento requiere el último COLLECT real fallido/cancelado, ninguna
+operación sin terminación, autorización vigente, aceptación LAB, revisión actual
+y preflight real nuevamente evaluado. Crea otra Execution, workspace, runtime,
+binding y START. No copia backups, pasos ni checkpoints. PostgreSQL conserva
+`retried_from_execution_id` inmutable y restringe proyecto, orden y productor;
+el linaje de resume con checkpoint de Fake conserva su contrato anterior.
+Rollback retira el guard pero conserva la columna/FK histórica; reapply restaura
+la validación sin borrar linaje.
+
+Validación: 20 pruebas/165 aserciones de routing y recuperación, incluyendo
+autorización, flags, revisión, idempotencia y rollback/reapply. LAB real pasó
+1 prueba/20 aserciones: cancelación del grupo registrado, terminación acreditada,
+nueva operación, nueva secuencia desde 1, evidencia anterior conservada y paquete
+del nuevo intento auditado. Pint y PHPStan pasan. Reportes:
+`quality-results/it3-cut17.xml`, `it3-cut17-lab.xml`.
