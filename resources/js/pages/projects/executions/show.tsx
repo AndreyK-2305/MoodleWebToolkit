@@ -61,6 +61,20 @@ type ExecutionData = {
     last_event_sequence: number;
     steps: Step[];
     resumed_from_execution_uuid: string | null;
+    retried_from_execution_uuid: string | null;
+    collector: {
+        mode: 'LABORATORY';
+        producer_version: string;
+        resume_supported: boolean;
+        configuration_version: number;
+        can_fresh_export: boolean;
+        operation: {
+            uuid: string;
+            communication_state: string;
+            functional_state: string;
+            manual_intervention_required: boolean;
+        } | null;
+    } | null;
     conflicts: ConflictData[];
     checkpoints: CheckpointData[];
 };
@@ -131,6 +145,19 @@ type VerificationData = {
 };
 
 type ReviewData = {
+    source_packages: Array<{
+        uuid: string;
+        name: string;
+        producer_version: string;
+        schema_version: string;
+        sha256: string;
+        manifest_sha256: string;
+        size_bytes: number;
+        validation_state: string;
+        courses: number | null;
+        metadata_state: string | null;
+        capabilities: Record<string, string>;
+    }>;
     proposal_version: number;
     fingerprint: string | null;
     validated_proposal_version: number | null;
@@ -418,6 +445,9 @@ function ExecutionTracker({
                             Ejecución #{execution.attempt}
                         </h1>
                         <Badge variant="secondary">{execution.status}</Badge>
+                        {execution.collector && (
+                            <Badge>LABORATORY · Recolector 7.4.2</Badge>
+                        )}
                         <Badge variant={live ? 'default' : 'outline'}>
                             <Radio className="size-3" />
                             {live
@@ -451,10 +481,15 @@ function ExecutionTracker({
                 ) : execution.status === 'REVIEW' ? (
                     <Alert>
                         <FolderTree />
-                        <AlertTitle>Revisión académica simulada</AlertTitle>
+                        <AlertTitle>
+                            {execution.collector
+                                ? 'Paquete fuente auditado'
+                                : 'Revisión académica simulada'}
+                        </AlertTitle>
                         <AlertDescription>
-                            Revise la estructura, proponga únicamente cambios
-                            seguros y valide la versión exacta antes de cerrar.
+                            {execution.collector
+                                ? 'Revise el productor, los hashes y las salidas verificadas antes de finalizar.'
+                                : 'Revise la estructura, proponga únicamente cambios seguros y valide la versión exacta antes de cerrar.'}
                         </AlertDescription>
                     </Alert>
                 ) : null}
@@ -507,16 +542,24 @@ function ExecutionTracker({
                     />
                 )}
 
-                {(review.tree.length > 0 ||
-                    execution.status === 'COMPLETED') && (
-                    <ReviewWorkspace
-                        key={`${execution.uuid}:${review.proposal_version}`}
+                {execution.collector && (
+                    <CollectorReview
                         projectUuid={project.uuid}
                         execution={execution}
                         review={review}
-                        canEdit={canControl && !updatesPaused}
                     />
                 )}
+                {!execution.collector &&
+                    (review.tree.length > 0 ||
+                        execution.status === 'COMPLETED') && (
+                        <ReviewWorkspace
+                            key={`${execution.uuid}:${review.proposal_version}`}
+                            projectUuid={project.uuid}
+                            execution={execution}
+                            review={review}
+                            canEdit={canControl && !updatesPaused}
+                        />
+                    )}
 
                 <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
                     <div className="space-y-6">
@@ -1155,11 +1198,19 @@ function ExecutionActions({
     const [resumeKey] = useState(() => crypto.randomUUID());
     const [validateKey] = useState(() => crypto.randomUUID());
     const [finalizeKey] = useState(() => crypto.randomUUID());
+    const [freshKey] = useState(() => crypto.randomUUID());
+    const [freshOpen, setFreshOpen] = useState(false);
     const [resumeProcessing, setResumeProcessing] = useState(false);
     const cancelForm = useForm({});
     const validateForm = useForm({});
     const finalizeForm = useForm({});
-    const currentResumePayload = resumePayload(execution);
+    const freshForm = useForm({
+        configuration_version: execution.collector?.configuration_version ?? 0,
+        accept_laboratory: false,
+    });
+    const currentResumePayload = execution.collector
+        ? null
+        : resumePayload(execution);
     const cancellable = [
         'QUEUED',
         'RUNNING',
@@ -1194,6 +1245,14 @@ function ExecutionActions({
                     ))}
 
                 <div className="flex flex-wrap gap-2">
+                    {execution.collector?.can_fresh_export && (
+                        <Button
+                            disabled={disabled || freshForm.processing}
+                            onClick={() => setFreshOpen(true)}
+                        >
+                            <RotateCcw /> Nueva exportación LAB
+                        </Button>
+                    )}
                     {cancellable && (
                         <Button
                             variant="destructive"
@@ -1242,6 +1301,7 @@ function ExecutionActions({
                             </Button>
                         )}
                     {execution.status === 'REVIEW' &&
+                        !execution.collector &&
                         review.proposals.length > 0 && (
                             <Button
                                 disabled={disabled || validateForm.processing}
@@ -1280,6 +1340,169 @@ function ExecutionActions({
                             </Button>
                         )}
                 </div>
+                {Object.values(freshForm.errors).map((error) => (
+                    <p
+                        key={error}
+                        role="alert"
+                        className="text-destructive text-sm"
+                    >
+                        {error}
+                    </p>
+                ))}
+                <Dialog open={freshOpen} onOpenChange={setFreshOpen}>
+                    <DialogContent>
+                        <DialogHeader>
+                            <DialogTitle>
+                                Nueva exportación de laboratorio
+                            </DialogTitle>
+                            <DialogDescription>
+                                El Recolector requiere otro intento desde cero.
+                                Se conservará toda la evidencia anterior y se
+                                volverá a comprobar la configuración actual.
+                            </DialogDescription>
+                        </DialogHeader>
+                        <label className="flex gap-2">
+                            <input
+                                type="checkbox"
+                                checked={freshForm.data.accept_laboratory}
+                                onChange={(event) =>
+                                    freshForm.setData(
+                                        'accept_laboratory',
+                                        event.target.checked,
+                                    )
+                                }
+                            />
+                            Acepto una nueva exportación sobre Moodle sintético
+                        </label>
+                        <Button
+                            disabled={
+                                disabled ||
+                                freshForm.processing ||
+                                !freshForm.data.accept_laboratory
+                            }
+                            onClick={() => {
+                                freshForm.transform((data) => ({
+                                    ...data,
+                                    configuration_version:
+                                        execution.collector
+                                            ?.configuration_version ?? 0,
+                                }));
+                                freshForm.post(
+                                    `/projects/${projectUuid}/executions/${execution.uuid}/fresh-export`,
+                                    {
+                                        headers: {
+                                            'Idempotency-Key': freshKey,
+                                        },
+                                        onSuccess: () => setFreshOpen(false),
+                                    },
+                                );
+                            }}
+                        >
+                            Confirmar nueva exportación
+                        </Button>
+                    </DialogContent>
+                </Dialog>
+            </CardContent>
+        </Card>
+    );
+}
+
+function CollectorReview({
+    projectUuid,
+    execution,
+    review,
+}: {
+    projectUuid: string;
+    execution: ExecutionData;
+    review: ReviewData;
+}) {
+    const operation = execution.collector?.operation;
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle>Recolector real · Laboratorio</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+                <p className="text-muted-foreground text-sm">
+                    El proceso continúa aunque cierre esta pantalla. El
+                    seguimiento recupera los eventos persistidos al volver.
+                </p>
+                {execution.retried_from_execution_uuid && (
+                    <p className="text-sm">
+                        Nueva exportación desde{' '}
+                        {execution.retried_from_execution_uuid}
+                    </p>
+                )}
+                {operation && (
+                    <p className="text-sm">
+                        Operación {operation.uuid} ·{' '}
+                        {operation.communication_state} ·{' '}
+                        {operation.functional_state}
+                    </p>
+                )}
+                {operation?.manual_intervention_required && (
+                    <Alert variant="destructive">
+                        <TriangleAlert />
+                        <AlertTitle>Reconciliación pendiente</AlertTitle>
+                        <AlertDescription>
+                            La evidencia o limpieza requiere revisión autorizada
+                            en el laboratorio. El estado disponible no acredita
+                            éxito ni permite volver a lanzar la operación.
+                        </AlertDescription>
+                    </Alert>
+                )}
+                {['FAILED', 'CANCELLED'].includes(execution.status) && (
+                    <p className="text-sm">
+                        No existe un checkpoint seguro para este paquete. Puede
+                        solicitar una nueva exportación conservando la evidencia
+                        anterior.
+                    </p>
+                )}
+                {review.source_packages.map((source) => (
+                    <div
+                        key={source.uuid}
+                        className="space-y-2 rounded-md border p-4"
+                    >
+                        <div className="flex flex-wrap gap-2">
+                            <strong>{source.name}</strong>
+                            <Badge variant="outline">
+                                SourcePackage · {source.validation_state}
+                            </Badge>
+                        </div>
+                        <p className="text-sm">
+                            Productor {source.producer_version} · Schema{' '}
+                            {source.schema_version} · {source.courses ?? '—'}{' '}
+                            cursos · {source.size_bytes} bytes
+                        </p>
+                        <p className="text-muted-foreground font-mono text-xs break-all">
+                            Paquete: {source.sha256}
+                        </p>
+                        <p className="text-muted-foreground font-mono text-xs break-all">
+                            Manifiesto: {source.manifest_sha256}
+                        </p>
+                        <p className="text-sm">
+                            Metadata {source.metadata_state ?? 'Sin determinar'}{' '}
+                            · Inventario visual{' '}
+                            {source.capabilities.theme_inventory ??
+                                'Sin acreditar'}
+                        </p>
+                    </div>
+                ))}
+                <div className="space-y-2">
+                    {review.artifacts.map((artifact) => (
+                        <ArtifactDownloadLink
+                            key={artifact.id}
+                            projectUuid={projectUuid}
+                            executionUuid={execution.uuid}
+                            artifact={artifact}
+                        />
+                    ))}
+                </div>
+                {review.read_only && execution.status === 'COMPLETED' && (
+                    <p className="text-sm">
+                        Paquete e informes conservados en modo de consulta.
+                    </p>
+                )}
             </CardContent>
         </Card>
     );

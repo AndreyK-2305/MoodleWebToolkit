@@ -31,7 +31,16 @@ type Props = {
     };
 };
 
-export default function CollectorProject({ project, collectorLab }: Props) {
+export default function CollectorProject(props: Props) {
+    return (
+        <CollectorProjectForm
+            key={`${props.project.uuid}:${props.project.configuration_version}`}
+            {...props}
+        />
+    );
+}
+
+function CollectorProjectForm({ project, collectorLab }: Props) {
     const preflight = useForm({});
     const [accepted, setAccepted] = useState<string[]>([]);
     const confirm = useForm({
@@ -143,6 +152,11 @@ export default function CollectorProject({ project, collectorLab }: Props) {
                             </Button>
                         )}
                         {Object.entries(confirm.errors).map(([key, error]) => (
+                            <InputError key={key} message={error} />
+                        ))}
+                        {Object.entries(
+                            preflight.errors as Record<string, string>,
+                        ).map(([key, error]) => (
                             <InputError key={key} message={error} />
                         ))}
                     </CardContent>

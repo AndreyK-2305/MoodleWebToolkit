@@ -2,17 +2,12 @@
 
 namespace Tests\Laboratory;
 
-use App\Domain\Collector\CollectorConfiguration;
-use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Collector\CollectorExecutionProvider;
 use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Collector\Contracts\SecretProvider;
 use App\Domain\Executions\LocalToolExecutionProvider;
 use App\Domain\Executions\RemoteOperationCoordinator;
-use App\Domain\Executions\RequestExecutionFinalization;
-use App\Domain\Projects\ProjectExecutionManager;
-use App\Domain\Projects\ProjectWizard;
 use App\Domain\Tools\SourcePackageRegistry;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\ExecutionStatus;
@@ -21,6 +16,7 @@ use App\Enums\UserRole;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\CollectorPackageAudit;
 use App\Models\ExecutionRuntimeConfiguration;
+use App\Models\Project;
 use App\Models\SourcePackage;
 use App\Models\ToolDistribution;
 use Database\Seeders\ToolCatalogSeeder;
@@ -49,24 +45,22 @@ class CollectorWorkflowTest extends TestCase
         Queue::fake();
         $this->seed(ToolCatalogSeeder::class);
         $distribution = ToolDistribution::query()->where('key', 'moodle-recolector-7.4.2-linux-tree')->sole();
-        $distribution->toolVersion->update(['enabled' => true]);
+        $this->artisan('collector:enable-laboratory')->assertExitCode(0);
         $actor = $this->user(UserRole::ADMIN);
-        $project = app(ProjectWizard::class)->create($actor, ['name' => 'Durable COLLECT LAB', 'type' => 'COLLECT']);
-        $project = app(CollectorConfiguration::class)->save($project, $actor, ['profile_id' => 'synthetic-moodle', 'workers' => 1,
-            'package_name' => 'durable-proof', 'capacity_bytes' => 268435456, 'safety_margin_percent' => 20]);
-        $project->transitionTo(ProjectStatus::READY);
-        $execution = app(ProjectExecutionManager::class)->queue($project, $actor);
-        foreach (app(CollectorExecutionPreparation::class)->plan() as $step) {
-            $execution->steps()->create(['step_key' => $step->key, 'name' => $step->name, 'position' => $step->position,
-                'attempt' => 1, 'status' => 'PENDING', 'metadata' => ['adapter' => CollectorExecutionPreparation::ADAPTER_KEY]]);
-        }
-        $binding = app(CollectorExecutionPreparation::class)->prepare($execution, $project->configuration, $actor);
+        $this->actingAs($actor)->withSession(['auth.password_confirmed_at' => now()->timestamp]);
+        $this->post(route('projects.store'), ['name' => 'Durable COLLECT LAB', 'type' => 'COLLECT'])->assertRedirect();
+        $project = Project::query()->sole();
+        $this->put(route('projects.collector.configuration', $project), ['profile_id' => 'synthetic-moodle', 'workers' => 1,
+            'package_name' => 'durable-proof', 'capacity_bytes' => 268435456, 'safety_margin_percent' => 20])->assertRedirect();
+        $this->post(route('projects.wizard.preflight', $project))->assertRedirect()->assertSessionHasNoErrors();
+        $this->post(route('projects.wizard.confirm', $project), ['configuration_version' => 2, 'accepted_warning_ids' => ['collector.laboratory']])->assertRedirect()->assertSessionHasNoErrors();
+        $this->postJson(route('projects.executions.store', $project), ['configuration_version' => 2], ['Idempotency-Key' => 'lab-real-start'])->assertCreated()->assertJsonPath('created', true);
+        $this->postJson(route('projects.executions.store', $project), ['configuration_version' => 2], ['Idempotency-Key' => 'lab-real-start'])->assertOk()->assertJsonPath('created', false);
+        $execution = $project->executions()->sole();
+        $binding = $execution->toolBinding;
         $runtime = ExecutionRuntimeConfiguration::query()->findOrFail($binding->runtime_configuration_id);
         $workflow = app(CollectorWorkflow::class);
-        $start = $execution->commands()->create(['step_key' => '__execution__', 'attempt' => 1, 'command_type' => 'START',
-            'idempotency_key' => 'lab-real-start', 'idempotency_scope' => 'lab:'.$execution->id,
-            'payload_hash' => hash('sha256', 'lab-real-start'), 'payload' => ['adapter' => CollectorExecutionPreparation::ADAPTER_KEY],
-            'created_by' => $actor->id]);
+        $start = $execution->commands()->sole();
         app(CollectorExecutionProvider::class)->execute($start);
         $operation = $execution->remoteOperations()->sole();
         $this->assertNotNull($start->fresh()->processed_at);
@@ -104,6 +98,10 @@ class CollectorWorkflowTest extends TestCase
             $this->assertFileDoesNotExist(app(ExecutionWorkspaceManager::class)->resolve($execution, 'input', 'moodle-runtime.php'));
             $this->assertNull($execution->fresh()->progress);
             $this->assertTrue($execution->verifications()->sole()->approved);
+            $eventsResponse = $this->getJson(route('projects.executions.events', [$project, $execution]));
+            $eventsResponse->assertOk()->assertJsonPath('execution.collector.mode', 'LABORATORY')->assertJsonPath('review.source_packages.0.sha256', $package->sha256);
+            $this->assertStringNotContainsString('/opt/moodle-lab', $eventsResponse->getContent());
+            $this->assertStringNotContainsString('/run/secrets', $eventsResponse->getContent());
             $sequence = $execution->fresh()->last_event_sequence;
             $workflow->observe($operation->fresh());
             $this->assertSame($sequence, $execution->fresh()->last_event_sequence);
@@ -136,7 +134,7 @@ class CollectorWorkflowTest extends TestCase
                 file_put_contents($manifestPath, $original);
                 chmod($manifestPath, 0400);
             }
-            app(RequestExecutionFinalization::class)->request($execution, $actor, 'lab-real-finalize');
+            $this->postJson(route('projects.executions.finalize', [$project, $execution]), [], ['Idempotency-Key' => 'lab-real-finalize'])->assertAccepted();
             $finalize = $execution->commands()->where('command_type', 'FINALIZE')->sole();
             for ($job = 0; $job < 80 && $finalize->fresh()->processed_at === null; $job++) {
                 app(CollectorExecutionProvider::class)->execute($finalize->fresh());

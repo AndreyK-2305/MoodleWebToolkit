@@ -13,7 +13,7 @@ use App\Models\Project;
 
 final class CollectorAdapter implements ToolAdapter
 {
-    // Keep HTTP confirmation closed until controls and finalization are verified.
+    // Installed integration; the two LAB flags and catalog authorization still apply.
     public static function httpEnabled(): bool
     {
         return config('collector.integration_ready', false) === true;

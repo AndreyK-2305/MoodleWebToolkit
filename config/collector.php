@@ -2,6 +2,7 @@
 
 // Administrator-owned catalog. HTTP accepts only its opaque profile keys.
 return [
+    'integration_ready' => true,
     'php_binary' => env('COLLECTOR_LAB_PHP_BINARY', '/opt/collector-php/bin/php'),
     'php_ini' => '/opt/collector-php/php.ini',
     'php_scan_dir' => '/opt/collector-php/conf.d',

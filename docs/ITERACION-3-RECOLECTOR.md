@@ -415,3 +415,20 @@ autorización, flags, revisión, idempotencia y rollback/reapply. LAB real pasó
 nueva operación, nueva secuencia desde 1, evidencia anterior conservada y paquete
 del nuevo intento auditado. Pint y PHPStan pasan. Reportes:
 `quality-results/it3-cut17.xml`, `it3-cut17-lab.xml`.
+
+## Corte 18 — integración HTTP e interfaz real
+
+La integración instalada admite confirmar e iniciar COLLECT LAB. Ambas flags
+siguen cerradas por defecto y el catálogo requiere autorización explícita mediante
+`collector:enable-laboratory`, tras comprobar Moodle sintético, PHP 8.3 y hashes.
+El seguimiento distingue el paquete auditado de la revisión simulada: publica
+productor, schema, hashes, cursos, metadata y descargas, con estado de reconciliación
+y diálogo de nueva exportación. Las props no contienen perfiles físicos ni secretos.
+
+El recorrido HTTP real pasó 1 prueba/63 aserciones: crear, configurar, preflight,
+confirmar, inicio duplicado, proceso separado, polling, SourcePackage, rechazo de
+alteración y cierre. La regresión específica pasó 34 pruebas/223 aserciones.
+Pint/PHPStan, Vite Plus, ESLint, TypeScript aplicación/E2E, Vitest (5 pruebas) y
+build pasan. Reportes: `quality-results/it3-cut18.xml`, `it3-cut18-lab.xml`.
+La ejecución desde navegador mediante Playwright y las puertas finales permanecen
+pendientes; este corte todavía no declara la iteración terminada.
