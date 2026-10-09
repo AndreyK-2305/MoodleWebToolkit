@@ -34,11 +34,15 @@ final class CollectorEventObserver
             $lockedOperation = RemoteOperation::query()->whereKey($operation->getKey())->lockForUpdate()->firstOrFail();
             $cursor = CollectorObservationCursor::query()->firstOrCreate(['remote_operation_id' => $operation->getKey()],
                 ['execution_id' => $execution->getKey(), 'prefix_sha256' => hash('sha256', '')]);
+            $lostCursor = $cursor->wasRecentlyCreated && $execution->events()->where('remote_operation_id', $operation->id)
+                ->where('type', 'like', 'collector.%')->exists();
             $cursor = CollectorObservationCursor::query()->whereKey($cursor->getKey())->lockForUpdate()->firstOrFail();
-            $result = $this->reader->read($this->workspaces->operationLogPath($execution, $operation->operation_uuid, 'stdout'),
-                $operation->operation_uuid, ['offset' => $cursor->stdout_offset, 'wire_sequence' => $cursor->last_wire_sequence,
-                    'device' => $cursor->file_device, 'inode' => $cursor->file_inode, 'prefix_sha256' => $cursor->prefix_sha256, 'discarding' => $cursor->discarding],
-                $lockedOperation->communication_state->value === 'TERMINATED');
+            $seed = ['offset' => $cursor->stdout_offset, 'wire_sequence' => $cursor->last_wire_sequence,
+                'device' => $cursor->file_device, 'inode' => $cursor->file_inode, 'prefix_sha256' => $cursor->prefix_sha256, 'discarding' => $cursor->discarding];
+            $result = $lostCursor || ($cursor->reader_health === 'ALTERED' && $cursor->file_inode === null)
+                ? ['cursor' => $seed, 'health' => 'ALTERED', 'complete' => false, 'events' => []]
+                : $this->reader->read($this->workspaces->operationLogPath($execution, $operation->operation_uuid, 'stdout'),
+                    $operation->operation_uuid, $seed, $lockedOperation->communication_state->value === 'TERMINATED');
             foreach ($result['events'] as $entry) {
                 $event = $entry['event'];
                 $payload = [...($event->payload ?? []), 'operation_uuid' => $operation->operation_uuid, 'collector_wire_sequence' => $entry['wire_sequence']];

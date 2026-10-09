@@ -2,6 +2,7 @@
 
 namespace App\Domain\Executions;
 
+use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Executions\DTOs\StartExecutionResult;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\FakeToolAdapter;
@@ -49,6 +50,9 @@ class ResumeProjectExecution
             $lockedPrevious = Execution::query()->lockForUpdate()->findOrFail((int) $seed->getKey());
             $lockedPrevious->setRelation('project', $project);
             $this->authorizeLocked($lockedPrevious, $actor);
+            if ($lockedPrevious->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY) {
+                throw ValidationException::withMessages(['checkpoint' => 'Este Recolector no acredita un checkpoint seguro; requiere un nuevo intento en otro workspace.']);
+            }
 
             $existing = ExecutionCommand::query()
                 ->where('idempotency_scope', $scope)

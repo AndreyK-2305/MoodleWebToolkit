@@ -120,6 +120,27 @@ class LocalProcessInspector
         return false;
     }
 
+    public function hasActiveOperation(RemoteOperation $operation): bool
+    {
+        if (PHP_OS_FAMILY !== 'Linux' || $operation->host_id !== (gethostname() ?: 'local')) {
+            return true;
+        }
+        foreach (glob('/proc/[0-9]*/environ') ?: [] as $path) {
+            $environment = @file_get_contents($path);
+            if (is_string($environment) && str_contains($environment, 'MOODLE_OPERATION_ID='.$operation->operation_uuid."\0")
+                && str_contains($environment, 'MOODLE_COMMAND_SHA256='.$operation->command_sha256."\0")) {
+                $stat = @file_get_contents(dirname($path).'/stat');
+                $end = is_string($stat) ? strrpos($stat, ')') : false;
+                $fields = $end === false ? [] : (preg_split('/\s+/', trim(substr($stat, $end + 1))) ?: []);
+                if (! in_array($fields[0] ?? null, ['Z', 'X'], true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     /** @phpstan-impure */
     private function processGroupExists(int $processGroupId): bool
     {

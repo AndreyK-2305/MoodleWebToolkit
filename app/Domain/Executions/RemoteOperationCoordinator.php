@@ -3,6 +3,7 @@
 namespace App\Domain\Executions;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Processes\RegisteredCommandRegistry;
 use App\Domain\Processes\RegisteredCommandRunner;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
@@ -63,9 +64,21 @@ class RemoteOperationCoordinator
         if ($created === false) {
             return $operation;
         }
+        if ($commandKey === CollectorRegisteredCommand::KEY && DB::transactionLevel() > 0) {
+            DB::afterCommit(fn () => $this->dispatchRegistered($operation, $commandKey, $parameters, $workingDirectory));
+
+            return $operation;
+        }
+
+        return $this->dispatchRegistered($operation, $commandKey, $parameters, $workingDirectory);
+    }
+
+    /** @param array<string, string> $parameters */
+    private function dispatchRegistered(RemoteOperation $operation, string $commandKey, array $parameters, string $workingDirectory): RemoteOperation
+    {
 
         try {
-            $connection = config('queue.default') === 'sync' ? 'sync' : 'redis-tool-runs';
+            $connection = $commandKey !== CollectorRegisteredCommand::KEY && config('queue.default') === 'sync' ? 'sync' : 'redis-tool-runs';
             dispatch((new RunRegisteredRemoteOperation(
                 (int) $operation->getKey(),
                 $commandKey,
@@ -90,6 +103,15 @@ class RemoteOperationCoordinator
     /** @param array<string, string> $parameters */
     public function runScheduled(int $operationId, string $commandKey, array $parameters, string $workingDirectory): RemoteOperation
     {
+        if ($commandKey === CollectorRegisteredCommand::KEY) {
+            // Reject a closed flag or changed definition before committing a launch claim.
+            $definition = $this->registry->resolve($commandKey, $parameters);
+            $pending = RemoteOperation::query()->findOrFail($operationId);
+            if ($pending->command_key !== $commandKey || ! hash_equals($pending->command_sha256,
+                $this->commandHash($commandKey, $parameters, $workingDirectory, $definition['artifact_descriptors'], $definition))) {
+                throw new RuntimeException('El comando real cambió antes de reclamar su lanzamiento.');
+            }
+        }
         $operation = DB::transaction(function () use ($operationId, $commandKey): ?RemoteOperation {
             $locked = RemoteOperation::query()->lockForUpdate()->findOrFail($operationId);
             if ($locked->command_key !== $commandKey) {
@@ -158,6 +180,10 @@ class RemoteOperationCoordinator
             $launcherEnvironment = getenv();
             $launcherEnvironment['PATH'] = (string) ($launcherEnvironment['PATH'] ?? '/usr/bin:/bin');
             $launcherEnvironment['LANG'] = (string) ($launcherEnvironment['LANG'] ?? 'C.UTF-8');
+            if ($commandKey === CollectorRegisteredCommand::KEY) {
+                $launcherEnvironment['MOODLE_OPERATION_ID'] = $operation->operation_uuid;
+                $launcherEnvironment['MOODLE_COMMAND_SHA256'] = $operation->command_sha256;
+            }
             $launcherEnvironment['TOOL_LOCAL_RUNNER_ENABLED'] = config('toolkit.features.local_runner.enabled') ? 'true' : 'false';
             $launcherEnvironment['TOOL_RUNNER_HOST_ID'] = (string) $operation->host_id;
             $launcherEnvironment['TOOL_RUNNER_SYNTHETIC_PROFILE'] = app()->environment('testing') && config('toolkit.runner.synthetic_profile', false) ? 'true' : 'false';
@@ -650,6 +676,17 @@ class RemoteOperationCoordinator
                 && $operation->launch_claimed_at === null && $this->readOperationEvidence($operation, 'launch.json') === null
                 && $this->readOperationEvidence($operation, 'exit.json') === null;
         }
+        if (($operation->evidence['cancelled_before_process_start'] ?? false) === true) {
+            $cancel = $this->readOperationEvidence($operation, 'cancel.json');
+
+            return $operation->functional_state === RemoteFunctionalState::CANCELLED && $operation->process_id === null
+                && $operation->started_at === null && $operation->launch_claimed_at !== null
+                && ($cancel['schema_version'] ?? null) === 'remote-operation-cancel.v1'
+                && ($cancel['operation_uuid'] ?? null) === $operation->operation_uuid
+                && ($cancel['command_sha256'] ?? null) === $operation->command_sha256
+                && $this->readOperationEvidence($operation, 'launch.json') === null
+                && $this->readOperationEvidence($operation, 'exit.json') === null && ! $this->inspector->hasActiveOperation($operation);
+        }
         $launch = $this->readOperationEvidence($operation, 'launch.json');
         $exit = $this->readOperationEvidence($operation, 'exit.json');
 
@@ -657,7 +694,9 @@ class RemoteOperationCoordinator
             && $this->validLaunchEvidence($operation, $launch) && $this->validExitEvidence($operation, $exit, $launch)
             && $this->canonicalEvidence($exit) === $this->canonicalEvidence($operation->evidence['exit_evidence'] ?? null)
             && $operation->exit_code === $exit['exit_code']
-            && ! $this->inspector->hasActiveProcessGroup($operation);
+            && ! $this->inspector->hasActiveProcessGroup($operation)
+            && ($operation->command_key !== CollectorRegisteredCommand::KEY
+                || ! $this->inspector->hasActiveOperation($operation));
     }
 
     private function canonicalEvidence(mixed $value): mixed

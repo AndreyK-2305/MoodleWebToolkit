@@ -3,9 +3,12 @@
 namespace App\Domain\Tools;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Enums\ArtifactCategory;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Artifact;
+use App\Models\CollectorPackageAudit;
+use App\Models\RemoteOperation;
 use App\Models\SourcePackage;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -56,6 +59,9 @@ class SourcePackageRegistry
             throw new ToolOperationBlocked('La versión productora o schema del paquete fuente es desconocido.');
         }
         $collectorAudit = $artifact->metadata['collector_audit'] ?? null;
+        if ($producerOperation->command_key === CollectorRegisteredCommand::KEY) {
+            $this->assertDurableCollectorAudit($artifact);
+        }
         if ($schemaVersion === '1.0' && (! is_array($collectorAudit)
             || ($collectorAudit['validation_schema'] ?? null) !== 'collector-web-audit.v1'
             || ($collectorAudit['result'] ?? null) !== 'VALID'
@@ -143,6 +149,9 @@ class SourcePackageRegistry
     public function validate(SourcePackage $package): SourcePackage
     {
         $package->loadMissing('artifact', 'producerExecution');
+        if (RemoteOperation::query()->whereKey($package->artifact?->remote_operation_id)->where('command_key', CollectorRegisteredCommand::KEY)->exists()) {
+            $this->assertDurableCollectorAudit($package->artifact);
+        }
         $this->assertKnownContract($package);
         $artifact = $package->artifact;
         if ($package->validation_state === 'REVOKED' || $package->availability !== 'AVAILABLE'
@@ -206,6 +215,17 @@ class SourcePackageRegistry
                 || ($package->producer_tool_version === '7.4.2-linux' && ($package->capabilities['theme_inventory'] ?? null) !== '1.0')) {
                 throw new ToolOperationBlocked('El contrato existente necesita auditoría verificable y capabilities compatibles.');
             }
+        }
+    }
+
+    private function assertDurableCollectorAudit(Artifact $artifact): void
+    {
+        $id = $artifact->metadata['collector_audit_id'] ?? null;
+        $audit = is_int($id) ? CollectorPackageAudit::query()->whereKey($id)->where('execution_id', $artifact->execution_id)
+            ->where('remote_operation_id', $artifact->remote_operation_id)->first() : null;
+        if ($audit === null || $audit->package_sha256 !== $artifact->sha256 || $audit->package_bytes !== $artifact->size
+            || $this->canonical($audit->snapshot) !== $this->canonical($artifact->metadata['collector_audit'] ?? null)) {
+            throw new ToolOperationBlocked('El paquete real carece de su auditoría independiente inmutable.');
         }
     }
 

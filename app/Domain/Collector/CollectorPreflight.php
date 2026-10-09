@@ -74,7 +74,7 @@ final class CollectorPreflight
         $quota = (int) ceil($options['capacity_bytes'] * (100 + $options['safety_margin_percent']) / 100);
         $capacity = ! is_link($root) && is_writable($volume) && is_float($space) && $space >= $quota;
         $checks[] = $this->check('collector.capacity', 'Capacidad y salida del workspace', $capacity, $capacity ? 'La cuota estimada con su margen cabe en el volumen de ejecución.' : 'No hay espacio o permisos suficientes para la cuota aprobada.');
-        $checks[] = $this->check('collector.adapter', 'Integración de laboratorio', class_exists(CollectorAdapter::class), 'La integración debe estar instalada antes de confirmar una recolección real.');
+        $checks[] = $this->check('collector.adapter', 'Integración de laboratorio', class_exists(CollectorAdapter::class) && CollectorAdapter::httpEnabled(), 'La integración debe estar instalada antes de confirmar una recolección real.');
         $checks[] = ['id' => 'collector.laboratory', 'description' => 'Uso exclusivo de laboratorio', 'result' => 'WARNING', 'detail' => 'Acepta ejecutar sobre datos sintéticos y crear un paquete para validación experimental.'];
 
         return $checks;
@@ -111,6 +111,7 @@ final class CollectorPreflight
             'schema_version' => 'collector-preflight.v1', 'project_uuid' => $project->uuid,
             'configuration_version' => $configuration->version, 'options_sha256' => $this->configurations->hash(is_array($options) ? $options : []),
             'profile_sha256' => $profileHash, 'distribution_sha256' => $distribution?->distribution_sha256,
+            'integration_ready' => CollectorAdapter::httpEnabled(),
             'manifest_sha256' => $distribution?->manifest_sha256, 'workspace_policy_sha256' => hash('sha256', (string) json_encode(config('toolkit.workspaces'))),
             'runtime_policy_sha256' => hash('sha256', (string) json_encode([
                 'binary' => config('collector.php_binary'), 'ini' => config('collector.php_ini'),

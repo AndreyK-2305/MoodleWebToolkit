@@ -2,6 +2,8 @@
 
 namespace App\Jobs;
 
+use App\Domain\Collector\CollectorRegisteredCommand;
+use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Models\RemoteOperation;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
@@ -31,7 +33,18 @@ final class ReconcileRemoteOperation implements ShouldBeUnique, ShouldQueue
     {
         $operation = RemoteOperation::query()->find($this->operationId);
         if ($operation !== null) {
-            $operations->reconcile($operation);
+            if ($operation->command_key === CollectorRegisteredCommand::KEY) {
+                if ($operation->host_id !== (gethostname() ?: 'local')) {
+                    return;
+                }
+                try {
+                    app(CollectorWorkflow::class)->observe($operation);
+                } catch (\Throwable) {
+                    app(CollectorWorkflow::class)->deferObservation($operation);
+                }
+            } else {
+                $operations->reconcile($operation);
+            }
         }
     }
 }

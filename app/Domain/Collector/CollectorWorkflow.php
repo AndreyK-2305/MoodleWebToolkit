@@ -12,6 +12,7 @@ use App\Enums\EventSeverity;
 use App\Enums\ExecutionStatus;
 use App\Enums\ExecutionStepStatus;
 use App\Exceptions\ToolOperationBlocked;
+use App\Jobs\RunRegisteredRemoteOperation;
 use App\Models\Artifact;
 use App\Models\AuditLog;
 use App\Models\CollectorPackageAudit;
@@ -56,8 +57,16 @@ final class CollectorWorkflow
         $this->step($execution, 'preparation', ExecutionStepStatus::SUCCESS);
         $this->step($execution, 'collection', ExecutionStepStatus::RUNNING);
 
-        return $this->provider->start($execution, 'collector-export-'.$execution->uuid, CollectorRegisteredCommand::KEY,
-            ['project_uuid' => $execution->project->uuid, 'execution_uuid' => $execution->uuid, 'runtime_sha256' => $runtime->content_sha256]);
+        return DB::transaction(function () use ($execution, $runtime): RemoteOperation {
+            Project::query()->whereKey($execution->project_id)->lockForUpdate()->firstOrFail();
+            $locked = Execution::query()->whereKey($execution->id)->lockForUpdate()->firstOrFail();
+            if ($locked->status !== ExecutionStatus::RUNNING) {
+                throw new ToolOperationBlocked('El estado cambió antes de registrar el lanzamiento.');
+            }
+
+            return $this->provider->start($locked, 'collector-export-'.$locked->uuid, CollectorRegisteredCommand::KEY,
+                ['project_uuid' => $locked->project->uuid, 'execution_uuid' => $locked->uuid, 'runtime_sha256' => $runtime->content_sha256]);
+        }, attempts: 3);
     }
 
     public function observe(RemoteOperation $operation): void
@@ -73,17 +82,43 @@ final class CollectorWorkflow
             return;
         }
         try {
+            if ($operation->launch_claimed_at === null && $operation->process_id === null
+                && $operation->communication_state->value !== 'TERMINATED' && ! isset($operation->evidence['cancel_requested_at'])) {
+                if (! config('toolkit.features.recolector_742.enabled') || ! config('toolkit.features.local_runner.enabled')) {
+                    $operation->forceFill(['next_poll_at' => now()->utc()->addSeconds(30)])->save();
+
+                    return;
+                }
+                $runtime = ExecutionRuntimeConfiguration::query()->whereKey($binding->runtime_configuration_id)->firstOrFail();
+                $this->runtime->verify($operation->execution, $runtime);
+                dispatch((new RunRegisteredRemoteOperation($operation->id, CollectorRegisteredCommand::KEY,
+                    ['project_uuid' => $operation->execution->project->uuid, 'execution_uuid' => $operation->execution->uuid,
+                        'runtime_sha256' => $runtime->content_sha256], 'moodle-recolector-742-linux-tree'))->onConnection('redis-tool-runs')->onQueue('tool-runs'));
+                $operation->forceFill(['next_poll_at' => now()->utc()->addSeconds(15)])->save();
+
+                return;
+            }
             $operation = $this->operations->reconcile($operation);
             $execution = $operation->execution->fresh();
             if ($execution->status->isTerminal() || $execution->status === ExecutionStatus::REVIEW) {
                 return;
             }
-            $beforeLaunch = ($operation->evidence['cancelled_before_launch'] ?? false) === true;
+            $beforeLaunch = ($operation->evidence['cancelled_before_launch'] ?? false) === true
+                || ($operation->evidence['cancelled_before_process_start'] ?? false) === true;
             $cursor = $beforeLaunch ? null : $this->observer->observe($operation);
-            if ($operation->communication_state->value !== 'TERMINATED' || ! $this->provider->verifyTermination($operation)) {
+            if ($operation->communication_state->value !== 'TERMINATED') {
+                return;
+            }
+            if (! $this->provider->verifyTermination($operation)) {
+                $this->deferObservation($operation);
+
                 return;
             }
             if ($cursor !== null && ($cursor->reader_health !== 'OK' || ! $cursor->read_complete)) {
+                if ($cursor->reader_health !== 'OK') {
+                    $this->deferObservation($operation);
+                }
+
                 return;
             }
             $this->removePrivateConfiguration($execution);
@@ -97,39 +132,65 @@ final class CollectorWorkflow
                 $this->step($execution, 'collection', ExecutionStepStatus::SUCCESS);
                 $this->step($execution, 'verification', ExecutionStepStatus::RUNNING);
             }
-            $path = $this->outputPath($execution, 'source-package.zip', 21474836480);
-            $audit = CollectorPackageAudit::query()->where('remote_operation_id', $operation->id)->first();
-            if ($audit === null) {
-                $hash = is_file($path) && ! is_link($path) ? hash_file('sha256', $path) : false;
-                $bytes = is_file($path) && ! is_link($path) ? filesize($path) : false;
-                if (! is_string($hash) || ! is_int($bytes)) {
-                    throw new ToolOperationBlocked('Falta un paquete fuente verificable.');
+            try {
+                $path = $this->outputPath($execution, 'source-package.zip', 21474836480);
+                $audit = CollectorPackageAudit::query()->where('remote_operation_id', $operation->id)->first();
+                if ($audit === null) {
+                    $hash = is_file($path) && ! is_link($path) ? hash_file('sha256', $path) : false;
+                    $bytes = is_file($path) && ! is_link($path) ? filesize($path) : false;
+                    if (! is_string($hash) || ! is_int($bytes)) {
+                        throw new ToolOperationBlocked('Falta un paquete fuente verificable.');
+                    }
+                    $snapshot = $this->inspector->inspect($execution, $binding->distribution, $path, $hash, $bytes);
+                    if (($snapshot['producer_version'] ?? null) !== '7.4.2-linux') {
+                        throw new ToolOperationBlocked('Las nuevas recolecciones requieren productor 7.4.2.');
+                    }
+                    $audit = CollectorPackageAudit::query()->create(['remote_operation_id' => $operation->id,
+                        'execution_id' => $execution->id, 'package_sha256' => $hash, 'package_bytes' => $bytes, 'snapshot' => $snapshot]);
                 }
-                $snapshot = $this->inspector->inspect($execution, $binding->distribution, $path, $hash, $bytes);
-                if (($snapshot['producer_version'] ?? null) !== '7.4.2-linux') {
-                    throw new ToolOperationBlocked('Las nuevas recolecciones requieren productor 7.4.2.');
+                if (! hash_equals($audit->package_sha256, (string) hash_file('sha256', $path)) || filesize($path) !== $audit->package_bytes) {
+                    throw new ToolOperationBlocked('El paquete cambió después de la auditoría independiente.');
                 }
-                $audit = CollectorPackageAudit::query()->create(['remote_operation_id' => $operation->id,
-                    'execution_id' => $execution->id, 'package_sha256' => $hash, 'package_bytes' => $bytes, 'snapshot' => $snapshot]);
+                $metadata = $this->artifactMetadata($execution, $operation, $audit);
+                $artifacts = $this->provider->collectArtifacts($operation, $metadata);
+                $source = collect($artifacts)->first(fn ($artifact): bool => $artifact->category === 'SOURCE_PACKAGE');
+                if ($source === null) {
+                    throw new ToolOperationBlocked('No se capturó el paquete fuente declarado.');
+                }
+                $snapshot = $audit->snapshot;
+                $package = $this->packages->register($source, $snapshot['source_id'], $snapshot['producer_version'], $snapshot['schema_version'],
+                    $snapshot['name'], ['moodle.source.export'], $snapshot['capabilities'], 'CONFIDENTIAL');
+                $package = $this->packages->validate($package);
+                $this->review($execution, $operation, $package, $snapshot);
+            } catch (ToolOperationBlocked|\JsonException|\InvalidArgumentException) {
+                $this->closeFailureOrCancellation($execution, $operation);
             }
-            if (! hash_equals($audit->package_sha256, (string) hash_file('sha256', $path)) || filesize($path) !== $audit->package_bytes) {
-                throw new ToolOperationBlocked('El paquete cambió después de la auditoría independiente.');
-            }
-            $metadata = $this->artifactMetadata($execution, $operation, $audit);
-            $artifacts = $this->provider->collectArtifacts($operation, $metadata);
-            $source = collect($artifacts)->first(fn ($artifact): bool => $artifact->category === 'SOURCE_PACKAGE');
-            if ($source === null) {
-                throw new ToolOperationBlocked('No se capturó el paquete fuente declarado.');
-            }
-            $snapshot = $audit->snapshot;
-            $package = $this->packages->register($source, $snapshot['source_id'], $snapshot['producer_version'], $snapshot['schema_version'],
-                $snapshot['name'], ['moodle.source.export'], $snapshot['capabilities'], 'CONFIDENTIAL');
-            $package = $this->packages->validate($package);
-            $this->review($execution, $operation, $package, $snapshot);
         } finally {
             $unlock = $pdo->prepare('SELECT pg_advisory_unlock(74203, ?)');
             $unlock->execute([$operation->id]);
         }
+    }
+
+    public function deferObservation(RemoteOperation $operation): void
+    {
+        DB::transaction(function () use ($operation): void {
+            Project::query()->whereKey($operation->execution->project_id)->lockForUpdate()->firstOrFail();
+            $execution = Execution::query()->whereKey($operation->execution_id)->lockForUpdate()->firstOrFail();
+            $locked = RemoteOperation::query()->whereKey($operation->id)->lockForUpdate()->firstOrFail();
+            if (! $execution->status->isActive()) {
+                return;
+            }
+            $attempts = min(65535, $locked->reconcile_attempts + 1);
+            $manual = $attempts >= 8;
+            $code = 'COLLECTOR_RECONCILIATION_PENDING';
+            if ($locked->last_reconcile_error !== $code || $manual !== $locked->manual_intervention_required) {
+                $this->events->record($execution, 'collector.reconciliation_pending', severity: EventSeverity::WARNING,
+                    message: $manual ? 'La operación requiere revisar su evidencia o limpieza privada en el runner.' : 'La observación quedó pendiente; se conserva la operación y su evidencia.',
+                    payload: ['manual_intervention_required' => $manual], operation: $locked);
+            }
+            $locked->forceFill(['reconcile_attempts' => $attempts, 'last_reconcile_error' => $code,
+                'manual_intervention_required' => $manual, 'next_poll_at' => $manual ? null : now()->utc()->addSeconds(min(300, 15 * (2 ** min(4, $attempts))))])->save();
+        }, attempts: 3);
     }
 
     private function binding(Execution $execution): ExecutionToolBinding

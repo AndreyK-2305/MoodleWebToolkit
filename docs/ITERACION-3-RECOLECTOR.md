@@ -359,3 +359,25 @@ Reportes: `quality-results/it3-cut14.xml`, `it3-cut14-lab.xml`.
 
 Este corte verifica el ciclo del dominio mediante el harness LAB. CollectorAdapter,
 routing Web, controles, cierre, nuevo intento y Playwright todavía están pendientes.
+
+## Corte 15 — routing, cancelación y recuperación del runner
+
+La identidad inmutable del binding elige CollectorAdapter y LocalProvider aun si
+cambia la configuración vigente. Nunca sustituye una ejecución real por Fake.
+START y CANCEL se procesan en la cola del runner. Una falla del worker conserva
+la operación registrada; la reconciliación redespacha únicamente un lanzamiento
+que todavía no fue reclamado. Cerrar los flags antes del lanzamiento no reclama
+ni crea un PID. Una identidad reclamada sin evidencia no se vuelve a ejecutar.
+
+La cancelación antes del proceso y la cancelación del grupo real mantienen
+evidencia verificable. La publicación exige también ausencia del supervisor
+marcado con la identidad de la operación. Una falla de limpieza o lectura queda
+pendiente con backoff y finalmente requiere intervención; no produce éxito.
+La auditoría durable es obligatoria para registrar y revalidar el paquete real.
+
+Validación secuencial: 64 pruebas/303 aserciones; LAB real 1 prueba/29 aserciones.
+La regresión completa previa al último control de lanzamiento pasó 527
+pruebas/6745 aserciones. Pint y PHPStan pasan. Reportes:
+`quality-results/it3-cut15.xml`, `it3-cut15-lab.xml`, `it3-cut15-regression.xml`.
+La finalización, el nuevo intento y la interfaz real siguen pendientes; la
+confirmación HTTP permanece cerrada durante este corte.

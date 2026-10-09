@@ -41,7 +41,7 @@ class CollectorWorkflowTest extends TestCase
         $this->assertTrue((bool) config('toolkit.features.recolector_742.enabled'));
         $this->assertTrue((bool) config('toolkit.features.local_runner.enabled'));
         $this->assertSame('moodle-tool-runner', gethostname());
-        Storage::fake('local');
+        Storage::set('local', Storage::fake('collector-lab-'.bin2hex(random_bytes(8))));
         $root = Storage::disk('local')->path('workspaces');
         config(['toolkit.workspaces.root' => $root, 'toolkit.runner.host_id' => gethostname()]);
         Queue::fake();

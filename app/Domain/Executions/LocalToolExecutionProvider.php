@@ -5,9 +5,11 @@ namespace App\Domain\Executions;
 use App\Domain\Artifacts\RegisterReferencedArtifact;
 use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Collector\CollectorExecutionProvider;
 use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Collector\CollectorRuntimeConfiguration;
 use App\Domain\Executions\Contracts\ExecutionRuntimeProvider;
+use App\Domain\Tools\CollectorAdapter;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\DeployToolDistribution;
 use App\Domain\Tools\ToolDistributionVerifier;
@@ -46,6 +48,11 @@ class LocalToolExecutionProvider implements ExecutionRuntimeProvider
 
     public function execute(ExecutionCommand $command, ToolAdapter $adapter): void
     {
+        if ($adapter instanceof CollectorAdapter && $command->execution->toolBinding?->adapter_key === $adapter->key()) {
+            app(CollectorExecutionProvider::class)->execute($command);
+
+            return;
+        }
         throw new ToolOperationBlocked('El provider real requiere un binding de catálogo y una operación explícita; la cola Fake se conserva como provider predeterminado.');
     }
 

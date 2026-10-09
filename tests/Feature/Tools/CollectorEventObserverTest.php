@@ -150,5 +150,10 @@ class CollectorEventObserverTest extends DomainTestCase
         $migration->up();
         $this->assertDatabaseCount('collector_observation_cursors', 0);
         $this->assertSame($operation->id, $operation->fresh()->id);
+        $blocked = app(CollectorEventObserver::class)->observe($operation->fresh());
+        $this->assertSame('ALTERED', $blocked->reader_health);
+        $this->assertSame(0, $blocked->last_wire_sequence);
+        app(CollectorEventObserver::class)->observe($operation->fresh());
+        $this->assertSame(1, $operation->execution->events()->where('type', 'collector.progress')->count());
     }
 }

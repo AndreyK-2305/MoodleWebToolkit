@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Jobs\ReconcileRemoteOperation;
 use App\Models\RemoteOperation;
@@ -20,15 +21,23 @@ class ReconcileRemoteOperations extends Command
         $failed = 0;
 
         RemoteOperation::query()
-            ->whereIn('communication_state', ['CONNECTED', 'DEGRADED', 'UNREACHABLE', 'RECONCILING'])
-            ->whereNotNull('next_poll_at')
-            ->where('next_poll_at', '<=', now()->utc())
+            ->where(function ($query): void {
+                $query->where(function ($active): void {
+                    $active->whereIn('communication_state', ['CONNECTED', 'DEGRADED', 'UNREACHABLE', 'RECONCILING'])
+                        ->whereNotNull('next_poll_at')->where('next_poll_at', '<=', now()->utc());
+                })->orWhere(function ($collector): void {
+                    $collector->where('command_key', CollectorRegisteredCommand::KEY)->where('communication_state', 'TERMINATED')
+                        ->where('manual_intervention_required', false)
+                        ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['QUEUED', 'RUNNING', 'CANCELLING', 'VERIFYING']))
+                        ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
+                });
+            })
             ->orderBy('id')
             ->limit($limit)
             ->get()
             ->each(function (RemoteOperation $operation) use ($operations, &$failed): void {
                 try {
-                    if (config('queue.default') === 'sync') {
+                    if (config('queue.default') === 'sync' && $operation->command_key !== CollectorRegisteredCommand::KEY) {
                         $operations->reconcile($operation);
                     } else {
                         dispatch((new ReconcileRemoteOperation((int) $operation->getKey()))

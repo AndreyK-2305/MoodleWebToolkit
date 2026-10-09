@@ -20,7 +20,7 @@ return new class extends Migration
             $table->timestampTz('created_at')->useCurrent();
         });
         if (DB::getDriverName() === 'pgsql') {
-            DB::statement("ALTER TABLE collector_package_audits ADD CONSTRAINT collector_package_audit_bounds CHECK (package_bytes BETWEEN 1 AND 21474836480 AND package_sha256 ~ '^[a-f0-9]{64}$' AND snapshot->>'result' = 'VALID')");
+            DB::statement("ALTER TABLE collector_package_audits ADD CONSTRAINT collector_package_audit_bounds CHECK (package_bytes BETWEEN 1 AND 21474836480 AND package_sha256 ~ '^[a-f0-9]{64}$' AND COALESCE(snapshot->>'result', '') = 'VALID' AND COALESCE(snapshot->>'validation_schema', '') = 'collector-web-audit.v1')");
             DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION toolkit_guard_collector_package_audit() RETURNS trigger AS $$
                 BEGIN
