@@ -1,0 +1,41 @@
+{
+    "schema_version": "it3-lab-usage-race-diagnosis.v1",
+    "reviewed_head_sha": "c26f213d304e09503d43422139cd153d0d509a69",
+    "ci_failure_runs": {
+        "bridge_exit_143": "https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/39296898930",
+        "fresh_export_failed_instead_of_review": "https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/39315126845",
+        "browser_connected_not_observed": "https://github.com/AndreyK-2305/MoodleWebToolkit/actions/runs/39298199232/attempts/1"
+    },
+    "confirmed_mechanism": [
+        "CollectorBridge::child() measures the workspace every second while the export runs.",
+        "Recolector 7.4.2 replaces export-progress.json through <file>.tmp.<pid> plus rename, and Moodle removes temporary backup directories inside the same workspace.",
+        "usage() threw when a listed entry was removed before isFile/getSize, or when RecursiveDirectoryIterator opened a removed directory.",
+        "The exception leaves child() through finally, which sends SIGTERM to the bridge's own process group; the bridge's handler marks it cancelled and run() returns 143 with a cancelled event, although nobody requested cancellation."
+    ],
+    "reproduction": {
+        "runtime": "php:8.3-cli on Linux 6.6 (WSL2), uid 33, same churn pattern as collector_atomic_json and Moodle temporary directories",
+        "original_usage": {
+            "walks": 34685,
+            "failed_walks": 893,
+            "removed_directory": 713,
+            "removed_entry": 180
+        },
+        "corrected_usage": {
+            "runs": 2,
+            "walks": 73492,
+            "failed_walks": 0
+        },
+        "corrected_still_rejects": [
+            "symlink",
+            "dangling_symlink",
+            "fifo",
+            "directory_read_without_search",
+            "directory_without_read"
+        ]
+    },
+    "not_explained_by_this_defect": {
+        "browser_case": "Run 39298199232 attempt 1: operation was TERMINATED/SUCCEEDED (exit 0) while the collection step was still RUNNING. The export finished before the 20 s poll observed CONNECTED; the bridge was not terminated.",
+        "workflow_observation": "Run 39296898930 CollectorWorkflowTest closed RUNTIME_EXCEPTION with the operation CONNECTED and process_group_terminated=false; its source is not identified by the retained diagnostic."
+    },
+    "full_clean_gates": "REQUIRED_SEPARATELY"
+}

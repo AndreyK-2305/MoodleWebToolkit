@@ -343,17 +343,51 @@ final class CollectorBridge
         }
     }
 
-    private function usage(string $workspace): int
+    /**
+     * Measured while the collector renames its tmp.<pid> files and Moodle removes
+     * temporary backup directories. An entry removed after listing is skipped and
+     * counted again on the next observation; every entry that exists must still
+     * be a searchable directory or a regular file.
+     */
+    private function usage(string $directory, ?int $inode = null): int
     {
+        $entries = @scandir($directory, SCANDIR_SORT_NONE);
+        if ($entries === false) {
+            if ($inode !== null && $this->replaced($directory, $inode)) {
+                return 0;
+            }
+            throw new RuntimeException('Unsafe workspace content.');
+        }
         $bytes = 0;
-        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($workspace, FilesystemIterator::SKIP_DOTS)) as $file) {
-            if ($file->isLink() || ! $file->isFile()) {
+        foreach (array_diff($entries, ['.', '..']) as $name) {
+            $path = $directory.'/'.$name;
+            $stat = @lstat($path);
+            if ($stat === false) {
+                // In a searchable directory a failed lstat means the entry no longer exists.
+                if (@lstat($directory.'/.') !== false || ($inode !== null && $this->replaced($directory, $inode))) {
+                    continue;
+                }
                 throw new RuntimeException('Unsafe workspace content.');
             }
-            $bytes += $file->getSize();
+            $type = $stat['mode'] & 0170000;
+            if ($type === 0040000) {
+                $bytes += $this->usage($path, $stat['ino']);
+            } elseif ($type === 0100000) {
+                $bytes += $stat['size'];
+            } else {
+                throw new RuntimeException('Unsafe workspace content.');
+            }
         }
 
         return $bytes;
+    }
+
+    private function replaced(string $directory, int $inode): bool
+    {
+        clearstatcache(true, $directory);
+        $stat = @lstat($directory);
+
+        return $stat === false || $stat['ino'] !== $inode;
     }
 
     /** @param array<string, mixed> $payload */
