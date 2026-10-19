@@ -12,10 +12,11 @@ class SsmClientFactory
 {
     public function make(string $region): SsmClient
     {
+        // The SDK's default retries are kept on purpose: the "standard" retry mode
+        // kept retrying a missing credential chain for minutes instead of failing.
         return new SsmClient([
             'region' => $region,
             'version' => '2014-11-06',
-            'retries' => ['mode' => 'standard', 'max_attempts' => 3],
             'http' => ['connect_timeout' => 10, 'timeout' => 30],
         ]);
     }
