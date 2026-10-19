@@ -2,13 +2,10 @@
 
 namespace Tests\Feature\Remote;
 
-use App\Domain\Remote\Contracts\RemoteTransport;
-use App\Domain\Remote\DTOs\RemoteTarget;
 use App\Domain\Remote\DTOs\TransportResult;
 use App\Domain\Remote\InstallRemoteAgent;
 use App\Domain\Remote\RemoteAgent;
 use App\Domain\Remote\RemoteServerConnections;
-use App\Domain\Remote\RemoteTransportResolver;
 use App\Domain\Remote\TestRemoteConnection;
 use App\Enums\ConnectionStatus;
 use App\Enums\ConnectionType;
@@ -17,28 +14,19 @@ use App\Exceptions\ToolOperationBlocked;
 use App\Models\AuditLog;
 use App\Models\Server;
 use Tests\Feature\Domain\DomainTestCase;
+use Tests\Support\QueuedRemoteTransport;
 
 class RemoteServerConnectionsTest extends DomainTestCase
 {
     private const HOST_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl';
 
-    private QueuedTransport $transport;
+    private QueuedRemoteTransport $transport;
 
     protected function setUp(): void
     {
         parent::setUp();
         config(['toolkit.features.remote_agent.enabled' => true]);
-        $this->transport = new QueuedTransport;
-        $transport = $this->transport;
-        $this->app->instance(RemoteTransportResolver::class, new class($transport) extends RemoteTransportResolver
-        {
-            public function __construct(private readonly RemoteTransport $transport) {}
-
-            public function for(RemoteTarget $target): RemoteTransport
-            {
-                return $this->transport;
-            }
-        });
+        $this->transport = QueuedRemoteTransport::bind($this->app);
     }
 
     public function test_remote_connections_are_closed_by_feature_flag(): void
@@ -195,31 +183,5 @@ class RemoteServerConnectionsTest extends DomainTestCase
         $document[$ok ? 'data' : 'error'] = $payload;
 
         return json_encode($document, JSON_THROW_ON_ERROR)."\n";
-    }
-}
-
-final class QueuedTransport implements RemoteTransport
-{
-    /** @var list<TransportResult> */
-    private array $results = [];
-
-    /** @var list<string> */
-    public array $scripts = [];
-
-    public function queue(TransportResult $result): void
-    {
-        $this->results[] = $result;
-    }
-
-    public function key(): string
-    {
-        return 'queued';
-    }
-
-    public function run(RemoteTarget $target, string $script, int $timeoutSeconds): TransportResult
-    {
-        $this->scripts[] = $script;
-
-        return array_shift($this->results) ?? new TransportResult(TransportResult::UNREACHABLE, null, '', '', 'no_queued_result');
     }
 }
