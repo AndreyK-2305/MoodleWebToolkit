@@ -10,12 +10,14 @@ RUN apt-get update \
         libicu-dev \
         libpq-dev \
         libzip-dev \
+        openssh-client \
         util-linux \
         unzip \
     && docker-php-ext-install -j"$(nproc)" bcmath intl pcntl pdo_pgsql sockets zip \
     && pecl install redis \
     && docker-php-ext-enable redis \
     && command -v prlimit \
+    && command -v ssh \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

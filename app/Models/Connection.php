@@ -6,6 +6,16 @@ use App\Enums\ConnectionStatus;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property int $id
+ * @property int $server_id
+ * @property string $name
+ * @property string $type
+ * @property ConnectionStatus $status
+ * @property array<string, mixed>|null $configuration
+ * @property string|null $secret_reference
+ * @property-read Server $server
+ */
 class Connection extends Model
 {
     protected $fillable = ['server_id', 'name', 'type', 'status', 'configuration', 'secret_reference'];
