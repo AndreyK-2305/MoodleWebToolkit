@@ -23,8 +23,8 @@ su estado. Perder la conexión significa "estado desconocido", nunca "falló".
 
 | Corte | Alcance                                                                                 | Estado    |
 | ----- | --------------------------------------------------------------------------------------- | --------- |
-| B1    | Transportes SSM/SSH, agente remoto, instalación verificada, prueba de conexión          | Este PR   |
-| B2    | `RemoteOperation` con proveedor `remote-agent`: lanzar, observar, reconciliar, cancelar | Pendiente |
+| B1    | Transportes SSM/SSH, agente remoto, instalación verificada, prueba de conexión          | PR #11    |
+| B2    | `RemoteOperation` con proveedor `remote-agent`: lanzar, observar, reconciliar, cancelar | PR B2     |
 | B3    | UI: conexión por servidor en el wizard, prueba de conexión, estado de operaciones       | Pendiente |
 | B4    | `SecretStore` en AWS (Secrets Manager / Parameter Store) y prueba en EC2 real           | Pendiente |
 
@@ -45,8 +45,8 @@ texto libre):
 | `tail <uuid> <stdout\|stderr> <offset> <max>` | Lectura incremental acotada (≤16 KiB) en base64                                          |
 | `cancel <uuid>`                               | SIGTERM a la unidad; queda registrado en `cancel.json`                                   |
 
-Solo hay dos operaciones registradas, de diagnóstico: `diagnostic.sleep` y
-`diagnostic.fail`. El Recolector y el Consolidador se registrarán en las
+Solo hay operaciones registradas de diagnóstico: `diagnostic.sleep`,
+`diagnostic.fail` y `diagnostic.lines` (esta última desde B2). El Recolector y el Consolidador se registrarán en las
 etapas C y D con el mismo mecanismo. El agente rechaza comandos no registrados,
 parámetros duplicados o fuera de patrón y UUID inválidos.
 
@@ -88,6 +88,28 @@ argumentos validados y escapados. Ningún dato del frontend llega al shell.
 
 Todo está detrás de `TOOL_REMOTE_AGENT_ENABLED=false`.
 
+## B2: operaciones remotas durables
+
+`RemoteAgentOperations` crea `RemoteOperation` con `provider_key=remote-agent`,
+`host_id` = UUID del servidor y `runtime_key=mwt-agent-v1`. El coordinador local
+nunca las procesa: el scheduler (`executions:reconcile-remote-operations`) y el
+job heredado las enrutan a `ReconcileRemoteAgentOperation`.
+
+| Paso                  | Comportamiento                                                                                                                                                                                                                                                                   |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lanzar                | Exige conexión `VALID` del mismo proyecto y una operación del `RemoteCommandRegistry` (espejo del agente). Idempotente por `execution + idempotency_key`; el hash fija servidor, versión/SHA del agente, comando y parámetros. Registra la reclamación antes de llamar.          |
+| Respuesta perdida     | La operación queda `UNREACHABLE/UNKNOWN` sin `process_id`. La siguiente observación lee `status`: si el agente la lanzó, adopta su identidad; si responde `operation_not_found`, repite `launch` con el **mismo UUID** (el agente es idempotente). Nunca hay un segundo proceso. |
+| Observar              | `status` cada 15 s: `CONNECTED/RUNNING` con heartbeat; `DEGRADED` si el heartbeat tiene más de 90 s según el reloj del servidor. Logs completos de stdout/stderr en `execution_logs`, censurados, con offset y líneas confirmados en la misma transacción.                       |
+| Contacto perdido      | `UNREACHABLE/UNKNOWN` con backoff 15 s → 900 s. Tras 8 intentos marca intervención manual y audita, **pero sigue consultando**: el proceso puede seguir vivo en el servidor. Al recuperar contacto vuelve a `CONNECTED/RUNNING`.                                                 |
+| Terminar              | Solo `exit.json` con el proceso ya terminado cierra la operación: `SUCCEEDED` (0), `FAILED` (≠0) o `CANCELLED` (cancelación solicitada).                                                                                                                                         |
+| Resultado desconocido | Proceso desaparecido sin `exit.json`, estado remoto borrado o evidencia de lanzamiento ajena → `TERMINATED/UNKNOWN` con intervención manual. Nunca se infiere éxito.                                                                                                             |
+| Rechazo definitivo    | `launcher_unavailable`, comando o parámetros inválidos → `TERMINATED/FAILED` sin reintentos.                                                                                                                                                                                     |
+| Cancelar              | Solo operaciones cancelables con lanzamiento confirmado. La intención se guarda antes de llamar; si la llamada se pierde, la reconciliación repite `cancel` hasta ver la salida.                                                                                                 |
+
+Corrección asociada: las escrituras devuelven el modelo releído de PostgreSQL. Con
+`APP_TIMEZONE=America/Bogota`, un timestamp UTC asignado en memoria se
+reinterpretaba en la zona local (5 h de desfase) hasta releerlo.
+
 ## Requisitos en AWS para probar B1
 
 - Instancia con SSM Agent registrado (aparece en _Fleet Manager_) y rol con
@@ -112,8 +134,11 @@ php artisan remote:connection test <server_uuid>
 - Dominio con PostgreSQL: feature flag, evidencia y auditoría, agente ausente o
   desactualizado, servidor inaccesible, launcher no durable, reconfiguración.
 
-## Límites conocidos de B1
+## Límites conocidos de B1 y B2
 
-- Aún no existe `RemoteOperation` remota ni reconciliación periódica (B2).
+- Las operaciones remotas todavía no gobiernan el estado de la `Execution` ni la UI: eso llega con
+  los adaptadores del Recolector (etapa C) y del Consolidador (etapa D) y con B3.
+- La conciliación de logs guarda líneas completas; un archivo truncado o rotado en el servidor no
+  se detecta todavía.
 - No hay UI (B3) ni `SecretStore` en AWS (B4); SSH usa el `SecretProvider` LAB.
 - No se ha probado contra una EC2 real; requiere credenciales e instancia.
