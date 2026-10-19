@@ -213,7 +213,7 @@ cmd_launch() {
     fi
 
     argv_file=$dir/argv
-    printf '%s\0' "${argv[@]}" >"$argv_file"
+    printf '%s\0' "${REGISTERED_ARGV[@]}" >"$argv_file"
     unit="mwt-op-${uuid}"
     local launch
     launch=$(printf '{"operation_uuid":"%s","command_key":%s,"launcher":"%s","unit":%s,"agent_version":"%s","agent_sha256":"%s","argv_sha256":"%s","launched_at":"%s"}' \
