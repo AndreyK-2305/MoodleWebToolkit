@@ -1,0 +1,360 @@
+#!/usr/bin/env bash
+# MoodleWebToolkit remote agent.
+#
+# Installed by the platform on a source or destination server. It accepts a
+# closed set of subcommands, prints exactly one JSON document per invocation
+# and never runs arbitrary commands: only the operations registered below.
+# Long operations run as transient systemd units, so they survive the loss of
+# the SSM/SSH session that launched them; the platform reconnects and reads
+# their durable state files.
+set -euo pipefail
+umask 077
+
+readonly AGENT_VERSION="1.0.0"
+readonly SCHEMA="mwt-agent.v1"
+readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
+readonly OPS_DIR="${STATE_DIR}/ops"
+readonly MAX_TAIL_BYTES=16384
+readonly HEARTBEAT_SECONDS=10
+readonly SELF_PATH=$(readlink -f "${BASH_SOURCE[0]}")
+readonly UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+json_escape() {
+    local value=$1 out='' char code i
+    for ((i = 0; i < ${#value}; i++)); do
+        char=${value:i:1}
+        case $char in
+            '"') out+='\"' ;;
+            '\') out+='\\' ;;
+            $'\n') out+='\n' ;;
+            $'\r') out+='\r' ;;
+            $'\t') out+='\t' ;;
+            *)
+                printf -v code '%d' "'$char"
+                if ((code >= 0 && code < 32)); then
+                    printf -v char '\\u%04x' "$code"
+                fi
+                out+=$char
+                ;;
+        esac
+    done
+    printf '"%s"' "$out"
+}
+
+json_or_null() {
+    if [[ -n ${1:-} ]]; then json_escape "$1"; else printf 'null'; fi
+}
+
+int_or_null() {
+    if [[ ${1:-} =~ ^[0-9]+$ ]]; then printf '%s' "$1"; else printf 'null'; fi
+}
+
+bool() {
+    if [[ $1 == 1 ]]; then printf 'true'; else printf 'false'; fi
+}
+
+respond_ok() {
+    printf '{"schema":"%s","ok":true,"agent_version":"%s","command":%s,"data":%s}\n' \
+        "$SCHEMA" "$AGENT_VERSION" "$(json_escape "$1")" "$2"
+    exit 0
+}
+
+# Error codes are closed identifiers; free text is never returned.
+fail() {
+    printf '{"schema":"%s","ok":false,"agent_version":"%s","command":%s,"error":{"code":"%s"}}\n' \
+        "$SCHEMA" "$AGENT_VERSION" "$(json_escape "${COMMAND:-unknown}")" "$1"
+    exit "${2:-2}"
+}
+
+self_sha256() {
+    sha256sum "$SELF_PATH" | cut -d' ' -f1
+}
+
+now_utc() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+has_systemd() {
+    [[ -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1
+}
+
+launcher_mode() {
+    if [[ $(id -u) == 0 ]] && has_systemd; then
+        printf 'systemd'
+    elif [[ ${MWT_AGENT_ALLOW_NOHUP:-0} == 1 ]]; then
+        printf 'nohup'
+    else
+        printf 'unavailable'
+    fi
+}
+
+write_atomic() {
+    local target=$1 content=$2 tmp
+    tmp=$(mktemp "${target}.XXXXXX")
+    printf '%s\n' "$content" >"$tmp"
+    sync "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$target"
+}
+
+file_size() {
+    if [[ -f $1 ]]; then stat -c %s "$1"; else printf '0'; fi
+}
+
+file_sha256() {
+    if [[ -f $1 ]]; then sha256sum "$1" | cut -d' ' -f1; fi
+}
+
+# Sets OP_DIR; never called inside a subshell so that fail() reaches stdout.
+require_operation() {
+    [[ $1 =~ $UUID_RE ]] || fail invalid_operation_uuid
+    OP_DIR="$OPS_DIR/$1"
+}
+
+# --- Registered operations -------------------------------------------------
+
+# Sets REGISTERED_ARGV to the validated argv of a registered operation.
+registered_argv() {
+    local key=$1
+    shift
+    declare -A params=()
+    local pair name value
+    for pair in "$@"; do
+        [[ $pair =~ ^([a-z_]{1,32})=([A-Za-z0-9._:-]{0,128})$ ]] || fail invalid_parameter
+        name=${BASH_REMATCH[1]}
+        value=${BASH_REMATCH[2]}
+        [[ -z ${params[$name]+set} ]] || fail duplicate_parameter
+        params[$name]=$value
+    done
+
+    case $key in
+        diagnostic.sleep)
+            [[ ${#params[@]} == 1 && ${params[seconds]:-} =~ ^[1-9][0-9]{0,4}$ ]] || fail invalid_parameter
+            ((params[seconds] <= 86400)) || fail invalid_parameter
+            REGISTERED_ARGV=(sleep "${params[seconds]}")
+            ;;
+        diagnostic.fail)
+            [[ ${#params[@]} == 1 && ${params[code]:-} =~ ^[1-9][0-9]?$ ]] || fail invalid_parameter
+            # shellcheck disable=SC2016
+            REGISTERED_ARGV=(bash -c 'exit "$1"' diagnostic-fail "${params[code]}")
+            ;;
+        *)
+            fail unregistered_command
+            ;;
+    esac
+}
+
+# --- Subcommands ----------------------------------------------------------
+
+cmd_version() {
+    respond_ok version "{\"agent_sha256\":\"$(self_sha256)\",\"launcher\":\"$(launcher_mode)\"}"
+}
+
+cmd_probe() {
+    local os_id='' os_version='' os_name='' kernel arch cpus mem_kb='' systemd_version=''
+    local disk_total='' disk_free='' probe_dir php_version='' docker_version='' pwsh_version='' aws_version=''
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        os_id=$(. /etc/os-release && printf '%s' "${ID:-}")
+        os_version=$(. /etc/os-release && printf '%s' "${VERSION_ID:-}")
+        os_name=$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-}")
+    fi
+    kernel=$(uname -r)
+    arch=$(uname -m)
+    cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '')
+    if [[ -r /proc/meminfo ]]; then
+        mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        systemd_version=$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')
+    fi
+    probe_dir=$STATE_DIR
+    [[ -d $probe_dir ]] || probe_dir=$(dirname "$STATE_DIR")
+    if read -r disk_total disk_free < <(df -PB1 "$probe_dir" 2>/dev/null | awk 'NR==2 {print $2, $4}'); then :; fi
+    command -v php >/dev/null 2>&1 && php_version=$(php -r 'echo PHP_VERSION;' 2>/dev/null || true)
+    command -v docker >/dev/null 2>&1 && docker_version=$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',' || true)
+    command -v pwsh >/dev/null 2>&1 && pwsh_version=$(pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null || true)
+    command -v aws >/dev/null 2>&1 && aws_version=$(aws --version 2>&1 | awk '{print $1}' | cut -d/ -f2 || true)
+
+    local data
+    data=$(printf '{"agent_sha256":"%s","hostname":%s,"os_id":%s,"os_version":%s,"os_name":%s,"kernel":%s,"arch":%s,"cpus":%s,"memory_bytes":%s,"is_root":%s,"systemd":%s,"systemd_version":%s,"launcher":"%s","bash_version":%s,"state_dir_exists":%s,"disk_total_bytes":%s,"disk_free_bytes":%s,"php_version":%s,"docker_version":%s,"pwsh_version":%s,"aws_cli_version":%s,"observed_at":"%s"}' \
+        "$(self_sha256)" "$(json_escape "$(hostname)")" "$(json_or_null "$os_id")" "$(json_or_null "$os_version")" \
+        "$(json_or_null "$os_name")" "$(json_escape "$kernel")" "$(json_escape "$arch")" "$(int_or_null "$cpus")" \
+        "$(if [[ $mem_kb =~ ^[0-9]+$ ]]; then printf '%s' $((mem_kb * 1024)); else printf 'null'; fi)" \
+        "$(bool "$([[ $(id -u) == 0 ]] && echo 1 || echo 0)")" "$(bool "$(has_systemd && echo 1 || echo 0)")" \
+        "$(json_or_null "$systemd_version")" "$(launcher_mode)" "$(json_escape "$BASH_VERSION")" \
+        "$(bool "$([[ -d $STATE_DIR ]] && echo 1 || echo 0)")" "$(int_or_null "$disk_total")" "$(int_or_null "$disk_free")" \
+        "$(json_or_null "$php_version")" "$(json_or_null "$docker_version")" "$(json_or_null "$pwsh_version")" \
+        "$(json_or_null "$aws_version")" "$(now_utc)")
+    respond_ok probe "$data"
+}
+
+cmd_launch() {
+    (($# >= 2)) || fail invalid_arguments
+    local uuid=$1 key=$2 dir mode unit argv_file
+    shift 2
+    require_operation "$uuid"
+    dir=$OP_DIR
+    REGISTERED_ARGV=()
+    registered_argv "$key" "$@"
+    ((${#REGISTERED_ARGV[@]} > 0)) || fail unregistered_command
+
+    mode=$(launcher_mode)
+    [[ $mode != unavailable ]] || fail launcher_unavailable
+    mkdir -p "$OPS_DIR"
+    chmod 700 "$STATE_DIR" "$OPS_DIR"
+
+    # Idempotent: a repeated launch of the same operation reports the first one.
+    if ! mkdir "$dir" 2>/dev/null; then
+        [[ -f $dir/launch.json ]] || fail launch_in_progress
+        local existing_key
+        existing_key=$(sed -n 's/.*"command_key":"\([^"]*\)".*/\1/p' "$dir/launch.json")
+        [[ $existing_key == "$key" ]] || fail operation_conflict
+        respond_ok launch "{\"operation_uuid\":\"$uuid\",\"created\":false,\"launch\":$(cat "$dir/launch.json")}"
+    fi
+
+    argv_file=$dir/argv
+    printf '%s\0' "${argv[@]}" >"$argv_file"
+    unit="mwt-op-${uuid}"
+    local launch
+    launch=$(printf '{"operation_uuid":"%s","command_key":%s,"launcher":"%s","unit":%s,"agent_version":"%s","agent_sha256":"%s","argv_sha256":"%s","launched_at":"%s"}' \
+        "$uuid" "$(json_escape "$key")" "$mode" "$(if [[ $mode == systemd ]]; then json_escape "$unit"; else printf 'null'; fi)" \
+        "$AGENT_VERSION" "$(self_sha256)" "$(file_sha256 "$argv_file")" "$(now_utc)")
+    write_atomic "$dir/launch.json" "$launch"
+
+    if [[ $mode == systemd ]]; then
+        systemd-run --quiet --unit="$unit" --collect --property=KillMode=control-group \
+            --property=TimeoutStopSec=30 --setenv=MWT_AGENT_STATE_DIR="$STATE_DIR" \
+            /usr/bin/env bash "$SELF_PATH" __run "$uuid" >/dev/null 2>&1 || fail launch_failed
+    else
+        MWT_AGENT_STATE_DIR=$STATE_DIR setsid nohup bash "$SELF_PATH" __run "$uuid" \
+            </dev/null >/dev/null 2>&1 &
+    fi
+    respond_ok launch "{\"operation_uuid\":\"$uuid\",\"created\":true,\"launch\":$launch}"
+}
+
+# Internal entrypoint executed by systemd or setsid; never called by the platform.
+cmd_run() {
+    local uuid=$1 dir child heartbeat_pid exit_code
+    require_operation "$uuid"
+    dir=$OP_DIR
+    [[ -f $dir/launch.json && -f $dir/argv && ! -e $dir/exit.json ]] || exit 3
+    mapfile -d '' -t argv <"$dir/argv"
+    write_atomic "$dir/run.json" "{\"pid\":$$,\"started_at\":\"$(now_utc)\"}"
+
+    (
+        while :; do
+            date -u +%Y-%m-%dT%H:%M:%SZ >"$dir/heartbeat.tmp" && mv -f "$dir/heartbeat.tmp" "$dir/heartbeat"
+            sleep "$HEARTBEAT_SECONDS"
+        done
+    ) &
+    heartbeat_pid=$!
+
+    "${argv[@]}" >"$dir/stdout.log" 2>"$dir/stderr.log" &
+    child=$!
+    trap 'kill -TERM "$child" 2>/dev/null || true' TERM INT
+    set +e
+    wait "$child"
+    exit_code=$?
+    # A trapped signal interrupts wait; wait again for the real exit status.
+    while kill -0 "$child" 2>/dev/null; do
+        wait "$child"
+        exit_code=$?
+    done
+    set -e
+    kill "$heartbeat_pid" 2>/dev/null || true
+    wait "$heartbeat_pid" 2>/dev/null || true
+
+    write_atomic "$dir/exit.json" "$(printf '{"exit_code":%d,"cancel_requested":%s,"stdout_bytes":%s,"stdout_sha256":"%s","stderr_bytes":%s,"stderr_sha256":"%s","finished_at":"%s"}' \
+        "$exit_code" "$(bool "$([[ -f $dir/cancel.json ]] && echo 1 || echo 0)")" \
+        "$(file_size "$dir/stdout.log")" "$(file_sha256 "$dir/stdout.log")" \
+        "$(file_size "$dir/stderr.log")" "$(file_sha256 "$dir/stderr.log")" "$(now_utc)")"
+    exit "$exit_code"
+}
+
+unit_state() {
+    local unit=$1
+    systemctl show "$unit" --property=LoadState,ActiveState,SubState,MainPID --value 2>/dev/null | paste -sd' ' -
+}
+
+cmd_status() {
+    (($# == 1)) || fail invalid_arguments
+    local uuid=$1 dir launcher unit active='' sub='' main_pid='' load='' process_alive=0 heartbeat='' run_pid=''
+    require_operation "$uuid"
+    dir=$OP_DIR
+    [[ -f $dir/launch.json ]] || fail operation_not_found 4
+    launcher=$(sed -n 's/.*"launcher":"\([a-z]*\)".*/\1/p' "$dir/launch.json")
+    if [[ -f $dir/run.json ]]; then
+        run_pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$dir/run.json")
+    fi
+    if [[ $launcher == systemd ]]; then
+        unit="mwt-op-${uuid}"
+        read -r load active sub main_pid < <(unit_state "$unit" || printf '\n') || true
+        [[ $active == active || $active == activating || $active == deactivating ]] && process_alive=1
+    elif [[ -n $run_pid ]] && kill -0 "$run_pid" 2>/dev/null; then
+        process_alive=1
+    fi
+    [[ -f $dir/heartbeat ]] && heartbeat=$(cat "$dir/heartbeat")
+
+    local data
+    data=$(printf '{"operation_uuid":"%s","launch":%s,"run":%s,"exit":%s,"cancel_requested":%s,"process_alive":%s,"unit":{"load_state":%s,"active_state":%s,"sub_state":%s,"main_pid":%s},"heartbeat_at":%s,"stdout_bytes":%s,"stderr_bytes":%s,"observed_at":"%s"}' \
+        "$uuid" "$(cat "$dir/launch.json")" "$(if [[ -f $dir/run.json ]]; then cat "$dir/run.json"; else printf 'null'; fi)" \
+        "$(if [[ -f $dir/exit.json ]]; then cat "$dir/exit.json"; else printf 'null'; fi)" \
+        "$(bool "$([[ -f $dir/cancel.json ]] && echo 1 || echo 0)")" "$(bool "$process_alive")" \
+        "$(json_or_null "$load")" "$(json_or_null "$active")" "$(json_or_null "$sub")" "$(int_or_null "$main_pid")" \
+        "$(json_or_null "$heartbeat")" "$(file_size "$dir/stdout.log")" "$(file_size "$dir/stderr.log")" "$(now_utc)")
+    respond_ok status "$data"
+}
+
+cmd_tail() {
+    (($# == 4)) || fail invalid_arguments
+    local uuid=$1 stream=$2 offset=$3 max=$4 dir file size chunk
+    require_operation "$uuid"
+    dir=$OP_DIR
+    [[ $stream == stdout || $stream == stderr ]] || fail invalid_stream
+    [[ $offset =~ ^[0-9]{1,15}$ && $max =~ ^[1-9][0-9]{0,4}$ ]] || fail invalid_arguments
+    ((max <= MAX_TAIL_BYTES)) || fail invalid_arguments
+    [[ -f $dir/launch.json ]] || fail operation_not_found 4
+    file=$dir/$stream.log
+    size=$(file_size "$file")
+    ((offset <= size)) || fail offset_beyond_end
+    chunk=''
+    if ((size > offset)); then
+        chunk=$(tail -c +$((offset + 1)) "$file" | head -c "$max" | base64 -w0)
+    fi
+    local read_bytes
+    read_bytes=$(printf '%s' "$chunk" | base64 -d | wc -c)
+    respond_ok tail "{\"operation_uuid\":\"$uuid\",\"stream\":\"$stream\",\"offset\":$offset,\"next_offset\":$((offset + read_bytes)),\"size\":$size,\"data_base64\":\"$chunk\"}"
+}
+
+cmd_cancel() {
+    (($# == 1)) || fail invalid_arguments
+    local uuid=$1 dir launcher run_pid=''
+    require_operation "$uuid"
+    dir=$OP_DIR
+    [[ -f $dir/launch.json ]] || fail operation_not_found 4
+    if [[ -f $dir/exit.json ]]; then
+        respond_ok cancel "{\"operation_uuid\":\"$uuid\",\"signalled\":false,\"already_finished\":true}"
+    fi
+    [[ -f $dir/cancel.json ]] || write_atomic "$dir/cancel.json" "{\"requested_at\":\"$(now_utc)\"}"
+    launcher=$(sed -n 's/.*"launcher":"\([a-z]*\)".*/\1/p' "$dir/launch.json")
+    if [[ $launcher == systemd ]]; then
+        systemctl kill --signal=TERM "mwt-op-${uuid}" >/dev/null 2>&1 || true
+    else
+        [[ -f $dir/run.json ]] && run_pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$dir/run.json")
+        [[ -n $run_pid ]] && kill -TERM "$run_pid" 2>/dev/null || true
+    fi
+    respond_ok cancel "{\"operation_uuid\":\"$uuid\",\"signalled\":true,\"already_finished\":false}"
+}
+
+COMMAND=${1:-}
+shift || true
+case $COMMAND in
+    version) (($# == 0)) || fail invalid_arguments; cmd_version ;;
+    probe) (($# == 0)) || fail invalid_arguments; cmd_probe ;;
+    launch) cmd_launch "$@" ;;
+    status) cmd_status "$@" ;;
+    tail) cmd_tail "$@" ;;
+    cancel) cmd_cancel "$@" ;;
+    __run) (($# == 1)) || exit 3; cmd_run "$1" ;;
+    *) fail unknown_subcommand ;;
+esac
