@@ -8,6 +8,26 @@ return [
         'consolidador_800' => ['enabled' => (bool) env('TOOL_CONSOLIDADOR_800_ENABLED', false)],
         'integrador_115' => ['enabled' => (bool) env('TOOL_INTEGRADOR_115_ENABLED', false)],
         'local_runner' => ['enabled' => (bool) env('TOOL_LOCAL_RUNNER_ENABLED', false)],
+        'remote_agent' => ['enabled' => (bool) env('TOOL_REMOTE_AGENT_ENABLED', false)],
+    ],
+    'remote' => [
+        'agent_source' => base_path('remote-agent/mwt-agent'),
+        'agent_install_root' => env('TOOL_REMOTE_AGENT_ROOT', '/opt/mwt-agent'),
+        'agent_state_dir' => env('TOOL_REMOTE_AGENT_STATE_DIR', '/var/lib/mwt-agent'),
+        'call_timeout_seconds' => (int) env('TOOL_REMOTE_CALL_TIMEOUT_SECONDS', 60),
+        'max_output_bytes' => (int) env('TOOL_REMOTE_MAX_OUTPUT_BYTES', 65536),
+        'minimum_free_bytes' => (int) env('TOOL_REMOTE_MINIMUM_FREE_BYTES', 10 * 1024 * 1024 * 1024),
+        'ssm' => [
+            'document' => 'AWS-RunShellScript',
+            'poll_interval_milliseconds' => (int) env('TOOL_REMOTE_SSM_POLL_MILLISECONDS', 1000),
+        ],
+        'ssh' => [
+            'binary' => env('TOOL_REMOTE_SSH_BINARY', '/usr/bin/ssh'),
+            'connect_timeout_seconds' => (int) env('TOOL_REMOTE_SSH_CONNECT_TIMEOUT_SECONDS', 10),
+            'scratch_root' => env('TOOL_REMOTE_SSH_SCRATCH_ROOT', storage_path('app/private/remote-ssh')),
+        ],
+        // Runs agent scripts with the local bash; only for the isolated test suite.
+        'local_transport' => env('APP_ENV') === 'testing' && (bool) env('TOOL_REMOTE_LOCAL_TRANSPORT', false),
     ],
     'workspaces' => [
         'root' => env('TOOL_WORKSPACES_ROOT', storage_path('app/private/workspaces')),
