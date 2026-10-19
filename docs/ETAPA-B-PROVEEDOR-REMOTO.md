@@ -21,12 +21,12 @@ su estado. Perder la conexión significa "estado desconocido", nunca "falló".
 
 ## Cortes
 
-| Corte | Alcance                                                                                 | Estado    |
-| ----- | --------------------------------------------------------------------------------------- | --------- |
-| B1    | Transportes SSM/SSH, agente remoto, instalación verificada, prueba de conexión          | PR #11    |
-| B2    | `RemoteOperation` con proveedor `remote-agent`: lanzar, observar, reconciliar, cancelar | PR B2     |
-| B3    | UI: conexión por servidor en el wizard, prueba de conexión, estado de operaciones       | Pendiente |
-| B4    | `SecretStore` en AWS (Secrets Manager / Parameter Store) y prueba en EC2 real           | Pendiente |
+| Corte | Alcance                                                                                 | Estado          |
+| ----- | --------------------------------------------------------------------------------------- | --------------- |
+| B1    | Transportes SSM/SSH, agente remoto, instalación verificada, prueba de conexión          | Fusionado (#11) |
+| B2    | `RemoteOperation` con proveedor `remote-agent`: lanzar, observar, reconciliar, cancelar | Fusionado (#12) |
+| B3    | UI: conexión por servidor en el wizard, prueba de conexión, estado de operaciones       | PR B3           |
+| B4    | `SecretStore` en AWS (Secrets Manager / Parameter Store) y prueba en EC2 real           | Pendiente       |
 
 ## B1: qué se implementó
 
@@ -110,6 +110,26 @@ Corrección asociada: las escrituras devuelven el modelo releído de PostgreSQL.
 `APP_TIMEZONE=America/Bogota`, un timestamp UTC asignado en memoria se
 reinterpretaba en la zona local (5 h de desfase) hasta releerlo.
 
+## B3: interfaz de conexiones remotas
+
+Con `TOOL_REMOTE_AGENT_ENABLED=true`, la página del proyecto reemplaza el aviso de
+entorno simulado por el panel **Conexiones remotas**: una tarjeta por servidor
+registrado en el wizard con su transporte (SSM o SSH), estado (`Sin probar`,
+`Verificada`, `Con errores`), las comprobaciones y datos del último diagnóstico y
+las cinco operaciones remotas más recientes.
+
+| Ruta                                                 | Acción                                    |
+| ---------------------------------------------------- | ----------------------------------------- |
+| `PUT projects/{project}/servers/{server}/connection` | Guardar la conexión (vuelve a `UNTESTED`) |
+| `POST …/connection/install-agent`                    | Instalar el agente verificado             |
+| `POST …/connection/test`                             | Prueba real de conexión                   |
+
+Las tres exigen permiso `update` del proyecto, reconfirmación reciente de
+contraseña (`action.confirmed`), feature flag abierto y que el servidor pertenezca
+al proyecto; los campos desconocidos se rechazan antes de validar. Los props no
+incluyen la referencia de la llave ni la llave del host completa: solo su tipo y
+huella `SHA256:`. La UI nunca recibe ni envía material de llaves privadas.
+
 ## Requisitos en AWS para probar B1
 
 - Instancia con SSM Agent registrado (aparece en _Fleet Manager_) y rol con
@@ -134,10 +154,12 @@ php artisan remote:connection test <server_uuid>
 - Dominio con PostgreSQL: feature flag, evidencia y auditoría, agente ausente o
   desactualizado, servidor inaccesible, launcher no durable, reconfiguración.
 
-## Límites conocidos de B1 y B2
+## Límites conocidos de B1, B2 y B3
 
-- Las operaciones remotas todavía no gobiernan el estado de la `Execution` ni la UI: eso llega con
-  los adaptadores del Recolector (etapa C) y del Consolidador (etapa D) y con B3.
+- Las operaciones remotas todavía no gobiernan el estado de la `Execution`: eso llega con los
+  adaptadores del Recolector (etapa C) y del Consolidador (etapa D).
+- La UI no lanza operaciones de diagnóstico: una operación requiere una `Execution`, y estas solo
+  existen tras confirmar el wizard. Las operaciones se verán cuando la etapa C las cree.
 - La conciliación de logs guarda líneas completas; un archivo truncado o rotado en el servidor no
   se detecta todavía.
 - No hay UI (B3) ni `SecretStore` en AWS (B4); SSH usa el `SecretProvider` LAB.
