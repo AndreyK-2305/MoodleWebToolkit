@@ -31,15 +31,19 @@ class RemoteAgentInstaller
         $script = implode("\n", [
             'set -euo pipefail',
             'umask 022',
-            'trap \'printf "%s\n" '.$failure('agent_install_failed').'; exit 2\' ERR',
+            // Messages live in variables: quoted JSON nested inside the trap would break its quoting.
+            'install_failed='.$failure('agent_install_failed'),
+            'hash_mismatch='.$failure('agent_install_hash_mismatch'),
+            'trap \'printf "%s\n" "$install_failed"; exit 2\' ERR',
             'dir='.escapeshellarg($directory),
             'state='.escapeshellarg((string) config('toolkit.remote.agent_state_dir')),
             'expected='.escapeshellarg($distribution['sha256']),
             'mkdir -p "$dir"',
             'tmp=$(mktemp "$dir/.mwt-agent.XXXXXX")',
-            'printf %s '.escapeshellarg(base64_encode((string) file_get_contents($distribution['path']))).' | base64 -d > "$tmp"',
+            // The base64 alphabet has no quote characters, so single quotes are sufficient.
+            "printf %s '".base64_encode((string) file_get_contents($distribution['path']))."' | base64 -d > \"\$tmp\"",
             'actual=$(sha256sum "$tmp" | cut -d" " -f1)',
-            'if [ "$actual" != "$expected" ]; then rm -f "$tmp"; trap - ERR; printf "%s\n" '.$failure('agent_install_hash_mismatch').'; exit 2; fi',
+            'if [ "$actual" != "$expected" ]; then rm -f "$tmp"; trap - ERR; printf "%s\n" "$hash_mismatch"; exit 2; fi',
             'chmod 0755 "$tmp"',
             'mv -f "$tmp" "$dir/mwt-agent"',
             '( umask 077; mkdir -p "$state" )',

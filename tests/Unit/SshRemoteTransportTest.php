@@ -30,7 +30,7 @@ class SshRemoteTransportTest extends TestCase
         $fake = $this->root.'/ssh';
         file_put_contents($fake, <<<'SH'
             #!/usr/bin/env bash
-            out=$FAKE_SSH_RECORD
+            out=$(dirname "$0")
             printf '%s\n' "$@" > "$out/args"
             cat > "$out/stdin"
             for arg in "$@"; do
@@ -39,13 +39,12 @@ class SshRemoteTransportTest extends TestCase
                     UserKnownHostsFile=*) cat "${arg#UserKnownHostsFile=}" > "$out/known_hosts" ;;
                 esac
             done
-            printf '%s' "$FAKE_SSH_STDOUT"
-            printf '%s' "$FAKE_SSH_STDERR" >&2
-            exit "$FAKE_SSH_EXIT"
+            cat "$out/fake_stdout"
+            cat "$out/fake_stderr" >&2
+            exit "$(cat "$out/fake_exit")"
             SH);
         chmod($fake, 0700);
         config(['toolkit.remote.ssh.binary' => $fake, 'toolkit.remote.ssh.scratch_root' => $this->root.'/scratch']);
-        putenv('FAKE_SSH_RECORD='.$this->root);
         $this->app->instance(SecretProvider::class, new class(self::PRIVATE_KEY) implements SecretProvider
         {
             public function __construct(private readonly string $value) {}
@@ -64,9 +63,6 @@ class SshRemoteTransportTest extends TestCase
 
     protected function tearDown(): void
     {
-        foreach (['FAKE_SSH_RECORD', 'FAKE_SSH_STDOUT', 'FAKE_SSH_STDERR', 'FAKE_SSH_EXIT'] as $name) {
-            putenv($name);
-        }
         if (isset($this->root)) {
             File::deleteDirectory($this->root);
         }
@@ -119,9 +115,10 @@ class SshRemoteTransportTest extends TestCase
 
     private function fake(string $stdout, string $stderr, int $exit): void
     {
-        putenv('FAKE_SSH_STDOUT='.$stdout);
-        putenv('FAKE_SSH_STDERR='.$stderr);
-        putenv('FAKE_SSH_EXIT='.$exit);
+        // The fake binary reads its answer from files: Process does not inherit putenv() values.
+        file_put_contents($this->root.'/fake_stdout', $stdout);
+        file_put_contents($this->root.'/fake_stderr', $stderr);
+        file_put_contents($this->root.'/fake_exit', (string) $exit);
     }
 
     private function target(int $port = 22, bool $sudo = false): RemoteTarget

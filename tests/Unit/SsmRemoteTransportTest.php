@@ -40,7 +40,7 @@ class SsmRemoteTransportTest extends TestCase
         $this->assertSame('AWS-RunShellScript', $send['DocumentName']);
         $this->assertSame(['30'], $send['Parameters']['executionTimeout']);
         $command = $send['Parameters']['commands'][0];
-        $this->assertSame('printf %s '.escapeshellarg(base64_encode("echo 'hola'; id")).' | base64 -d | bash', $command);
+        $this->assertSame("printf %s '".base64_encode("echo 'hola'; id")."' | base64 -d | bash", $command);
         $this->assertSame('GetCommandInvocation', $this->commands[1]->getName());
     }
 

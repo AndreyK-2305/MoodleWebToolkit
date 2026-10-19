@@ -45,7 +45,8 @@ final class SsmRemoteTransport implements RemoteTransport
         $timeoutSeconds = max(5, min($timeoutSeconds, 600));
         $client = $this->clients->make($target->region);
         // AWS-RunShellScript uses sh; decode the backend-built script and hand it to bash.
-        $command = 'printf %s '.escapeshellarg(base64_encode($script)).' | base64 -d | bash';
+        // The base64 alphabet has no quote characters, so single quotes are sufficient.
+        $command = "printf %s '".base64_encode($script)."' | base64 -d | bash";
 
         try {
             $sent = $client->sendCommand([
