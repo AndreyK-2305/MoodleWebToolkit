@@ -8,6 +8,7 @@ use App\Domain\Collector\CollectorRuntimeConfiguration;
 use App\Domain\Collector\CollectorSourceEvidence;
 use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Collector\Contracts\SecretProvider;
+use App\Domain\Executions\ExecutionPresenter;
 use App\Domain\Executions\LocalProcessInspector;
 use App\Domain\Executions\LocalToolExecutionProvider;
 use App\Domain\Executions\RemoteOperationCoordinator;
@@ -104,6 +105,12 @@ class CollectorWorkflowTest extends TestCase
             $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
             $this->assertSame(ProjectStatus::REVIEW, $project->fresh()->status);
             $this->assertSame('TERMINATED', $operation->fresh()->communication_state->value);
+            // An observer slower than the 2-course export (run 39298199232) can only see
+            // TERMINATED; the presented launch evidence must outlive the transient CONNECTED.
+            $presented = app(ExecutionPresenter::class)->execution($execution->fresh())['collector']['operation'];
+            $this->assertSame('TERMINATED', $presented['communication_state']);
+            $this->assertNotNull($operation->fresh()->started_at);
+            $this->assertSame($operation->fresh()->started_at->toIso8601String(), $presented['started_at']);
             $this->assertTrue(app(RemoteOperationCoordinator::class)->verifyTerminalEvidence($operation));
             $this->assertDatabaseCount('remote_operations', 1);
             $this->assertDatabaseCount('artifacts', 6);
