@@ -245,14 +245,14 @@ cancela; repetir su Idempotency-Key no duplica el comando.
 
 ## 3H y evidencia de calidad
 
-| Puerta                        | Estado de las correcciones                                                                                                                    |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| PHP dirigido PostgreSQL/Redis | 22 pruebas, 172 aserciones, 0 fallos; incluye 8 casos de guardas HTTP, FINALIZE sin efectos y concurrencia de dos sesiones del mismo usuario. |
-| Temporal aislado              | Tres ejecuciones aprobadas (11,1; 11,8; 9,8 s), un worker, retries=0; 423 antes de confirmar y cierre único después.                          |
-| Análisis dirigido             | PHPStan y TypeScript E2E aprobados.                                                                                                           |
-| General local limpio          | `e247812`: 553 PHP/6955 aserciones, 5 Vitest y 43 Playwright aprobados; solo dos LAB omitidos, retries=0, 11 servicios saludables y teardown aprobado. |
+| Puerta                        | Estado de las correcciones                                                                                                                               |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PHP dirigido PostgreSQL/Redis | 22 pruebas, 172 aserciones, 0 fallos; incluye 8 casos de guardas HTTP, FINALIZE sin efectos y concurrencia de dos sesiones del mismo usuario.            |
+| Temporal aislado              | Tres ejecuciones aprobadas (11,1; 11,8; 9,8 s), un worker, retries=0; 423 antes de confirmar y cierre único después.                                     |
+| Análisis dirigido             | PHPStan y TypeScript E2E aprobados.                                                                                                                      |
+| General local limpio          | `e247812`: 553 PHP/6955 aserciones, 5 Vitest y 43 Playwright aprobados; solo dos LAB omitidos, retries=0, 11 servicios saludables y teardown aprobado.   |
 | LAB local limpio              | `a16fc6b`: 3 PHP/181 aserciones, 2 Playwright, 4 contratos, reinicios y 6 negativos del scanner; 12 servicios saludables, retries=0 y teardown aprobado. |
-| CI final                      | Deben aprobar ci y collector-lab del mismo head_sha; consultar los dos artifacts del PR 9.                                                    |
+| CI final                      | Deben aprobar ci y collector-lab del mismo head_sha; consultar los dos artifacts del PR 9.                                                               |
 
 La puerta general conserva todas las pruebas PHP, PostgreSQL multiproceso,
 upgrade con datos, rollback/reapply, Vitest, Pint, PHPStan, Vite Plus, ESLint,
