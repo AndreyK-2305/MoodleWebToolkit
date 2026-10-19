@@ -4,6 +4,8 @@ namespace App\Console\Commands;
 
 use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Executions\RemoteOperationCoordinator;
+use App\Domain\Remote\RemoteAgentOperations;
+use App\Jobs\ReconcileRemoteAgentOperation;
 use App\Jobs\ReconcileRemoteOperation;
 use App\Models\RemoteOperation;
 use Illuminate\Console\Command;
@@ -15,7 +17,7 @@ class ReconcileRemoteOperations extends Command
 
     protected $description = 'Reconcilia procesos registrados sin volver a lanzar operaciones existentes';
 
-    public function handle(RemoteOperationCoordinator $operations): int
+    public function handle(RemoteOperationCoordinator $operations, RemoteAgentOperations $remote): int
     {
         $limit = min(1000, max(1, (int) $this->option('limit')));
         $failed = 0;
@@ -35,9 +37,15 @@ class ReconcileRemoteOperations extends Command
             ->orderBy('id')
             ->limit($limit)
             ->get()
-            ->each(function (RemoteOperation $operation) use ($operations, &$failed): void {
+            ->each(function (RemoteOperation $operation) use ($operations, $remote, &$failed): void {
                 try {
-                    if (config('queue.default') === 'sync' && $operation->command_key !== CollectorRegisteredCommand::KEY) {
+                    // Remote operations are observed through their agent, never by the local process inspector.
+                    if ($operation->provider_key === RemoteAgentOperations::PROVIDER && config('queue.default') === 'sync') {
+                        $remote->reconcile($operation);
+                    } elseif ($operation->provider_key === RemoteAgentOperations::PROVIDER) {
+                        dispatch((new ReconcileRemoteAgentOperation((int) $operation->getKey()))
+                            ->onConnection('redis-tool-runs')->onQueue('tool-runs'));
+                    } elseif (config('queue.default') === 'sync' && $operation->command_key !== CollectorRegisteredCommand::KEY) {
                         $operations->reconcile($operation);
                     } else {
                         dispatch((new ReconcileRemoteOperation((int) $operation->getKey()))
