@@ -6,6 +6,7 @@ use App\Domain\Collector\CollectorConfiguration;
 use App\Domain\Collector\LabMoodleProfiles;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Projects\SimulatedUrlSafety;
+use App\Domain\Remote\RemoteAccessPresenter;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
 use App\Models\MoodleInstance;
@@ -135,6 +136,7 @@ class ProjectController extends Controller
                 ],
             ],
             'projectTypes' => $this->projectTypes(),
+            'remoteAccess' => app(RemoteAccessPresenter::class)->present($project),
         ]);
     }
 
