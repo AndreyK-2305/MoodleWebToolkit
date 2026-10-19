@@ -518,6 +518,33 @@ excluye esos XML ante fallo o cancelación aunque el proceso sea interrumpido.
   solicitud posterior de corrección exige de nuevo ambas puertas completas y CI
   verde del mismo SHA, sin omitir pruebas ni introducir retries.
 
+### Medición del workspace durante la exportación (salida 143)
+
+El fallo LAB intermitente de CI quedó explicado para el bridge. Cada segundo,
+`CollectorBridge::child()` mide el workspace mientras el Recolector reemplaza
+`export-progress.json` mediante `.tmp.<pid>` y `rename`, y Moodle elimina
+directorios temporales de backup. `usage()` fallaba si una entrada listada
+desaparecía antes de `isFile`/`getSize`, o si `RecursiveDirectoryIterator` abría
+un directorio ya retirado. La excepción salía por el `finally` de `child()`, que
+envía SIGTERM al grupo propio; el manejador del bridge lo marcaba cancelado y
+devolvía 143 con un evento `cancelled` que nadie solicitó. Así falló
+`CollectorExportTest` en el run 39296898930.
+
+Con PHP 8.3 en Linux, uid 33 y el mismo patrón de escritura, la medición
+original falló 893 de 34 685 veces; la corregida, 0 de 73 492. Una entrada que
+ya no existe se omite y se contará en la siguiente observación. Si sigue
+existiendo, debe ser un directorio con permiso de búsqueda o un archivo regular.
+Enlaces, enlaces colgantes, FIFOs y directorios sin lectura o búsqueda se siguen
+rechazando. La regresión está en `tests/Unit/CollectorBridgeWorkspaceUsageTest.php`.
+La evidencia está en
+[`evidence/it3-lab-usage-race-diagnosis.json`](evidence/it3-lab-usage-race-diagnosis.json).
+
+Este defecto no explica el caso de navegador del run 39298199232 (intento 1).
+Allí la operación ya estaba TERMINATED/SUCCEEDED con salida 0 y la exportación
+terminó antes de que la consulta de 20 s observara CONNECTED. Tampoco explica el
+`RUNTIME_EXCEPTION` de `CollectorWorkflowTest` en el run 39296898930. Ambos
+quedan abiertos y no se cambió ninguna espera ni aserción.
+
 ## Reproducción, rollback y límites
 
 Con Docker Engine/Compose y PowerShell disponibles, desde el checkout:
