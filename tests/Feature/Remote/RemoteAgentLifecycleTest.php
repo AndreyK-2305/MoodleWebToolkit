@@ -95,10 +95,10 @@ class RemoteAgentLifecycleTest extends TestCase
 
         $cancel = $this->agent()->call($this->target(), 'cancel', [$uuid]);
         $this->assertTrue($cancel->data['signalled']);
-        $finished = $this->waitForStatus($uuid, fn (array $data): bool => $data['exit'] !== null);
+        // exit.json is written just before the supervisor process ends; wait for both.
+        $finished = $this->waitForStatus($uuid, fn (array $data): bool => $data['exit'] !== null && $data['process_alive'] === false);
         $this->assertSame(143, $finished['exit']['exit_code']);
         $this->assertTrue($finished['exit']['cancel_requested']);
-        $this->assertFalse($finished['process_alive']);
 
         $again = $this->agent()->call($this->target(), 'cancel', [$uuid]);
         $this->assertTrue($again->data['already_finished']);
