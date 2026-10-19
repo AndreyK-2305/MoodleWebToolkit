@@ -12,13 +12,21 @@ export default defineConfig({
     reporter: [
         ['list'],
         ['./tests/E2E/failure-reporter.ts'],
-        ['junit', { outputFile: 'quality-results/playwright.xml' }],
+        [
+            'junit',
+            {
+                outputFile:
+                    process.env.QUALITY_JUNIT_FILE ??
+                    'quality-results/playwright.xml',
+            },
+        ],
     ],
     use: {
         ...devices['Desktop Chrome'],
         baseURL: 'http://localhost:8080',
-        trace: 'retain-on-failure',
+        // Traces/videos can retain generated login credentials in request bodies.
+        trace: 'off',
         screenshot: 'only-on-failure',
-        video: 'retain-on-failure',
+        video: 'off',
     },
 });

@@ -502,6 +502,7 @@ class PostgreSqlConcurrencyTest extends TestCase
         $prefix = 'concurrency:'.Str::uuid();
         $processes = [];
         $barrierReleased = false;
+        $deadline = hrtime(true) + 30_000_000_000;
 
         DB::select('SELECT pg_advisory_lock(CAST(? AS bigint))', [$barrierKey]);
 
@@ -524,13 +525,22 @@ class PostgreSqlConcurrencyTest extends TestCase
                 $processes[] = $process;
             }
 
-            $this->waitUntilWorkersReachBarrier($prefix, count($workers));
+            $this->waitUntilWorkersReachBarrier($prefix, $processes, $deadline);
 
             $pids = array_map(fn (Process $process): ?int => $process->getPid(), $processes);
             $this->assertCount(count($workers), array_unique($pids));
 
             DB::select('SELECT pg_advisory_unlock(CAST(? AS bigint))', [$barrierKey]);
             $barrierReleased = true;
+
+            // Bound startup and work by the same monotonic budget. A backwards
+            // wall-clock adjustment must not retain these test workers.
+            while (collect($processes)->contains(fn (Process $process): bool => $process->isRunning())) {
+                if (hrtime(true) >= $deadline) {
+                    $this->fail('Concurrent workers exceeded their bounded budget: '.$this->workerStages($prefix, $processes));
+                }
+                usleep(50_000);
+            }
 
             $results = [];
 
@@ -546,14 +556,21 @@ class PostgreSqlConcurrencyTest extends TestCase
 
             return $results;
         } finally {
+            foreach ($processes as $process) {
+                if ($process->isRunning()) {
+                    $process->stop(0, SIGKILL);
+                }
+            }
+
             if (! $barrierReleased) {
+                // Failed readiness must not release waiting workers into HTTP.
                 DB::select('SELECT pg_advisory_unlock(CAST(? AS bigint))', [$barrierKey]);
             }
 
-            foreach ($processes as $process) {
-                if ($process->isRunning()) {
-                    $process->stop();
-                }
+            foreach (array_keys($processes) as $index) {
+                $path = '/tmp/concurrent-domain-'.hash('sha256', "{$prefix}:{$index}").'.json';
+                @unlink($path);
+                @unlink($path.'.tmp');
             }
 
             DB::table('cache')->where('key', 'like', "{$prefix}%")->delete();
@@ -658,18 +675,38 @@ class PostgreSqlConcurrencyTest extends TestCase
         return [$project, $execution, $command->fresh(), $owner];
     }
 
-    private function waitUntilWorkersReachBarrier(string $prefix, int $expected): void
+    /** @param list<Process> $processes */
+    private function waitUntilWorkersReachBarrier(string $prefix, array $processes, int $deadline): void
     {
-        $deadline = microtime(true) + 10;
-
         do {
-            if (DB::table('cache')->where('key', 'like', "{$prefix}%")->count() === $expected) {
+            if (DB::table('cache')->where('key', 'like', "{$prefix}%")->count() === count($processes)) {
                 return;
             }
 
-            usleep(50_000);
-        } while (microtime(true) < $deadline);
+            if (collect($processes)->contains(fn (Process $process): bool => ! $process->isRunning())) {
+                $this->fail('A concurrent worker exited before the barrier: '.$this->workerStages($prefix, $processes));
+            }
 
-        $this->fail("Los {$expected} procesos no alcanzaron la barrera PostgreSQL.");
+            usleep(50_000);
+        } while (hrtime(true) < $deadline);
+
+        $this->fail('Concurrent workers did not reach the PostgreSQL barrier: '.$this->workerStages($prefix, $processes));
+    }
+
+    /** @param list<Process> $processes */
+    private function workerStages(string $prefix, array $processes): string
+    {
+        $stages = [];
+        foreach ($processes as $index => $process) {
+            $path = '/tmp/concurrent-domain-'.hash('sha256', "{$prefix}:{$index}").'.json';
+            $record = is_file($path) ? json_decode(file_get_contents($path), true) : null;
+            $phase = $record['phase'] ?? 'UNKNOWN';
+            if (! in_array($phase, ['BOOTSTRAP', 'BOOTSTRAPPED', 'BARRIER_READY', 'DOMAIN_OPERATION'], true)) {
+                $phase = 'UNKNOWN';
+            }
+            $stages[] = $index.':'.$phase.':'.($process->isRunning() ? 'RUNNING' : 'EXITED');
+        }
+
+        return implode(',', $stages);
     }
 }

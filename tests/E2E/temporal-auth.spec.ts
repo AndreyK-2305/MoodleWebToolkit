@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
     test,
     expect,
@@ -10,6 +11,7 @@ import {
     executionPath,
     control,
     visibleStatus,
+    expireAuthorization,
 } from './helpers';
 
 test('caducar autorización conserva seguimiento y reintenta payload y clave una sola vez', async ({
@@ -21,7 +23,7 @@ test('caducar autorización conserva seguimiento y reintenta payload y clave una
     const execution = await start(page, project);
     worker();
     await visibleStatus(page, 'WAITING_USER_ACTION');
-    control('expire');
+    await expireAuthorization(page);
     const requests: Array<{ body: string | null; key: string | undefined }> =
         [];
     page.on('request', (r) => {
@@ -196,17 +198,54 @@ test('más de 24 horas: workers nuevos, navegador cerrado, recuperación y cierr
         false,
         new RegExp(`${executionPath(project.uuid, execution)}$`),
     );
-    control('expire');
+    await expireAuthorization(observer);
     await observer.goto(executionPath(project.uuid, execution));
     await visibleStatus(observer, 'REVIEW');
+    await expect(observer.getByText('Tiempo real conectado')).toBeVisible();
+    const eventsResponse = await observer.request.get(
+        `${executionPath(project.uuid, execution)}/events`,
+        { maxRedirects: 0 },
+    );
+    expect(eventsResponse.status()).toBe(200);
+    const observationMarker = 'Observación recuperada con permiso vencido';
+    control('event', { execution, message: observationMarker });
+    await expect(
+        observer.getByText(observationMarker, { exact: true }),
+    ).toBeVisible();
+
+    const reviewed = snapshot(project.uuid);
+    const assertNoFinalizationEffects = () => {
+        const current = snapshot(project.uuid);
+        expect(current.execution.status).toBe('REVIEW');
+        expect(current.status).toBe('REVIEW');
+        expect(current.commands).toEqual(reviewed.commands);
+        expect(current.review.artifacts).toEqual(reviewed.review.artifacts);
+        expect(current.audit).toEqual(reviewed.audit);
+        expect(current.finalization).toEqual(reviewed.finalization);
+        expect(current.events).toEqual(reviewed.events);
+    };
+    const finalizePath = `${executionPath(project.uuid, execution)}/finalize`;
+    const pendingPayload = {};
+    const pendingKey = 'temporal-finalize-' + randomUUID();
+    const blocked = await request(
+        observer,
+        finalizePath,
+        pendingPayload,
+        pendingKey,
+    );
+    expect(blocked.status()).toBe(423);
+    expect(await blocked.json()).toMatchObject({
+        code: 'PASSWORD_CONFIRMATION_REQUIRED',
+    });
+    assertNoFinalizationEffects();
     expect(
         (
-            await request(
-                observer,
-                `${executionPath(project.uuid, execution)}/finalize`,
-            )
+            await request(observer, '/auth/confirm-action-password', {
+                password: 'wrong-password',
+            })
         ).status(),
-    ).toBe(423);
+    ).toBe(422);
+    assertNoFinalizationEffects();
     expect(
         (
             await request(observer, '/auth/confirm-action-password', {
@@ -216,18 +255,43 @@ test('más de 24 horas: workers nuevos, navegador cerrado, recuperación y cierr
     ).toBe(200);
     expect(
         (
-            await request(
-                observer,
-                `${executionPath(project.uuid, execution)}/finalize`,
-            )
+            await request(observer, finalizePath, pendingPayload, pendingKey)
         ).status(),
     ).toBe(202);
+    expect(
+        (
+            await request(observer, finalizePath, pendingPayload, pendingKey)
+        ).status(),
+    ).toBe(200);
+    expect(
+        snapshot(project.uuid).commands.filter(
+            (c) => c.command_type === 'FINALIZE',
+        ),
+    ).toHaveLength(1);
     worker('drain', clock);
-    expect(snapshot(project.uuid).execution.status).toBe('COMPLETED');
-    const before = snapshot(project.uuid).events.length;
+    const completed = snapshot(project.uuid);
+    expect(completed.execution.status).toBe('COMPLETED');
+    expect(
+        completed.events.filter(
+            (event) => event.type === 'execution.completed',
+        ),
+    ).toHaveLength(1);
+    expect(
+        (
+            await request(observer, finalizePath, pendingPayload, pendingKey)
+        ).status(),
+    ).toBe(200);
+    const before = completed.events.length;
     control('replay', { execution });
     worker('drain', clock);
-    expect(snapshot(project.uuid).events).toHaveLength(before);
-    expect(snapshot(project.uuid).review.artifacts).toHaveLength(4);
+    const replayed = snapshot(project.uuid);
+    expect(replayed.events).toHaveLength(before);
+    expect(replayed.review.artifacts).toHaveLength(4);
+    expect(replayed.execution.finished_at).toBe(
+        completed.execution.finished_at,
+    );
+    expect(
+        replayed.commands.filter((c) => c.command_type === 'FINALIZE'),
+    ).toHaveLength(1);
     await recovered.close();
 });

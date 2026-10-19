@@ -10,6 +10,7 @@ use App\Models\Execution;
 use App\Models\RemoteOperation;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Feature\Domain\DomainTestCase;
@@ -36,6 +37,47 @@ class ArtifactDescriptorCollectionTest extends DomainTestCase
         $this->assertSame($operation->getKey(), $artifacts[0]->remote_operation_id);
         $this->assertSame(hash_file('sha256', $output), $artifacts[0]->sha256);
         $this->assertSame('CONFIDENTIAL', $artifacts[0]->metadata['sensitivity']);
+    }
+
+    public function test_repeated_capture_reuses_same_record_and_owned_hard_link(): void
+    {
+        [$execution, $operation] = $this->fixture();
+        $output = app(ExecutionWorkspaceManager::class)->resolve($execution, 'output', 'backup.zip');
+        file_put_contents($output, 'synthetic archive bytes');
+        $provider = app(LocalToolExecutionProvider::class);
+        $first = $provider->collectArtifacts($operation)[0];
+        $second = $provider->collectArtifacts($operation->fresh())[0];
+        $this->assertSame($first->id, $second->id);
+        $this->assertSame($first->path, $second->path);
+        $this->assertDatabaseCount('artifacts', 1);
+        $this->assertCount(1, Storage::disk('local')->allFiles('artifacts'));
+        $this->assertSame(fileinode($output), fileinode(Storage::disk($first->disk)->path($first->path)));
+    }
+
+    public function test_capture_rejects_a_special_file_before_registering_outputs(): void
+    {
+        [$execution, $operation] = $this->fixture();
+        $manager = app(ExecutionWorkspaceManager::class);
+        file_put_contents($manager->resolve($execution, 'output', 'backup.zip'), 'synthetic archive bytes');
+        posix_mkfifo($manager->resolve($execution, 'output', 'unexpected.fifo'), 0600);
+        try {
+            app(LocalToolExecutionProvider::class)->collectArtifacts($operation);
+            $this->fail('Special file accepted.');
+        } catch (RuntimeException) {
+            $this->assertDatabaseCount('artifacts', 0);
+        }
+    }
+
+    public function test_existing_capture_rejects_an_additional_unowned_link(): void
+    {
+        [$execution, $operation] = $this->fixture();
+        $manager = app(ExecutionWorkspaceManager::class);
+        $output = $manager->resolve($execution, 'output', 'backup.zip');
+        file_put_contents($output, 'synthetic archive bytes');
+        app(LocalToolExecutionProvider::class)->collectArtifacts($operation);
+        link($output, $manager->resolve($execution, 'temporary', 'unowned-link'));
+        $this->expectException(InvalidArgumentException::class);
+        app(LocalToolExecutionProvider::class)->collectArtifacts($operation->fresh());
     }
 
     #[DataProvider('invalidOutputs')]

@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Domain\Executions\Contracts\ExecutionProvider;
 use App\Domain\Executions\ExecutionFailureCloser;
 use App\Domain\Executions\ExecutionQueueConfiguration;
+use App\Domain\Executions\ExecutionRuntimeResolver;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Models\ExecutionCommand;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -26,7 +27,8 @@ class RunExecutionUnit implements ShouldQueue
     public function handle(ExecutionProvider $provider, ToolAdapter $adapter): void
     {
         $command = ExecutionCommand::query()->findOrFail($this->commandId);
-        $provider->execute($command, $adapter);
+        $runtime = app(ExecutionRuntimeResolver::class)->resolve($command, $provider, $adapter);
+        $runtime['provider']->execute($command, $runtime['adapter']);
     }
 
     public function failed(?Throwable $exception): void

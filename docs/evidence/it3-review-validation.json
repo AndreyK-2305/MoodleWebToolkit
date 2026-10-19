@@ -1,0 +1,93 @@
+{
+    "schema_version": "iteration3-review-validation.v1",
+    "status": "REVIEW_WITH_OPEN_REGRESSIONS",
+    "recorded_at_utc": "2026-10-09T17:18:45.9500370Z",
+    "base_main_sha": "05f858bde44c4162bbec4a8710171b4b42d285f0",
+    "implementation_head_sha": "8b7c7a6588323c0c14a6fe3d30968aae1791363e",
+    "branch": "codex/3-recolector-real",
+    "local_project": "mt1g-it3-cut22-fake1",
+    "implementation_head_excludes_documentation_delivery": true,
+    "local_working_tree_dirty": true,
+    "local_backend": {
+        "tests": 535,
+        "assertions": 6813,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+    },
+    "local_browser": {
+        "tests": 44,
+        "passed": 38,
+        "junit_failures": 1,
+        "junit_errors": 3,
+        "skipped_lab_cases": 2,
+        "retries": 0,
+        "status": "FAILED"
+    },
+    "full_local_quality_gates": "NOT_PASSED",
+    "open_regressions": [
+        {
+            "case": "execution.spec.ts:282 INTERVENTION",
+            "observed": "Login email fill timed out before intervention assertions."
+        },
+        {
+            "case": "review.spec.ts:83 double click",
+            "observed": "runuser snapshot ETIMEDOUT after start click; duplicate count not asserted."
+        },
+        {
+            "case": "temporal-auth.spec.ts:15 expired authorization",
+            "observed": "UI RUNNING at 35 percent instead of WAITING_USER_ACTION; expiry assertions not reached."
+        },
+        {
+            "case": "temporal-auth.spec.ts:157 more than 24 hours",
+            "observed": "FINALIZE returned 202 instead of 423 after harness attempted authorization expiry.",
+            "priority": "AUTHORIZATION_REVIEW"
+        }
+    ],
+    "root_causes_confirmed": false,
+    "baseline": {
+        "files": 423,
+        "sha256": "d2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221",
+        "readonly_services_fake": 7,
+        "readonly_services_lab": 8
+    },
+    "earlier_local_lab": {
+        "schema_version": "iteration3-lab-validation.v1",
+        "head_sha": "c624a91d300850638f6489f3ecae1206163129f2",
+        "working_tree_dirty": true,
+        "ci_url": null,
+        "quality_gates": "PASSED",
+        "php_tests": 3,
+        "php_assertions": 154,
+        "php_failures": 0,
+        "php_errors": 0,
+        "php_skipped": 0,
+        "playwright_tests": 2,
+        "playwright_failures": 0,
+        "playwright_errors": 0,
+        "playwright_skipped": 0,
+        "playwright_retries": 0,
+        "healthy_services": 12,
+        "clean_images_built_in_driver": false,
+        "baseline_files": 423,
+        "baseline_readonly_services": 8,
+        "collector_restart_proof": "collector-resilience.json",
+        "baseline_sha256": "d2c80f1aa5157320ac7208f9506fcba5dcc7d4d8830fa872658df6e99486c221",
+        "completed_at_utc": "2026-10-09T15:22:21.5826457Z",
+        "teardown": "PASSED"
+    },
+    "local_container_engine": "Podman Linux via Docker CLI and Compose",
+    "clean_images_built_in_driver": false,
+    "latest_local_stack_teardown": "COMPLETED_BY_DRIVER",
+    "ci_on_delivery_sha": "PENDING",
+    "merge_authorized": false,
+    "next_iteration_started": false,
+    "local_report_sha256": {
+        "phpunit.xml": "639eda9152a5bb5d52d25490eabc603bb788f33324cf601c51bcc18bcea72e20",
+        "playwright.xml": "510ff226988859b5eaeedfc1d883698b596d5e5b6102a78c1cb0f9458b5b3e2d",
+        "it3-cut22-fake1-driver.log": "d26a47c55a891826bd9a417455334d471a51e943b938acc9ca465e305ef5f192",
+        "iteration3-lab-validation.json": "4f5318e5418477048dd844e9bab2c8fefa1185c19455b0b23f9cd182dee3c9bf",
+        "collector-contracts.json": "d72e359520f31fa5e79ce9f23c4d3cb8702f199f4e3b6cd9c21046015f73d982",
+        "collector-resilience.json": "fa905b26996aa352a64acecb212236cc267f8dfbf1e877c937337d82773469b7"
+    }
+}

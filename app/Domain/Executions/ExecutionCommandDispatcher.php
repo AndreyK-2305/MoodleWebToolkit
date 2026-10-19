@@ -2,6 +2,7 @@
 
 namespace App\Domain\Executions;
 
+use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Exceptions\ExecutionDispatchFailed;
 use App\Jobs\RunExecutionUnit;
 use App\Models\ExecutionCommand;
@@ -32,7 +33,13 @@ class ExecutionCommandDispatcher
                 $locked->dispatch_attempts = ((int) $locked->dispatch_attempts) + 1;
                 $locked->save();
             });
-            Bus::dispatch((new RunExecutionUnit((int) $command->getKey()))->onQueue('executions'));
+            $job = new RunExecutionUnit((int) $command->getKey());
+            if ($command->execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY) {
+                $job->onConnection('redis-tool-runs')->onQueue('tool-runs');
+            } else {
+                $job->onQueue('executions');
+            }
+            Bus::dispatch($job);
         } catch (Throwable $exception) {
             DB::transaction(function () use ($command): void {
                 $locked = ExecutionCommand::query()->lockForUpdate()->find((int) $command->getKey());

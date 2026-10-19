@@ -3,12 +3,14 @@
 namespace App\Domain\Executions;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Processes\RegisteredCommandRegistry;
 use App\Domain\Processes\RegisteredCommandRunner;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\LogStream;
 use App\Enums\RemoteCommunicationState;
 use App\Enums\RemoteFunctionalState;
+use App\Exceptions\WorkspaceCapacityExceeded;
 use App\Jobs\RunRegisteredRemoteOperation;
 use App\Models\AuditLog;
 use App\Models\Execution;
@@ -63,9 +65,21 @@ class RemoteOperationCoordinator
         if ($created === false) {
             return $operation;
         }
+        if ($commandKey === CollectorRegisteredCommand::KEY && DB::transactionLevel() > 0) {
+            DB::afterCommit(fn () => $this->dispatchRegistered($operation, $commandKey, $parameters, $workingDirectory));
+
+            return $operation;
+        }
+
+        return $this->dispatchRegistered($operation, $commandKey, $parameters, $workingDirectory);
+    }
+
+    /** @param array<string, string> $parameters */
+    private function dispatchRegistered(RemoteOperation $operation, string $commandKey, array $parameters, string $workingDirectory): RemoteOperation
+    {
 
         try {
-            $connection = config('queue.default') === 'sync' ? 'sync' : 'redis-tool-runs';
+            $connection = $commandKey !== CollectorRegisteredCommand::KEY && config('queue.default') === 'sync' ? 'sync' : 'redis-tool-runs';
             dispatch((new RunRegisteredRemoteOperation(
                 (int) $operation->getKey(),
                 $commandKey,
@@ -90,6 +104,15 @@ class RemoteOperationCoordinator
     /** @param array<string, string> $parameters */
     public function runScheduled(int $operationId, string $commandKey, array $parameters, string $workingDirectory): RemoteOperation
     {
+        if ($commandKey === CollectorRegisteredCommand::KEY) {
+            // Reject a closed flag or changed definition before committing a launch claim.
+            $definition = $this->registry->resolve($commandKey, $parameters);
+            $pending = RemoteOperation::query()->findOrFail($operationId);
+            if ($pending->command_key !== $commandKey || ! hash_equals($pending->command_sha256,
+                $this->commandHash($commandKey, $parameters, $workingDirectory, $definition['artifact_descriptors'], $definition))) {
+                throw new RuntimeException('El comando real cambió antes de reclamar su lanzamiento.');
+            }
+        }
         $operation = DB::transaction(function () use ($operationId, $commandKey): ?RemoteOperation {
             $locked = RemoteOperation::query()->lockForUpdate()->findOrFail($operationId);
             if ($locked->command_key !== $commandKey) {
@@ -100,6 +123,9 @@ class RemoteOperationCoordinator
             }
             if ($locked->launch_claimed_at !== null) {
                 return null;
+            }
+            if ($locked->host_id !== (gethostname() ?: 'local')) {
+                throw new RuntimeException('La operación pertenece a otro runtime; no se iniciará desde este host.');
             }
 
             $locked->forceFill([
@@ -155,7 +181,12 @@ class RemoteOperationCoordinator
             $launcherEnvironment = getenv();
             $launcherEnvironment['PATH'] = (string) ($launcherEnvironment['PATH'] ?? '/usr/bin:/bin');
             $launcherEnvironment['LANG'] = (string) ($launcherEnvironment['LANG'] ?? 'C.UTF-8');
+            if ($commandKey === CollectorRegisteredCommand::KEY) {
+                $launcherEnvironment['MOODLE_OPERATION_ID'] = $operation->operation_uuid;
+                $launcherEnvironment['MOODLE_COMMAND_SHA256'] = $operation->command_sha256;
+            }
             $launcherEnvironment['TOOL_LOCAL_RUNNER_ENABLED'] = config('toolkit.features.local_runner.enabled') ? 'true' : 'false';
+            $launcherEnvironment['TOOL_RUNNER_HOST_ID'] = (string) $operation->host_id;
             $launcherEnvironment['TOOL_RUNNER_SYNTHETIC_PROFILE'] = app()->environment('testing') && config('toolkit.runner.synthetic_profile', false) ? 'true' : 'false';
             $launcherEnvironment['TOOL_WORKSPACES_ROOT'] = (string) config('toolkit.workspaces.root');
             $launcherEnvironment['TOOL_WORKSPACE_QUOTA_BYTES'] = (string) config('toolkit.workspaces.quota_bytes');
@@ -165,8 +196,11 @@ class RemoteOperationCoordinator
             $launcherEnvironment['TOOL_RUNNER_ENFORCE_OS_LIMITS'] = config('toolkit.runner.enforce_os_limits') ? 'true' : 'false';
             $launcherEnvironment['TOOL_RUNNER_LIMIT_WRAPPER'] = (string) config('toolkit.runner.limit_wrapper');
             $launcherEnvironment['TOOL_RUNNER_SESSION_WRAPPER'] = (string) config('toolkit.runner.session_wrapper');
+            $launcherEnvironment['TOOL_SUPERVISOR_START_TIMEOUT_SECONDS'] = (string) config('toolkit.runner.supervisor_start_timeout_seconds', 3);
             $limits = config('toolkit.runner.limits', []);
-            $launcherEnvironment['TOOL_RUNNER_CPU_SECONDS'] = (string) ($limits['cpu_seconds'] ?? 86400);
+            $launcherEnvironment['TOOL_RUNNER_CPU_SECONDS'] = $limits['cpu_seconds'] === null ? 'null' : (string) $limits['cpu_seconds'];
+            $launcherEnvironment['TOOL_RUNNER_HEARTBEAT_INTERVAL_SECONDS'] = (string) config('toolkit.runner.heartbeat_interval_seconds', 10);
+            $launcherEnvironment['TOOL_RUNNER_STALL_TIMEOUT_SECONDS'] = config('toolkit.runner.stall_timeout_seconds') === null ? 'null' : (string) config('toolkit.runner.stall_timeout_seconds');
             $launcherEnvironment['TOOL_RUNNER_MEMORY_BYTES'] = (string) ($limits['memory_bytes'] ?? 8_589_934_592);
             $launcherEnvironment['TOOL_RUNNER_MAX_PROCESSES'] = (string) ($limits['processes'] ?? 128);
             $launcherEnvironment['TOOL_RUNNER_MAX_FILE_BYTES'] = (string) ($limits['file_bytes'] ?? 1_099_511_627_776);
@@ -195,7 +229,7 @@ class RemoteOperationCoordinator
                 'evidence' => [...($operation->evidence ?? []), 'supervisor_dispatched_at' => now()->utc()->toIso8601String()],
             ])->save();
             $this->persistState($operation);
-            $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.supervisor_start_timeout_seconds', 3)));
+            $deadline = microtime(true) + $registeredDefinition['startup_timeout_seconds'];
             $launchPath = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, 'launch.json');
             $exitPath = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, 'exit.json');
             do {
@@ -296,7 +330,7 @@ class RemoteOperationCoordinator
                 'operation_uuid' => (string) Str::uuid(),
                 'idempotency_key' => $idempotencyKey,
                 'provider_key' => 'local-registered-process',
-                'host_id' => gethostname() ?: 'local',
+                'host_id' => $this->targetHost(),
                 'runtime_key' => 'workspace-process-v2',
                 'command_key' => $commandKey,
                 'command_sha256' => $commandHash,
@@ -306,6 +340,11 @@ class RemoteOperationCoordinator
                 'evidence' => [
                     'artifact_descriptors' => $definition['artifact_descriptors'],
                     'cancellable' => $definition['cancellable'],
+                    'execution_policy' => array_intersect_key($definition, array_flip([
+                        'startup_timeout_seconds', 'heartbeat_interval_seconds', 'stall_timeout_seconds',
+                        'wall_timeout_seconds', 'cancellation_grace_seconds', 'resource_limits',
+                        'enforce_os_limits', 'allow_force_kill',
+                    ])),
                 ],
             ]), true];
         });
@@ -321,6 +360,7 @@ class RemoteOperationCoordinator
         ksort($parameters, SORT_STRING);
 
         return hash('sha256', json_encode([
+            'target_host' => $this->targetHost(),
             'command_key' => $commandKey,
             'parameters' => $parameters,
             'working_directory' => $workingDirectory,
@@ -329,6 +369,14 @@ class RemoteOperationCoordinator
                 'argv' => $definition['argv'] ?? [],
                 'environment' => $definition['environment'] ?? [],
                 'timeout' => $definition['timeout'] ?? null,
+                'startup_timeout_seconds' => $definition['startup_timeout_seconds'] ?? null,
+                'heartbeat_interval_seconds' => $definition['heartbeat_interval_seconds'] ?? null,
+                'stall_timeout_seconds' => $definition['stall_timeout_seconds'] ?? null,
+                'wall_timeout_seconds' => $definition['wall_timeout_seconds'] ?? null,
+                'cancellation_grace_seconds' => $definition['cancellation_grace_seconds'] ?? null,
+                'resource_limits' => $definition['resource_limits'] ?? [],
+                'enforce_os_limits' => $definition['enforce_os_limits'] ?? null,
+                'allow_force_kill' => $definition['allow_force_kill'] ?? null,
                 'max_output_bytes' => $definition['max_output_bytes'] ?? null,
                 'durable_log_max_bytes' => $definition['durable_log_max_bytes'] ?? null,
                 'platform_durable_log_max_bytes' => $definition['platform_durable_log_max_bytes'] ?? null,
@@ -336,6 +384,17 @@ class RemoteOperationCoordinator
                 'cancellable' => $definition['cancellable'] ?? false,
             ],
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+
+    private function targetHost(): string
+    {
+        $configured = config('toolkit.runner.host_id');
+        $host = $configured ?? (gethostname() ?: 'local');
+        if (! is_string($host) || preg_match('/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$/D', $host) !== 1) {
+            throw new RuntimeException('El runtime de destino no tiene una identidad válida.');
+        }
+
+        return $host;
     }
 
     /**
@@ -605,12 +664,62 @@ class RemoteOperationCoordinator
             : 'El PID ya no acredita la identidad registrada y no existe exit.json; nunca se infiere éxito por ausencia del proceso.');
     }
 
+    public function verifyTerminalEvidence(RemoteOperation $operation): bool
+    {
+        $operation->refresh();
+        if ($operation->communication_state !== RemoteCommunicationState::TERMINATED || $operation->terminated_at === null
+            || PHP_OS_FAMILY !== 'Linux' || $operation->host_id !== (gethostname() ?: 'local')
+            || $operation->runtime_key !== 'workspace-process-v2') {
+            return false;
+        }
+        if (($operation->evidence['cancelled_before_launch'] ?? false) === true) {
+            return $operation->functional_state === RemoteFunctionalState::CANCELLED && $operation->process_id === null
+                && $operation->launch_claimed_at === null && $this->readOperationEvidence($operation, 'launch.json') === null
+                && $this->readOperationEvidence($operation, 'exit.json') === null;
+        }
+        if (($operation->evidence['cancelled_before_process_start'] ?? false) === true) {
+            $cancel = $this->readOperationEvidence($operation, 'cancel.json');
+
+            return $operation->functional_state === RemoteFunctionalState::CANCELLED && $operation->process_id === null
+                && $operation->started_at === null && $operation->launch_claimed_at !== null
+                && ($cancel['schema_version'] ?? null) === 'remote-operation-cancel.v1'
+                && ($cancel['operation_uuid'] ?? null) === $operation->operation_uuid
+                && ($cancel['command_sha256'] ?? null) === $operation->command_sha256
+                && $this->readOperationEvidence($operation, 'launch.json') === null
+                && $this->readOperationEvidence($operation, 'exit.json') === null && ! $this->inspector->hasActiveOperation($operation);
+        }
+        $launch = $this->readOperationEvidence($operation, 'launch.json');
+        $exit = $this->readOperationEvidence($operation, 'exit.json');
+
+        return $operation->process_id !== null && $launch !== null && $exit !== null
+            && $this->validLaunchEvidence($operation, $launch) && $this->validExitEvidence($operation, $exit, $launch)
+            && $this->canonicalEvidence($exit) === $this->canonicalEvidence($operation->evidence['exit_evidence'] ?? null)
+            && $operation->exit_code === $exit['exit_code']
+            && ! $this->inspector->hasActiveProcessGroup($operation)
+            && ($operation->command_key !== CollectorRegisteredCommand::KEY
+                || ! $this->inspector->hasActiveOperation($operation));
+    }
+
+    private function canonicalEvidence(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return array_map($this->canonicalEvidence(...), $value);
+    }
+
     /** @return array<string, mixed>|null */
     private function readOperationEvidence(RemoteOperation $operation, string $name): ?array
     {
         try {
             $path = $this->workspaces->operationEvidencePath($operation->execution, $operation->operation_uuid, $name);
-            if (is_link($path) || is_file($path) === false) {
+            $stat = @lstat($path);
+            if (is_link($path) || $stat === false || ($stat['mode'] & 0170000) !== 0100000
+                || $stat['nlink'] !== 1 || $stat['size'] > 1048576) {
                 return null;
             }
             $decoded = json_decode((string) file_get_contents($path), true);
@@ -705,6 +814,10 @@ class RemoteOperationCoordinator
                 return false;
             }
             clearstatcache(true, $path);
+            $stat = @lstat($path);
+            if ($stat === false || ($stat['mode'] & 0170000) !== 0100000 || $stat['nlink'] !== 1 || realpath($path) !== $path) {
+                return false;
+            }
             $size = is_link($path) || is_file($path) === false ? false : filesize($path);
             $hash = is_link($path) || is_file($path) === false ? false : hash_file('sha256', $path);
             if (is_int($size) === false || $size !== ($evidence[$stream.'_size_bytes'] ?? null)
@@ -915,23 +1028,28 @@ class RemoteOperationCoordinator
     private function persistState(RemoteOperation $operation): void
     {
         $operation->refresh();
-        $this->workspaces->writeState($operation->execution, 'remote-op-'.$operation->operation_uuid.'.json', [
-            'operation_uuid' => $operation->operation_uuid,
-            'idempotency_key' => $operation->idempotency_key,
-            'provider_key' => $operation->provider_key,
-            'host_id' => $operation->host_id,
-            'runtime_key' => $operation->runtime_key,
-            'process_id' => $operation->process_id,
-            'command_key' => $operation->command_key,
-            'command_sha256' => $operation->command_sha256,
-            'communication_state' => $operation->communication_state->value,
-            'functional_state' => $operation->functional_state->value,
-            'launch_claimed_at' => $operation->launch_claimed_at?->toIso8601String(),
-            'last_heartbeat_at' => $operation->last_heartbeat_at?->toIso8601String(),
-            'last_observed_at' => $operation->last_observed_at?->toIso8601String(),
-            'terminated_at' => $operation->terminated_at?->toIso8601String(),
-            'exit_code' => $operation->exit_code,
-            'evidence' => $operation->evidence,
-        ]);
+        try {
+            $this->workspaces->writeState($operation->execution, 'remote-op-'.$operation->operation_uuid.'.json', [
+                'operation_uuid' => $operation->operation_uuid,
+                'idempotency_key' => $operation->idempotency_key,
+                'provider_key' => $operation->provider_key,
+                'host_id' => $operation->host_id,
+                'runtime_key' => $operation->runtime_key,
+                'process_id' => $operation->process_id,
+                'command_key' => $operation->command_key,
+                'command_sha256' => $operation->command_sha256,
+                'communication_state' => $operation->communication_state->value,
+                'functional_state' => $operation->functional_state->value,
+                'launch_claimed_at' => $operation->launch_claimed_at?->toIso8601String(),
+                'last_heartbeat_at' => $operation->last_heartbeat_at?->toIso8601String(),
+                'last_observed_at' => $operation->last_observed_at?->toIso8601String(),
+                'terminated_at' => $operation->terminated_at?->toIso8601String(),
+                'exit_code' => $operation->exit_code,
+                'evidence' => $operation->evidence,
+            ]);
+        } catch (WorkspaceCapacityExceeded) {
+            // PostgreSQL and the bounded launch/exit proof remain authoritative.
+            // An auxiliary state snapshot must not invalidate terminal evidence.
+        }
     }
 }

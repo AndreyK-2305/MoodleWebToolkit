@@ -3,6 +3,7 @@
 use App\Http\Controllers\AcademicProposalController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\ArtifactController;
+use App\Http\Controllers\CollectorConfigurationController;
 use App\Http\Controllers\ConfirmActionPasswordController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExecutionActionController;
@@ -21,11 +22,13 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::get('projects', [ProjectController::class, 'index'])->name('projects.index');
     Route::post('projects', [ProjectController::class, 'store'])->middleware('action.confirmed')->name('projects.store');
     Route::get('projects/{project:uuid}', [ProjectController::class, 'show'])->name('projects.show');
+    Route::put('projects/{project:uuid}/collector/configuration', CollectorConfigurationController::class)->middleware('action.confirmed')->name('projects.collector.configuration');
     Route::post('projects/{project:uuid}/executions', [ExecutionController::class, 'store'])->middleware('action.confirmed')->name('projects.executions.store');
     Route::get('projects/{project:uuid}/executions/{execution:uuid}', [ExecutionController::class, 'show'])->name('projects.executions.show');
     Route::get('projects/{project:uuid}/executions/{execution:uuid}/events', [ExecutionEventController::class, 'index'])->name('projects.executions.events');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/cancel', [ExecutionActionController::class, 'cancel'])->middleware('action.confirmed')->name('projects.executions.cancel');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/resume', [ExecutionActionController::class, 'resume'])->middleware('action.confirmed')->name('projects.executions.resume');
+    Route::post('projects/{project:uuid}/executions/{execution:uuid}/fresh-export', [ExecutionActionController::class, 'freshExport'])->middleware('action.confirmed')->name('projects.executions.fresh-export');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/proposals', [AcademicProposalController::class, 'store'])->middleware('action.confirmed')->name('projects.executions.proposals.store');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/validate', [ExecutionReviewController::class, 'validateExecution'])->middleware('action.confirmed')->name('projects.executions.validate');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/finalize', [ExecutionReviewController::class, 'finalize'])->middleware('action.confirmed')->name('projects.executions.finalize');

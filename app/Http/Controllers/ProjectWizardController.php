@@ -106,7 +106,7 @@ class ProjectWizardController extends Controller
         $actor = $request->user();
         $wizard->runPreflight($project, $actor);
 
-        Inertia::flash('toast', ['type' => 'success', 'message' => 'Preflight simulado actualizado.']);
+        Inertia::flash('toast', ['type' => 'success', 'message' => 'Preflight actualizado.']);
 
         return to_route('projects.show', $project->uuid);
     }

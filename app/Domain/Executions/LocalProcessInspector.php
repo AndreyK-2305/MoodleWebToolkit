@@ -70,7 +70,8 @@ class LocalProcessInspector
             throw new RuntimeException('El runtime no pudo enviar una señal segura al proceso registrado.');
         }
 
-        $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.cancel_grace_seconds', 3)));
+        $grace = (int) ($operation->evidence['execution_policy']['cancellation_grace_seconds'] ?? config('toolkit.runner.cancel_grace_seconds', 3));
+        $deadline = microtime(true) + $grace;
         do {
             usleep(100_000);
             if (! $this->processGroupExists($processGroupId)) {
@@ -78,11 +79,11 @@ class LocalProcessInspector
             }
         } while (microtime(true) < $deadline);
 
-        if ((bool) config('toolkit.runner.allow_force_kill', false)) {
+        if ((bool) ($operation->evidence['execution_policy']['allow_force_kill'] ?? config('toolkit.runner.allow_force_kill', false))) {
             if (! $this->processGroupExists($processGroupId) || ! posix_kill(-$processGroupId, SIGKILL)) {
                 return false;
             }
-            $deadline = microtime(true) + min(5, max(1, (int) config('toolkit.runner.cancel_grace_seconds', 3)));
+            $deadline = microtime(true) + $grace;
             do {
                 usleep(100_000);
                 if (! $this->processGroupExists($processGroupId)) {
@@ -92,6 +93,52 @@ class LocalProcessInspector
         }
 
         return ! $this->processGroupExists($processGroupId);
+    }
+
+    public function hasActiveProcessGroup(RemoteOperation $operation): bool
+    {
+        if (PHP_OS_FAMILY !== 'Linux' || $operation->host_id !== (gethostname() ?: 'local')
+            || $operation->runtime_key !== 'workspace-process-v2' || (int) $operation->process_group_id < 2) {
+            return true;
+        }
+        $paths = glob('/proc/[0-9]*/stat');
+        if ($paths === false) {
+            return true;
+        }
+        foreach ($paths as $path) {
+            $stat = @file_get_contents($path);
+            if (! is_string($stat)) {
+                continue; // A process may exit between enumeration and inspection.
+            }
+            $end = strrpos($stat, ')');
+            $fields = $end === false ? [] : (preg_split('/\s+/', trim(substr($stat, $end + 1))) ?: []);
+            if (($fields[2] ?? null) === $operation->process_group_id && ! in_array($fields[0] ?? null, ['Z', 'X'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function hasActiveOperation(RemoteOperation $operation): bool
+    {
+        if (PHP_OS_FAMILY !== 'Linux' || $operation->host_id !== (gethostname() ?: 'local')) {
+            return true;
+        }
+        foreach (glob('/proc/[0-9]*/environ') ?: [] as $path) {
+            $environment = @file_get_contents($path);
+            if (is_string($environment) && str_contains($environment, 'MOODLE_OPERATION_ID='.$operation->operation_uuid."\0")
+                && str_contains($environment, 'MOODLE_COMMAND_SHA256='.$operation->command_sha256."\0")) {
+                $stat = @file_get_contents(dirname($path).'/stat');
+                $end = is_string($stat) ? strrpos($stat, ')') : false;
+                $fields = $end === false ? [] : (preg_split('/\s+/', trim(substr($stat, $end + 1))) ?: []);
+                if (! in_array($fields[0] ?? null, ['Z', 'X'], true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /** @phpstan-impure */

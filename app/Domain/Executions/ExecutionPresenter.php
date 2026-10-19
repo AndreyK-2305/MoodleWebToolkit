@@ -4,6 +4,7 @@ namespace App\Domain\Executions;
 
 use App\Domain\Academic\AcademicPreview;
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Models\AcademicProposal;
 use App\Models\Artifact;
 use App\Models\Checkpoint;
@@ -11,6 +12,7 @@ use App\Models\Conflict;
 use App\Models\Execution;
 use App\Models\ExecutionEvent;
 use App\Models\ExecutionStep;
+use App\Models\SourcePackage;
 use App\Models\Verification;
 
 class ExecutionPresenter
@@ -21,11 +23,22 @@ class ExecutionPresenter
     public function execution(Execution $execution): array
     {
         $execution->loadMissing(['steps', 'conflicts', 'checkpoints', 'resumedFromExecution']);
+        $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY;
+        $operation = $real ? $execution->remoteOperations()->latest('id')->first() : null;
 
         return [
             'uuid' => $execution->uuid,
             'attempt' => $execution->attempt,
             'resumed_from_execution_uuid' => $execution->resumedFromExecution?->uuid,
+            'retried_from_execution_uuid' => $execution->retried_from_execution_id === null ? null : Execution::query()->whereKey($execution->retried_from_execution_id)->value('uuid'),
+            'collector' => $real ? ['mode' => 'LABORATORY', 'producer_version' => '7.4.2-linux', 'resume_supported' => false,
+                'configuration_version' => $execution->project->configuration?->version,
+                'can_fresh_export' => in_array($execution->status->value, ['FAILED', 'CANCELLED'], true)
+                    && (int) $execution->project->executions()->max('attempt') === $execution->attempt
+                    && ! $execution->remoteOperations()->where('communication_state', '!=', 'TERMINATED')->exists(),
+                'operation' => $operation === null ? null : ['uuid' => $operation->operation_uuid,
+                    'communication_state' => $operation->communication_state->value, 'functional_state' => $operation->functional_state->value,
+                    'manual_intervention_required' => $operation->manual_intervention_required]] : null,
             'status' => $execution->status->value,
             'progress' => $execution->progress,
             'started_at' => $execution->started_at?->toIso8601String(),
@@ -74,6 +87,7 @@ class ExecutionPresenter
     /** @return array<string, mixed> */
     public function review(Execution $execution): array
     {
+        $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY;
         $execution->loadMissing([
             'academicSnapshot', 'academicProposals.proposer', 'verifications.requester',
             'artifacts', 'finalizer', 'resumedFromExecution',
@@ -88,7 +102,14 @@ class ExecutionPresenter
                 && $execution->validated_fingerprint !== null
                 && $execution->validated_proposal_version === $execution->proposal_version
                 && hash_equals($execution->review_fingerprint, $execution->validated_fingerprint),
-            'tree' => $execution->academicSnapshot === null ? [] : $this->preview->hierarchicalState($execution),
+            'tree' => $real || $execution->academicSnapshot === null ? [] : $this->preview->hierarchicalState($execution),
+            'source_packages' => $real ? SourcePackage::query()->where('producer_execution_id', $execution->id)->get()->map(fn (SourcePackage $package): array => [
+                'uuid' => $package->uuid, 'name' => $package->name, 'producer_version' => $package->producer_tool_version,
+                'schema_version' => $package->schema_version, 'sha256' => $package->sha256, 'manifest_sha256' => $package->manifest_sha256,
+                'size_bytes' => $package->size_bytes, 'validation_state' => $package->validation_state,
+                'capabilities' => $package->capabilities, 'courses' => $package->evidence['collector_audit']['courses'] ?? null,
+                'metadata_state' => $package->evidence['collector_audit']['metadata_state'] ?? null,
+            ])->all() : [],
             'proposals' => $execution->academicProposals->map(fn (AcademicProposal $proposal): array => [
                 'id' => $proposal->getKey(),
                 'version' => $proposal->version,

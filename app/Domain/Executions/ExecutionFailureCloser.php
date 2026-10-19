@@ -2,6 +2,7 @@
 
 namespace App\Domain\Executions;
 
+use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\EventSeverity;
 use App\Enums\ExecutionCommandType;
@@ -49,6 +50,14 @@ class ExecutionFailureCloser
             }
 
             $execution = $command->execution;
+            if ($execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY
+                && ($command->command_type === ExecutionCommandType::CANCEL || $execution->remoteOperations()->exists())
+                && $command->command_type !== ExecutionCommandType::FINALIZE) {
+                $this->leases->releaseForRetry($command);
+                $this->events->record($execution, 'collector.worker_recovery_pending', message: 'El worker quedó pendiente de recuperación; la operación real conserva su identidad y evidencia.');
+
+                return true;
+            }
 
             if ($command->command_type === ExecutionCommandType::FINALIZE
                 && $execution->status === ExecutionStatus::REVIEW

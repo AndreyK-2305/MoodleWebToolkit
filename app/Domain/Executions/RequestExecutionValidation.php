@@ -3,6 +3,7 @@
 namespace App\Domain\Executions;
 
 use App\Domain\Academic\AcademicPreview;
+use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Executions\DTOs\StartExecutionResult;
 use App\Domain\Idempotency\IdempotencyRegistry;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
@@ -32,6 +33,7 @@ class RequestExecutionValidation
 
     public function queueInitial(Execution $execution): ExecutionCommand
     {
+        $this->assertDemonstration($execution);
         $snapshot = $this->preview->ensureSnapshot($execution);
         $execution->proposal_version = 0;
         $execution->review_fingerprint = $snapshot->fingerprint;
@@ -77,6 +79,13 @@ class RequestExecutionValidation
         return $command;
     }
 
+    private function assertDemonstration(Execution $execution): void
+    {
+        if ($execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY) {
+            throw ValidationException::withMessages(['verification' => 'El paquete real utiliza su auditoría independiente; no admite validación académica simulada.']);
+        }
+    }
+
     public function request(Execution $execution, User $actor, string $idempotencyKey): StartExecutionResult
     {
         $result = DB::transaction(function () use ($execution, $actor, $idempotencyKey): StartExecutionResult {
@@ -85,6 +94,7 @@ class RequestExecutionValidation
             $locked = Execution::query()->lockForUpdate()->findOrFail((int) $seed->getKey());
             $locked->setRelation('project', $project);
             $this->authorize($locked, $actor);
+            $this->assertDemonstration($locked);
 
             if ($locked->review_fingerprint === null) {
                 throw ValidationException::withMessages(['execution' => 'La ejecución no tiene una previsualización académica persistida.']);

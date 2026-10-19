@@ -22,7 +22,7 @@ use Illuminate\Validation\ValidationException;
 class ProjectWizard
 {
     public function __construct(
-        private readonly SimulatedPreflight $preflight,
+        private readonly ProjectPreflight $preflight,
         private readonly SimulatedUrlSafety $urlSafety,
     ) {}
 
@@ -211,7 +211,7 @@ class ProjectWizard
             $this->audit($actor, $locked, 'PROJECT_PREFLIGHT_COMPLETED', [
                 'configuration_version' => $configuration->version,
                 'results' => collect($checks)->countBy('result')->all(),
-                'simulated' => true,
+                'simulated' => ($settings['options']['mode'] ?? null) !== 'LABORATORY',
             ]);
 
             return $checks;

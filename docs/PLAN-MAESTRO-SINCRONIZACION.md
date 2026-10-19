@@ -199,11 +199,12 @@ Determinar qué versiones históricas existen en `BaseLine/`, identificar y veri
 
 ## 0A — Inventario de distribuciones
 
-Inspeccionar en modo de solo lectura tanto `BaseLine/` como estas rutas fuente, sin ejecutar sus herramientas:
+Durante el inventario inicial se inspeccionaron árboles fuente externos en modo
+read-only. Las distribuciones verificadas están ahora incorporadas en el checkout:
 
-- `C:\Users\kevin\OneDrive\Desktop\moodle-consolidation-toolkit\moodle-consolidation-toolkit\Recolector\Recolector-v7.4.2`;
-- `C:\Users\kevin\OneDrive\Desktop\moodle-consolidation-toolkit\moodle-consolidation-toolkit\Consolidador\Consolidador-v8.0.0`;
-- `C:\Users\kevin\OneDrive\Desktop\moodle-consolidation-toolkit\moodle-consolidation-toolkit\Integrador\Integrador-Incremental-Moodle-v1.1.5-linux`.
+- `BaseLine/Recolector/Recolector-v7.4.2`;
+- `BaseLine/Consolidador/Consolidador-v8.0.0`;
+- `BaseLine/Integrador/Integrador-Incremental-Moodle-v1.1.5-linux`.
 
 Para esas distribuciones y para `BaseLine/`, se revisaron:
 
@@ -511,6 +512,31 @@ Las regresiones cubren supervisor separado del worker, su muerte con SIGKILL, ev
 
 # ITERACIÓN 3 — INTEGRACIÓN REAL DEL RECOLECTOR
 
+## Estado de implementación — 2026-10-09
+
+La rama `codex/3-recolector-real` implementa COLLECT real exclusivamente sobre el
+perfil Moodle sintético de laboratorio, desde el main aprobado del PR #8.
+Configuración/revisiones, preflight, CollectorAdapter, bridge, eventos durables,
+auditoría de paquetes, SourcePackage, cierre y nuevo intento con linaje están
+instalados. El recorrido real de navegador y los reinicios de Redis, queue-worker
+y Reverb con la misma operación están acreditados en el laboratorio. El PR #9
+continúa en borrador durante las correcciones de revisión. Se reprodujo y corrigió
+la carrera de caducidad de sesión del arnés y se sustituyó source_write=false por
+evidencia medida y semántica explícita. También se reprodujo y corrigió la pérdida
+de una notificación Reverb durante una consulta HTTP pendiente. El cierre exige
+las puertas completas y ambos jobs verdes del mismo SHA limpio; los cortes y
+limitaciones se describen en el informe. No se habilita la iteración siguiente.
+
+El estado y la evidencia se mantienen en
+[`ITERACION-3-RECOLECTOR.md`](ITERACION-3-RECOLECTOR.md). Ambas flags reales siguen
+cerradas por defecto. Recolector permanece `LABORATORY`, Consolidador `BLOCKED`
+e Integrador `INCOMPATIBLE`. No se inició Iteración 4.
+
+El contrato observado no acredita reanudación segura entre workspaces: la UI
+ofrece una nueva exportación con otra Execution, workspace y RemoteOperation,
+sin inventar checkpoints. El tiempo de pared y la CPU pueden ser null, con
+heartbeat, inactividad, cancelación y límites de recursos independientes.
+
 ## 3A — Configuración real
 
 Reemplazar casillas simuladas por datos verificables:
@@ -624,7 +650,7 @@ Ejecutar sobre Moodle sintético:
 - inventario visual;
 - OAuth de laboratorio;
 - interrupción controlada;
-- reanudación;
+- nuevo intento de exportación con linaje; reanudación entre workspaces no habilitada;
 - validación del paquete.
 
 ## 3H — Estabilización
@@ -633,7 +659,7 @@ Probar:
 
 - Redis reiniciado;
 - worker reiniciado;
-- runner reiniciado;
+- reinicio completo del contenedor del runner pendiente de acreditación;
 - navegador cerrado;
 - sesión expirada;
 - Reverb desconectado;
@@ -650,7 +676,7 @@ Probar:
 - Paquete válido.
 - Inventario visual.
 - Eventos reales.
-- Reanudación real.
+- Nuevo intento real con linaje; no se declara reanudación segura entre workspaces.
 - Artefactos por referencia.
 - Ejecución superior a la sesión del usuario.
 - Modo Fake conservado.
@@ -1430,7 +1456,7 @@ Fecha del inventario: 2026-10-07. Este anexo concreta las referencias de este pl
 
 La rama de trabajo es `refactor-v8`, creada desde `origin/main` en `bf9bdb7960544a2ada2caf538bea353298767297`. Ese commit contiene la vertical 1G aprobada. La rama local `main` estaba desactualizada; por eso el punto de partida verificado fue `origin/main`.
 
-En la inspección inicial, las distribuciones definitivas estaban en `C:\Users\kevin\OneDrive\Desktop\moodle-consolidation-toolkit\moodle-consolidation-toolkit`, fuera del repositorio web. No se encontró ningún ZIP original en ese directorio ni en su carpeta padre. Se registraron como árboles fuente verificados, sin atribuirles un ZIP o archivo original no disponible.
+En la inspección inicial, las distribuciones definitivas eran árboles fuente externos al repositorio web. No se encontró un ZIP original. Se registraron como árboles verificados, sin atribuirles un archivo original no disponible.
 
 | Distribución                                            | Versión declarada  | Archivos / entradas del manifiesto | SHA-256 canónico del árbol                                         | Resultado                                                                                                                                                                  |
 | ------------------------------------------------------- | ------------------ | ---------------------------------: | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

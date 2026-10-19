@@ -6,6 +6,8 @@ use App\Domain\Artifacts\ArtifactStreamVerifier;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\GenerateFinalArtifacts;
 use App\Domain\Artifacts\ResumableSha256;
+use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -386,11 +388,13 @@ class ProcessExecutionFinalization
     ): void {
         $execution = $command->execution;
         $artifacts = $state->artifacts;
+        $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY;
+        $existingCount = $execution->artifacts()->count();
 
         if (count($artifacts) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
             || count($state->verified_types) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
             || count($state->promoted_types) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
-            || $execution->artifacts()->exists()
+            || ($real ? $existingCount !== 6 || $execution->artifacts()->whereIn('type', GenerateFinalArtifacts::REQUIRED_TYPES)->exists() : $existingCount !== 0)
         ) {
             throw new RuntimeException('La finalización no alcanzó una salida íntegra y única.');
         }
@@ -420,13 +424,14 @@ class ProcessExecutionFinalization
         $step->finished_at = $completionAt;
         $step->metadata = ['artifact_types' => GenerateFinalArtifacts::REQUIRED_TYPES];
         $step->save();
-        $execution->progress = 100;
+        $execution->progress = $real ? $execution->progress : 100;
         $execution->finalized_by = $actor->getKey();
         $execution->completion_summary = [
             'result' => 'COMPLETED',
             'proposal_version' => $execution->proposal_version,
             'fingerprint' => $execution->review_fingerprint,
-            'artifact_count' => count(GenerateFinalArtifacts::REQUIRED_TYPES),
+            'artifact_count' => $existingCount + count(GenerateFinalArtifacts::REQUIRED_TYPES),
+            'adapter' => $real ? CollectorExecutionPreparation::ADAPTER_KEY : 'fake',
             'finalization_started_at' => $state->finalization_started_at?->toIso8601String(),
             'completed_at' => $completionAt->toIso8601String(),
         ];
@@ -434,7 +439,7 @@ class ProcessExecutionFinalization
         $completionPayload = [
             'proposal_version' => $execution->proposal_version,
             'fingerprint' => $execution->review_fingerprint,
-            'artifact_count' => count(GenerateFinalArtifacts::REQUIRED_TYPES),
+            'artifact_count' => $existingCount + count(GenerateFinalArtifacts::REQUIRED_TYPES),
             'completed_at' => $completionAt->toIso8601String(),
         ];
         AuditLog::query()->create([
@@ -449,8 +454,8 @@ class ProcessExecutionFinalization
         $this->events->recordNormalized($execution, new NormalizedToolEvent(
             'execution.completed',
             stepKey: 'finalization',
-            progress: 100,
-            message: 'La ejecución fue cerrada con sus cuatro artefactos verificados y quedó en modo de sólo lectura.',
+            progress: $execution->progress,
+            message: $real ? 'El paquete auditado y los informes quedaron verificados; la ejecución está cerrada.' : 'La ejecución fue cerrada con sus cuatro artefactos verificados y quedó en modo de sólo lectura.',
             payload: $completionPayload,
         ), $completionAt);
         $this->leases->finish($command, $completionAt);
@@ -488,6 +493,9 @@ class ProcessExecutionFinalization
     /** @param array<string, mixed> $payload */
     private function assertStillFinalizable(array $payload, Execution $execution, int $commandId): void
     {
+        if ($execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY) {
+            app(CollectorWorkflow::class)->assertFinalizable($execution);
+        }
         if ($execution->review_fingerprint === null
             || $execution->validated_fingerprint === null
             || $execution->validated_proposal_version !== $execution->proposal_version

@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Auth;
 
+use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
@@ -58,6 +60,64 @@ class SessionAuthorizationConcurrencyTest extends TestCase
             }
             Redis::del($prefix.':release', $prefix.':observe:loaded', $prefix.':observe:attempted', $prefix.':confirm:attempted');
             DB::table('sessions')->where('id', $sessionId)->delete();
+        }
+    }
+
+    public function test_session_expiration_waits_for_observation_and_changes_only_that_session(): void
+    {
+        $this->assertSame('pgsql', DB::getDriverName());
+        $this->assertSame(0, Artisan::call('migrate:fresh', ['--force' => true]));
+        $user = User::factory()->create();
+        $sessionId = Str::random(40);
+        $otherSessionId = Str::random(40);
+        $prefix = 'quality-session:'.Str::uuid();
+        $confirmedAt = now()->timestamp;
+        $payload = base64_encode(json_encode(['auth' => ['password_confirmed_at' => $confirmedAt]], JSON_THROW_ON_ERROR));
+        foreach ([$sessionId, $otherSessionId] as $id) {
+            DB::table('sessions')->insert([
+                'id' => $id, 'user_id' => $user->getKey(),
+                'payload' => $payload, 'last_activity' => $confirmedAt,
+            ]);
+        }
+        $processes = [];
+
+        try {
+            foreach (['observe', 'expire'] as $mode) {
+                $process = new Process([PHP_BINARY, base_path('tests/Support/concurrent-session-worker.php'), $mode, $sessionId, $prefix, (string) $confirmedAt], base_path(), timeout: 15);
+                $processes[$mode] = $process;
+                $process->start();
+                $marker = $prefix.':'.$mode.($mode === 'observe' ? ':loaded' : ':attempted');
+                $deadline = microtime(true) + 5;
+                while (! Redis::exists($marker) && $process->isRunning() && microtime(true) < $deadline) {
+                    usleep(10000);
+                }
+                $this->assertTrue((bool) Redis::exists($marker), $process->getErrorOutput());
+            }
+
+            // The observation holds the same Redis lock that expiration needs.
+            // Release an explicit barrier rather than waiting for a slow request.
+            $this->assertFalse(Cache::store('redis')->lock('session:'.$sessionId)->get());
+            $this->assertFalse((bool) Redis::exists($prefix.':expire:loaded'));
+            Redis::rpush($prefix.':release', '1');
+            foreach ($processes as $process) {
+                $this->assertSame(0, $process->wait(), $process->getErrorOutput());
+            }
+            $this->assertTrue((bool) Redis::exists($prefix.':expire:loaded'));
+            $expired = json_decode(base64_decode(DB::table('sessions')->where('id', $sessionId)->value('payload')), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertArrayNotHasKey('password_confirmed_at', $expired['auth'] ?? []);
+            $this->assertTrue($expired['observation_seen']);
+            $this->assertSame($user->getKey(), DB::table('sessions')->where('id', $sessionId)->value('user_id'));
+            $this->assertSame($payload, DB::table('sessions')->where('id', $otherSessionId)->value('payload'));
+            $this->assertSame($user->getKey(), DB::table('sessions')->where('id', $otherSessionId)->value('user_id'));
+        } finally {
+            Redis::rpush($prefix.':release', '1');
+            foreach ($processes as $process) {
+                if ($process->isRunning()) {
+                    $process->stop();
+                }
+            }
+            Redis::del($prefix.':release', $prefix.':observe:loaded', $prefix.':observe:attempted', $prefix.':expire:attempted', $prefix.':expire:loaded');
+            DB::table('sessions')->whereIn('id', [$sessionId, $otherSessionId])->delete();
         }
     }
 }

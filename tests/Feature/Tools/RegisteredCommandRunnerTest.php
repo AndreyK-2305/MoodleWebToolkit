@@ -12,6 +12,7 @@ use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\EventSeverity;
 use App\Enums\LogStream;
+use App\Jobs\ReconcileRemoteOperation;
 use App\Jobs\RunRegisteredRemoteOperation;
 use App\Models\Execution;
 use App\Models\ExecutionLog;
@@ -85,6 +86,99 @@ class RegisteredCommandRunnerTest extends TestCase
         $this->assertGreaterThan(0, $result->processId);
         $this->assertStringContainsString('password=[REDACTED]', $result->stdout);
         $this->assertStringNotContainsString('private-value', $result->stdout);
+    }
+
+    public function test_runner_target_is_pinned_before_detached_launch(): void
+    {
+        Queue::fake();
+        config(['toolkit.runner.host_id' => gethostname() ?: 'local']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $operations = app(RemoteOperationCoordinator::class);
+        $operation = $operations->schedule($execution, 'it3-host-claim', 'platform_health');
+        $operation = $operations->runScheduled((int) $operation->getKey(), 'platform_health', [], '');
+        $deadline = microtime(true) + 10;
+        do {
+            usleep(100_000);
+            $operation = $operations->reconcile($operation);
+        } while ($operation->communication_state->value !== 'TERMINATED' && microtime(true) < $deadline);
+        $this->assertSame(gethostname() ?: 'local', $operation->host_id);
+        $this->assertSame('TERMINATED', $operation->communication_state->value);
+        $this->assertSame($operation->host_id, $operation->evidence['exit_evidence']['host_id']);
+    }
+
+    public function test_a_different_runner_cannot_claim_the_immutable_target_host(): void
+    {
+        Queue::fake();
+        config(['toolkit.runner.host_id' => 'another-runner-container']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $operations = app(RemoteOperationCoordinator::class);
+        $operation = $operations->schedule($execution, 'it3-other-host', 'platform_health');
+        try {
+            $operations->runScheduled((int) $operation->getKey(), 'platform_health', [], '');
+            $this->fail('An operation was launched on the wrong host.');
+        } catch (\RuntimeException) {
+            $this->assertNull($operation->fresh()->launch_claimed_at);
+            $this->assertNull($operation->fresh()->process_id);
+            $this->assertSame('another-runner-container', $operation->fresh()->host_id);
+        }
+    }
+
+    public function test_terminal_evidence_is_rechecked_and_wrong_host_or_changed_log_blocks_capture(): void
+    {
+        Queue::fake();
+        config(['toolkit.runner.host_id' => gethostname() ?: 'local']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $coordinator = app(RemoteOperationCoordinator::class);
+        $operation = $coordinator->schedule($execution, 'it3-terminal-proof', 'platform_health');
+        $operation = $coordinator->runScheduled($operation->id, 'platform_health', [], '');
+        $deadline = microtime(true) + 10;
+        do {
+            usleep(100000);
+            $operation = $coordinator->reconcile($operation);
+        } while ($operation->communication_state->value !== 'TERMINATED' && microtime(true) < $deadline);
+        $this->assertSame('TERMINATED', $operation->communication_state->value);
+        $this->assertTrue($coordinator->verifyTerminalEvidence($operation));
+        $exit = app(ExecutionWorkspaceManager::class)->operationEvidencePath($execution, $operation->operation_uuid, 'exit.json');
+        $original = file_get_contents($exit);
+        $document = json_decode($original, true, flags: JSON_THROW_ON_ERROR);
+        $document['host_id'] = 'another-host';
+        file_put_contents($exit, json_encode($document, JSON_THROW_ON_ERROR));
+        $this->assertFalse($coordinator->verifyTerminalEvidence($operation));
+        file_put_contents($exit, $original);
+        $this->assertTrue($coordinator->verifyTerminalEvidence($operation));
+        $stdout = app(ExecutionWorkspaceManager::class)->operationLogPath($execution, $operation->operation_uuid, 'stdout');
+        file_put_contents($stdout, 'changed bytes', FILE_APPEND);
+        $this->assertFalse($coordinator->verifyTerminalEvidence($operation));
+        $this->assertSame('TERMINATED', $operation->fresh()->communication_state->value);
+    }
+
+    public function test_scheduler_dispatches_observation_to_the_runner_queue(): void
+    {
+        Queue::fake();
+        config(['queue.default' => 'redis']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $operation = app(RemoteOperationCoordinator::class)->schedule($execution, 'it3-observation-host', 'platform_long');
+        $operation->update(['next_poll_at' => now()->utc()->subSecond()]);
+        $this->artisan('executions:reconcile-remote-operations')->assertExitCode(0);
+        Queue::assertPushed(ReconcileRemoteOperation::class, fn (ReconcileRemoteOperation $job): bool => $job->operationId === $operation->id
+            && $job->connection === 'redis-tool-runs' && $job->queue === 'tool-runs');
+        $this->assertNull($operation->fresh()->process_id);
+    }
+
+    public function test_runner_target_is_part_of_command_idempotency(): void
+    {
+        Queue::fake();
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $operations = app(RemoteOperationCoordinator::class);
+        $operation = $operations->schedule($execution, 'it3-target-idempotency', 'platform_health');
+        config(['toolkit.runner.host_id' => 'another-runner-container']);
+        $this->expectException(\RuntimeException::class);
+        $operations->schedule($execution, $operation->idempotency_key, 'platform_health');
     }
 
     public function test_registered_argument_schema_rejects_shell_syntax(): void
@@ -274,6 +368,72 @@ class RegisteredCommandRunnerTest extends TestCase
         $this->assertFalse($this->processIsExecuting((int) $result->processId));
     }
 
+    public function test_unlimited_command_retains_resource_limits_and_stall_detection(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('La regresión necesita el runner Linux.');
+        }
+        config([
+            'toolkit.runner.commands.platform_long.wall_timeout_seconds' => null,
+            'toolkit.runner.commands.platform_long.stall_timeout_seconds' => 1,
+            'toolkit.runner.commands.platform_long.heartbeat_interval_seconds' => 1,
+            'toolkit.runner.commands.platform_long.cancellation_grace_seconds' => 1,
+        ]);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $heartbeats = 0;
+        $result = app(RegisteredCommandRunner::class)->run($execution, 'platform_long', onHeartbeat: function () use (&$heartbeats): void {
+            $heartbeats++;
+        });
+        $this->assertTrue($result->timedOut);
+        $this->assertSame(124, $result->exitCode);
+        $this->assertGreaterThan(0, $heartbeats);
+        $this->assertFalse($this->processIsExecuting((int) $result->processId));
+    }
+
+    public function test_startup_timeout_stops_its_owned_child_before_a_process_group_exists(): void
+    {
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $workspaces = app(ExecutionWorkspaceManager::class);
+        $pidPath = $workspaces->resolve($execution, 'state', 'startup-child.pid');
+        $wrapper = $workspaces->writeAtomic($execution, 'tools', 'delayed-session.sh', "#!/bin/sh\nexec ".escapeshellarg(PHP_BINARY)
+            .' -r '.escapeshellarg('file_put_contents($argv[1], (string) getmypid()); pcntl_async_signals(true); pcntl_signal(SIGTERM, SIG_IGN); sleep(5);')
+            .' '.escapeshellarg($pidPath)."\n");
+        chmod($wrapper, 0700);
+        config(['toolkit.runner.session_wrapper' => $wrapper,
+            'toolkit.runner.commands.platform_long.startup_timeout_seconds' => 1,
+            'toolkit.runner.commands.platform_long.cancellation_grace_seconds' => 1]);
+        $started = false;
+        $startedAt = microtime(true);
+        try {
+            app(RegisteredCommandRunner::class)->run($execution, 'platform_long', onStarted: function () use (&$started): void {
+                $started = true;
+            });
+            $this->fail('Startup without a ready identity must fail closed.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('no confirmó el arranque', $exception->getMessage());
+        }
+        $this->assertLessThan(4, microtime(true) - $startedAt, 'Startup failure must not wait for an ungrouped child to finish.');
+        $this->assertFalse($started);
+        $this->assertFileExists($pidPath);
+        $this->assertFalse($this->processIsExecuting((int) file_get_contents($pidPath)));
+    }
+
+    public function test_time_and_resource_policy_cannot_change_under_an_idempotency_key(): void
+    {
+        Queue::fake();
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $coordinator = app(RemoteOperationCoordinator::class);
+        $operation = $coordinator->schedule($execution, 'policy-identity', 'platform_long');
+        $this->assertSame(15, $operation->evidence['execution_policy']['wall_timeout_seconds']);
+        config(['toolkit.runner.commands.platform_long.wall_timeout_seconds' => null]);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('otro comando');
+        $coordinator->schedule($execution, 'policy-identity', 'platform_long');
+    }
+
     public function test_launch_job_is_short_and_returns_while_the_process_group_keeps_running(): void
     {
         $this->assertLessThanOrEqual(120, (new RunRegisteredRemoteOperation(1, 'platform_long', [], ''))->timeout);
@@ -292,6 +452,13 @@ class RegisteredCommandRunnerTest extends TestCase
 
         $operation->refresh();
         $this->assertLessThan(4.5, $elapsed, 'Laravel must release its worker before the registered process finishes.');
+        // /proc can be temporarily unreadable while the identity-preserving
+        // entrypoint execs the target. Reconcile that same operation; never launch again.
+        $deadline = microtime(true) + 3;
+        while ($operation->functional_state->value !== 'RUNNING' && microtime(true) < $deadline) {
+            usleep(50000);
+            $operation = app(RemoteOperationCoordinator::class)->reconcile($operation);
+        }
         $this->assertSame('RUNNING', $operation->functional_state->value);
         $this->assertTrue(app(LocalProcessInspector::class)->isRunning($operation));
         $this->assertSame('TERMINATED', $this->waitForTerminal($operation, 15)->communication_state->value);
@@ -505,6 +672,40 @@ class RegisteredCommandRunnerTest extends TestCase
             }
             proc_close($process);
         }
+    }
+
+    public function test_capacity_consumed_by_a_running_tool_stops_its_group_and_preserves_real_exit_evidence(): void
+    {
+        config(['queue.default' => 'sync', 'toolkit.runner.host_id' => gethostname() ?: 'local']);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution);
+        $coordinator = app(RemoteOperationCoordinator::class);
+        $operation = $coordinator->schedule($execution, 'capacity-consumed', 'platform_long');
+        $deadline = microtime(true) + 10;
+        do {
+            usleep(50000);
+            $operation->refresh();
+        } while ($operation->process_id === null && microtime(true) < $deadline);
+        $this->assertTrue(app(LocalProcessInspector::class)->isRunning($operation));
+        $path = app(ExecutionWorkspaceManager::class)->resolve($execution, 'temporary', 'tool-consumption');
+        $handle = fopen($path, 'xb');
+        $this->assertNotFalse($handle);
+        try {
+            $this->assertTrue(ftruncate($handle, 64 * 1024 * 1024));
+        } finally {
+            fclose($handle);
+        }
+        $operation = $this->waitForTerminal($operation, 20);
+        $this->assertSame('FAILED', $operation->functional_state->value);
+        $this->assertSame(125, $operation->exit_code);
+        $this->assertTrue($operation->evidence['exit_evidence']['resource_limit_exceeded']);
+        $deadline = microtime(true) + 5;
+        do {
+            usleep(50000);
+        } while (! $coordinator->verifyTerminalEvidence($operation) && microtime(true) < $deadline);
+        $this->assertTrue($coordinator->verifyTerminalEvidence($operation));
+        $this->assertFalse(app(LocalProcessInspector::class)->hasActiveProcessGroup($operation));
+        $this->assertFileExists(app(ExecutionWorkspaceManager::class)->operationEvidencePath($execution, $operation->operation_uuid, 'exit.json'));
     }
 
     private function approveCapacity(Execution $execution): void

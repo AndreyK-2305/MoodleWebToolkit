@@ -30,6 +30,7 @@ use LogicException;
  * @property int|null $created_by
  * @property int|null $finalized_by
  * @property int|null $resumed_from_execution_id
+ * @property int|null $retried_from_execution_id
  * @property int|null $resume_checkpoint_id
  * @property CarbonImmutable|null $cancel_requested_at
  * @property CarbonImmutable|null $started_at
@@ -57,6 +58,7 @@ class Execution extends Model
         'created_by',
         'finalized_by',
         'resumed_from_execution_id',
+        'retried_from_execution_id',
         'resume_checkpoint_id',
         'cancel_requested_at',
         'started_at',
@@ -79,6 +81,9 @@ class Execution extends Model
 
             if ($hadResumeLineage && $execution->isDirty(['resumed_from_execution_id', 'resume_checkpoint_id'])) {
                 throw new LogicException('El linaje de reanudación es inmutable una vez asignado.');
+            }
+            if ($execution->getRawOriginal('retried_from_execution_id') !== null && $execution->isDirty('retried_from_execution_id')) {
+                throw new LogicException('El linaje del nuevo intento es inmutable.');
             }
 
             if (! $execution->isDirty('status')) {

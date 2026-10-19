@@ -333,18 +333,24 @@ class StreamingCommandRunnerTest extends TestCase
         $execution = $this->approvedExecution($quota);
         $manager = app(ExecutionWorkspaceManager::class);
         $pid = null;
-        try {
-            app(RegisteredCommandRunner::class)->run($execution, 'platform_streaming', ['scenario' => 'burst'], operationUuid: (string) Str::uuid(),
-                onStarted: function (int $processId) use ($execution, $manager, $quota, &$pid): void {
-                    $pid = $processId;
-                    $manager->writeAtomic($execution, 'output', 'competing-write.bin', str_repeat('x', $quota - $manager->measure($execution) - 32));
-                },
-            );
-            $this->fail('Loss of approved capacity must block persistence.');
-        } catch (RuntimeException $exception) {
-            $this->assertStringContainsString('capacidad aprobada', $exception->getMessage());
-            $this->assertNotNull($pid);
-            $this->assertFalse(is_file('/proc/'.$pid.'/stat'));
+        $uuid = (string) Str::uuid();
+        $result = app(RegisteredCommandRunner::class)->run($execution, 'platform_streaming', ['scenario' => 'burst'], operationUuid: $uuid,
+            onStarted: function (int $processId) use ($execution, $manager, $quota, &$pid): void {
+                $pid = $processId;
+                $manager->writeAtomic($execution, 'output', 'competing-write.bin', str_repeat('x', $quota - $manager->measure($execution) - 32));
+            },
+        );
+        $this->assertNotNull($pid);
+        $this->assertFalse(is_file('/proc/'.$pid.'/stat'));
+        $this->assertFalse($result->successful());
+        $this->assertTrue($result->resourceLimitExceeded);
+        $this->assertSame(125, $result->exitCode);
+        $this->assertSame(0, $result->stdoutPersistedBytes);
+        $this->assertSame(0, $result->stderrPersistedBytes);
+        foreach (['stdout', 'stderr'] as $stream) {
+            $path = $manager->operationLogPath($execution, $uuid, $stream);
+            $this->assertSame('', file_get_contents($path));
+            $this->assertSame(hash_file('sha256', $path), $stream === 'stdout' ? $result->stdoutSha256 : $result->stderrSha256);
         }
     }
 

@@ -1,9 +1,20 @@
+param([switch] $IncludePlaywright)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $services = @('app', 'queue-worker', 'tool-runner', 'scheduler', 'reverb', 'vite', 'nginx')
+if ($IncludePlaywright) { $services += 'playwright' }
 $baselineDirectory = '/var/www/html/BaseLine'
 $probe = "$baselineDirectory/.readonly-probe"
+
+function Get-ProbeArguments {
+    param([string] $Service, [string] $Command)
+    if ($Service -eq 'playwright') {
+        return @('--profile', 'e2e', 'run', '--rm', '--no-deps', '--entrypoint', 'sh', 'playwright', '-c', $Command)
+    }
+    return @('exec', '-T', $Service, 'sh', '-c', $Command)
+}
 
 function Invoke-DockerCompose {
     param(
@@ -28,37 +39,16 @@ if (Test-Path -LiteralPath 'BaseLine/.readonly-probe') {
 }
 
 foreach ($service in $services) {
-    $accessCheck = Invoke-DockerCompose -Arguments @(
-        'exec',
-        '-T',
-        $service,
-        'sh',
-        '-c',
-        "command -v touch >/dev/null && test -d '$baselineDirectory' && test -r '$baselineDirectory' && printf baseline-access-ok"
-    )
+    $accessCheck = Invoke-DockerCompose -Arguments (Get-ProbeArguments $service "command -v touch >/dev/null && test -d '$baselineDirectory' && test -r '$baselineDirectory' && printf baseline-access-ok")
 
     if ($accessCheck.ExitCode -ne 0 -or ($accessCheck.Output -join '') -notmatch 'baseline-access-ok') {
         throw "No se puede ejecutar comandos o acceder a BaseLine desde el servicio [$service]."
     }
 
-    $writeCheck = Invoke-DockerCompose -Arguments @(
-        'exec',
-        '-T',
-        $service,
-        'sh',
-        '-c',
-        "touch '$probe'"
-    )
+    $writeCheck = Invoke-DockerCompose -Arguments (Get-ProbeArguments $service "touch '$probe'")
 
     if ($writeCheck.ExitCode -eq 0) {
-        Invoke-DockerCompose -Arguments @(
-            'exec',
-            '-T',
-            $service,
-            'sh',
-            '-c',
-            "rm -f '$probe'"
-        ) | Out-Null
+        Invoke-DockerCompose -Arguments (Get-ProbeArguments $service "rm -f '$probe'") | Out-Null
 
         throw "BaseLine admite escritura desde el servicio [$service]."
     }
@@ -67,14 +57,7 @@ foreach ($service in $services) {
         throw "La escritura falló por un motivo distinto a un sistema de archivos read-only en [$service]: $($writeCheck.Output -join ' ')"
     }
 
-    $postCheck = Invoke-DockerCompose -Arguments @(
-        'exec',
-        '-T',
-        $service,
-        'sh',
-        '-c',
-        "test -d '$baselineDirectory' && printf baseline-access-ok"
-    )
+    $postCheck = Invoke-DockerCompose -Arguments (Get-ProbeArguments $service "test -d '$baselineDirectory' && printf baseline-access-ok")
 
     if ($postCheck.ExitCode -ne 0 -or ($postCheck.Output -join '') -notmatch 'baseline-access-ok') {
         throw "El servicio [$service] dejó de responder durante la prueba."

@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Collector\CollectorConfiguration;
+use App\Domain\Collector\LabMoodleProfiles;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Projects\SimulatedUrlSafety;
 use App\Enums\ProjectStatus;
@@ -86,7 +88,13 @@ class ProjectController extends Controller
         $settings = $wizard->settings($configuration);
         $latestExecution = $project->executions()->latest('attempt')->first();
 
-        return Inertia::render('projects/show', [
+        $laboratory = app(CollectorConfiguration::class)->selected($configuration);
+
+        return Inertia::render($laboratory ? 'projects/collector' : 'projects/show', [
+            'collectorLab' => [
+                'enabled' => $project->type === ProjectType::COLLECT && (bool) config('toolkit.features.recolector_742.enabled') && (bool) config('toolkit.features.local_runner.enabled'),
+                'profiles' => app(LabMoodleProfiles::class)->choices(),
+            ],
             'project' => [
                 'uuid' => $project->uuid,
                 'name' => $project->name,

@@ -7,6 +7,7 @@ use App\Domain\Workspaces\ApproveExecutionCapacity;
 use App\Domain\Workspaces\ExecutionWorkspaceManager;
 use App\Enums\ExecutionStatus;
 use App\Exceptions\ToolOperationBlocked;
+use App\Exceptions\WorkspaceCapacityExceeded;
 use App\Models\Execution;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
@@ -146,6 +147,29 @@ class ExecutionWorkspaceManagerTest extends DomainTestCase
         $this->assertFileDoesNotExist($alias);
         $this->assertSame(str_repeat('x', 128), $disk->get($stored->path));
         $this->assertSame($stored->checksum, hash_file('sha256', $disk->path($stored->path)));
+    }
+
+    public function test_only_bounded_operation_proof_can_be_written_after_a_tool_exceeds_the_quota(): void
+    {
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution, 1024);
+        $manager = app(ExecutionWorkspaceManager::class);
+        $foreignWrite = $manager->resolve($execution, 'temporary', 'tool-consumption');
+        file_put_contents($foreignWrite, str_repeat('x', 2048));
+        $operation = (string) Str::uuid();
+        $proof = ['operation_uuid' => $operation, 'exit_code' => 125];
+        $path = $manager->writeOperationEvidence($execution, $operation, 'exit.json', $proof);
+        $this->assertSame($proof, json_decode(file_get_contents($path), true));
+        $this->assertSame('FAILED', $execution->workspace()->sole()->status->value);
+        try {
+            $manager->writeState($execution, 'arbitrary.json', ['result' => 'must not bypass quota']);
+            $this->fail('Generic state bypassed the quota.');
+        } catch (WorkspaceCapacityExceeded) {
+            $this->assertFileDoesNotExist($manager->resolve($execution, 'state', 'arbitrary.json'));
+        }
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('reserva durable');
+        $manager->writeOperationEvidence($execution, (string) Str::uuid(), 'exit.json', ['oversized' => str_repeat('x', 16384)]);
     }
 
     private function approveCapacity(Execution $execution, int $bytes): void

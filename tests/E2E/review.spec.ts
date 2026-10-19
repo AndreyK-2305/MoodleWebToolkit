@@ -16,6 +16,8 @@ test('review rechaza ciclos, conserva formulario y permite validar cambios opcio
     page,
     password,
 }) => {
+    // Two bounded queue drains plus proposal editing can exceed one minute.
+    test.setTimeout(90_000);
     await login(page, password);
     const project = ready();
     const execution = await start(page, project);

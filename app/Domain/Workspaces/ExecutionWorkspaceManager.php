@@ -3,6 +3,7 @@
 namespace App\Domain\Workspaces;
 
 use App\Enums\WorkspaceStatus;
+use App\Exceptions\WorkspaceCapacityExceeded;
 use App\Models\Artifact;
 use App\Models\Execution;
 use App\Models\ExecutionCapacityApproval;
@@ -134,7 +135,7 @@ class ExecutionWorkspaceManager
             throw new RuntimeException("La evidencia inmutable [{$name}] ya existe y no se reemplazará.");
         }
 
-        return $this->writeAtomic($execution, 'state', 'remote-operations/'.$operationUuid.'/'.$name, $contents);
+        return $this->writeAtomicInternal($execution, 'state', 'remote-operations/'.$operationUuid.'/'.$name, $contents, true);
     }
 
     public function operationEvidencePath(Execution $execution, string $operationUuid, string $name): string
@@ -163,13 +164,27 @@ class ExecutionWorkspaceManager
 
     public function writeAtomic(Execution $execution, string $area, string $relativePath, string $contents): string
     {
+        return $this->writeAtomicInternal($execution, $area, $relativePath, $contents);
+    }
+
+    private function writeAtomicInternal(Execution $execution, string $area, string $relativePath, string $contents, bool $operationEvidence = false): string
+    {
         $lock = $this->acquireCapacityLock($execution);
         $temporary = null;
         $handle = null;
         try {
             $target = $this->resolve($execution, $area, $relativePath);
             $this->ensureDirectory(dirname($target));
-            $this->assertWithinQuota($execution, strlen($contents));
+            if ($operationEvidence) {
+                // A tool may exceed the application quota before the periodic
+                // measurement. Keep a bounded reserve for genuine process proof.
+                $evidenceRoot = $this->resolve($execution, 'state', 'remote-operations');
+                if (strlen($contents) > 16384 || $this->directoryBytes($evidenceRoot) + strlen($contents) > self::DURABLE_EVIDENCE_RESERVE_BYTES) {
+                    throw new RuntimeException('La evidencia excede su reserva durable acotada.');
+                }
+            } else {
+                $this->assertWithinQuota($execution, strlen($contents));
+            }
             $temporary = $target.'.tmp-'.Str::uuid();
             $handle = fopen($temporary, 'xb');
             if ($handle === false) {
@@ -204,7 +219,13 @@ class ExecutionWorkspaceManager
                 fclose($directoryHandle);
             }
 
-            $this->measure($execution);
+            try {
+                $this->measure($execution);
+            } catch (WorkspaceCapacityExceeded $exception) {
+                if (! $operationEvidence) {
+                    throw $exception;
+                }
+            }
 
             return $target;
         } finally {
@@ -228,7 +249,7 @@ class ExecutionWorkspaceManager
 
         if ($usage > $workspace->quota_bytes) {
             $workspace->forceFill(['usage_bytes' => $usage, 'last_measured_at' => now()->utc(), 'status' => WorkspaceStatus::FAILED])->save();
-            throw new RuntimeException('El workspace excedió su cuota configurada.');
+            throw new WorkspaceCapacityExceeded('El workspace excedió su cuota configurada.');
         }
 
         $workspace->forceFill(['usage_bytes' => $usage, 'last_measured_at' => now()->utc()])->save();
@@ -257,7 +278,7 @@ class ExecutionWorkspaceManager
         try {
             $workspace = $this->prepare($execution);
             if ($this->measure($execution) + strlen($sanitized) + self::DURABLE_EVIDENCE_RESERVE_BYTES > $workspace->quota_bytes) {
-                throw new RuntimeException('La capacidad aprobada ya no permite persistir el log y su evidencia.');
+                throw new WorkspaceCapacityExceeded('La capacidad aprobada ya no permite persistir el log y su evidencia.');
             }
             $offset = 0;
             while ($offset < strlen($sanitized)) {
@@ -311,7 +332,7 @@ class ExecutionWorkspaceManager
             throw new RuntimeException('No se permiten enlaces simbólicos en el árbol de workspaces.');
         }
 
-        if (is_dir($path) === false && mkdir($path, 0700, true) === false && is_dir($path) === false) {
+        if (is_dir($path) === false && @mkdir($path, 0700, true) === false && is_dir($path) === false) {
             throw new RuntimeException('No se pudo crear un directorio privado de workspace.');
         }
 
