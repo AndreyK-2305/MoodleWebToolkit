@@ -16,6 +16,8 @@ import { useEffect, useState } from 'react';
 import InputError from '@/components/input-error';
 import CollectorConfigurationForm from '@/components/collector-configuration-form';
 import type { CollectorLab } from '@/components/collector-configuration-form';
+import RemoteAccessPanel from '@/components/remote-access-panel';
+import type { RemoteAccess } from '@/components/remote-access-panel';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -92,6 +94,7 @@ type Props = {
     collectorLab?: CollectorLab;
     project: ProjectData;
     projectTypes: { value: ProjectType; label: string }[];
+    remoteAccess?: RemoteAccess;
 };
 
 const steps = [
@@ -159,6 +162,7 @@ export default function ProjectShow({
     project,
     projectTypes,
     collectorLab,
+    remoteAccess,
 }: Props) {
     const [activeStep, setActiveStep] = useState(project.current_step);
 
@@ -212,16 +216,24 @@ export default function ProjectShow({
                     )}
                 </div>
 
-                <Alert className="border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30">
-                    <ShieldCheck className="text-amber-700 dark:text-amber-400" />
-                    <AlertTitle>Entorno completamente simulado</AlertTitle>
-                    <AlertDescription>
-                        No se realizan conexiones SSH/SFTP, no se solicitan
-                        secretos. Confirmar sólo deja el proyecto listo; el
-                        inicio asíncrono es una acción posterior e
-                        independiente.
-                    </AlertDescription>
-                </Alert>
+                {remoteAccess?.enabled ? (
+                    <RemoteAccessPanel
+                        projectUuid={project.uuid}
+                        access={remoteAccess}
+                        editable={project.can_edit}
+                    />
+                ) : (
+                    <Alert className="border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30">
+                        <ShieldCheck className="text-amber-700 dark:text-amber-400" />
+                        <AlertTitle>Entorno completamente simulado</AlertTitle>
+                        <AlertDescription>
+                            No se realizan conexiones SSH/SFTP, no se solicitan
+                            secretos. Confirmar sólo deja el proyecto listo; el
+                            inicio asíncrono es una acción posterior e
+                            independiente.
+                        </AlertDescription>
+                    </Alert>
+                )}
 
                 <nav
                     aria-label="Pasos del wizard"
