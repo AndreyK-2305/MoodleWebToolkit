@@ -98,5 +98,21 @@ docker compose --profile tools run --rm --no-deps -T php sh -c '
     exit "$status"
 '
 
+CURRENT=source-profile; stage "$CURRENT"
+# Administrator-owned profile that mwt-agent reads for collector.742. The
+# platform only names it ("synthetic-lab"); paths never come from the web.
+install -d -m 0755 -o root -g root /etc/mwt-agent /etc/mwt-agent/sources
+cat >/etc/mwt-agent/sources/synthetic-lab.conf <<'CONF'
+# Synthetic Moodle source for the EC2 laboratory (docker/collector-lab-ec2).
+MOODLE_CONFIG=/opt/moodle-lab/code/config.php
+RUNTIME=compose
+RUN_AS=www-data
+COMPOSE_DIR=/opt/moodle-lab/runtime
+COMPOSE_SERVICE=php
+COMPOSE_PROFILE=tools
+CONF
+chown root:root /etc/mwt-agent/sources/synthetic-lab.conf
+chmod 0644 /etc/mwt-agent/sources/synthetic-lab.conf
+
 CURRENT=done; stage "$CURRENT"
 echo 'SYNTHETIC_MOODLE_EC2_READY'
