@@ -7,8 +7,8 @@ plataforma ya alcanza la EC2 por SSM y mantiene operaciones durables con `mwt-ag
 
 | Corte | Alcance                                                                                                               | Estado    |
 | ----- | --------------------------------------------------------------------------------------------------------------------- | --------- |
-| C0    | Moodle sintético 4.5.10 en la EC2 de laboratorio, como origen de prueba                                               | Este PR   |
-| C1    | Distribución del Recolector 7.4.2 en la EC2, verificada por hash, y operación `collector.742` registrada en el agente | Pendiente |
+| C0    | Moodle sintético 4.5.10 en la EC2 de laboratorio, como origen de prueba                                               | PR #17    |
+| C1    | Distribución del Recolector 7.4.2 en la EC2, verificada por hash, y operación `collector.742` registrada en el agente | Este PR   |
 | C2    | Configuración no interactiva desde la plataforma y exportación bajo systemd con progreso real                         | Pendiente |
 | C3    | Subida del ZIP y su `.sha256` a S3 con el rol de la instancia y registro del `SourcePackage` por referencia           | Pendiente |
 
@@ -49,8 +49,72 @@ Instancia `t3.medium`, Ubuntu 26.04, `us-east-2`.
 | Base         | `healthy`, solo en `127.0.0.1:5432`                                                    |
 | Permisos     | `config.php` `root:www-data 640`; moodledata `www-data 700`; secreto de la base `0400` |
 
+## C1: distribución del Recolector en la EC2
+
+### Despliegue verificado
+
+`RemoteToolDeployer` toma una distribución del catálogo y la verifica localmente con
+`ToolDistributionVerifier`. Después la empaqueta y la envía en fragmentos base64 de 16 KiB
+al área de staging del agente. Por último, la instala con el subcomando nuevo
+`tool-commit`, que:
+
+1. comprueba el SHA-256 del paquete;
+2. rechaza miembros con `/` inicial o `..`;
+3. extrae en un directorio temporal y rechaza enlaces y archivos especiales;
+4. recalcula el **hash canónico del árbol** con el mismo algoritmo que la plataforma
+   (filas `ruta` + NUL + `sha256` ordenadas por bytes y unidas por saltos de línea);
+5. solo si coincide con el catálogo, mueve el árbol a
+   `/opt/mwt-agent/tools/<clave>/<sha>`.
+
+Un segundo despliegue de la misma distribución se reconoce como `already_present`. Por
+ahora solo se despliegan distribuciones sin archivos excluidos ni mutables, porque esos
+cambiarían el hash. El Consolidador V8 necesitará su propio contrato en la etapa D.
+
+### Operación `collector.742`
+
+Registrada en el agente 1.1.0 y en `RemoteCommandRegistry`. Sus parámetros son solo
+identificadores: `distribution` (hash), `source` (perfil), `package` (nombre sin extensión)
+y `workers` (`auto` o 1–4). **Ninguna ruta viaja desde la plataforma.**
+
+- La ruta de `config.php`, el usuario y el runtime de PHP salen de un **perfil de origen**
+  que escribe el administrador del servidor: `/etc/mwt-agent/sources/<id>.conf`, de root,
+  sin escritura para grupo ni otros. Solo admite claves conocidas y rutas sin `..`.
+- Antes de cada lanzamiento, el agente vuelve a verificar el hash del árbol instalado:
+  un árbol modificado nunca se ejecuta (`tool_hash_mismatch`).
+- El área de trabajo (`ops/<uuid>/work/{output,tmp}`) se entrega al usuario del perfil.
+  Los directorios de estado quedan en `0711`: se pueden atravesar, pero no listar.
+- Runtime `native` (`runuser` con el usuario del perfil) o `compose` (el contenedor PHP del
+  origen, con la herramienta montada como solo lectura y el área de trabajo en la misma
+  ruta).
+
+El subcomando `source-check` confirma que el perfil puede ejecutar el Recolector: versión
+de PHP, extensiones Zip y DOM, y que `config.php` se pueda leer en ese runtime. La
+plataforma (`CheckRemoteSource`) lo considera listo con PHP 8.1–8.3. El resultado no
+incluye rutas.
+
+```bash
+php artisan remote:tool deploy <server_uuid>
+php artisan remote:tool status <server_uuid>
+php artisan remote:tool source-check <server_uuid> --source=synthetic-lab
+```
+
+### Verificación en la EC2 (2026-10-20)
+
+| Paso                     | Resultado                                                                           |
+| ------------------------ | ----------------------------------------------------------------------------------- |
+| Agente                   | 1.1.0 instalado y verificado por SHA-256 en 19 s                                    |
+| Prueba de conexión       | `VALID`                                                                             |
+| Despliegue               | 8 fragmentos por SSM en 27,6 s                                                      |
+| Estado de la herramienta | Hash del árbol en la EC2 `4daaa16…` = catálogo; 29 archivos; 0 enlaces o especiales |
+| Perfil `synthetic-lab`   | Listo: runtime compose como `www-data`, Zip y DOM, `config.php` legible             |
+
+`provision.sh` crea ahora el perfil `synthetic-lab` para el origen sintético de C0.
+
 ## Límites
 
 - Es un origen sintético pequeño: no prueba volumen, archivos grandes ni plugins de
   terceros. Una copia institucional pequeña (por ejemplo, Pregrado) queda para después de C3.
-- El Recolector todavía no se ha ejecutado en la EC2 (C1–C2).
+- El Recolector ya está desplegado y verificado, pero todavía no se ha lanzado una
+  exportación real en la EC2 (C2).
+- Los fragmentos de un despliegue interrumpido quedan en el staging del agente hasta el
+  siguiente intento; todavía no hay una limpieza periódica.
