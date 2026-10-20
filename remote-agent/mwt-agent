@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.2.0"
+readonly AGENT_VERSION="1.3.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -250,6 +250,17 @@ registered_argv() {
                 collector-prepare "$OP_DIR" "$SRC_RUN_AS" "$work" "${SRC_EXEC[@]}"
                 bash "$tool/EXPORTAR-ORIGEN.sh" "--workers=${params[workers]}" "--output-dir=$work/output" "--temp-dir=$work/tmp"
                 "${params[package]}.zip" "$SRC_MOODLE_CONFIG")
+            ;;
+        package.upload)
+            [[ ${#params[@]} == 4 && ${params[collector]:-} =~ $UUID_RE && ${params[project]:-} =~ $UUID_RE
+                && ${params[bucket]:-} =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && ${params[region]:-} =~ ^[a-z]{2}(-gov)?-[a-z]+-[1-9]$ ]] || fail invalid_parameter
+            command -v aws >/dev/null 2>&1 || fail aws_cli_unavailable
+            # Fails closed here, before any process exists, if the export is not a sealed success.
+            # collector_package points OP_DIR at the export; keep this operation's own directory.
+            local upload_dir=$OP_DIR
+            collector_package "${params[collector]}"
+            OP_DIR=$upload_dir
+            REGISTERED_ARGV=(bash "$SELF_PATH" __package-upload "${params[collector]}" "${params[project]}" "${params[bucket]}" "${params[region]}" "$upload_dir")
             ;;
         *)
             fail unregistered_command
@@ -524,6 +535,82 @@ cmd_source_check() {
     respond_ok source-check "$(printf '{"source":"%s","runtime":"%s","run_as":"%s","php_version":"%s","zip":%s,"dom":%s,"config_readable":%s}'         "$SRC_ID" "$SRC_RUNTIME" "$SRC_RUN_AS" "$php_version" "$(bool "$zip")" "$(bool "$dom")" "$(bool "$readable")")"
 }
 
+# Sets PKG_* for a finished collector.742 operation whose ZIP matches its sidecar.
+collector_package() {
+    local launch exit_file
+    require_operation "$1"
+    PKG_OP_DIR=$OP_DIR
+    launch="$PKG_OP_DIR/launch.json"
+    exit_file="$PKG_OP_DIR/exit.json"
+    [[ -f $launch ]] || fail collector_operation_not_found
+    [[ $(sed -n 's/.*"command_key":"\([^"]*\)".*/\1/p' "$launch") == collector.742 ]] || fail not_a_collector_operation
+    [[ -f $exit_file ]] && grep -q '"exit_code":0,' "$exit_file" || fail collector_not_succeeded
+    PKG_NAME=$(sed -n 's/.*"package":"\([a-z][a-z0-9_-]*\)".*/\1/p' "$launch")
+    PKG_SOURCE=$(sed -n 's/.*"source":"\([a-z0-9][a-z0-9-]*\)".*/\1/p' "$launch")
+    PKG_TOOL_SHA=$(sed -n 's/.*"distribution":"\([0-9a-f]\{64\}\)".*/\1/p' "$launch")
+    [[ -n $PKG_NAME && -n $PKG_SOURCE && -n $PKG_TOOL_SHA ]] || fail launch_evidence_invalid
+    PKG_OUTPUT="$PKG_OP_DIR/work/output"
+    PKG_ZIP="$PKG_OUTPUT/$PKG_NAME.zip"
+    PKG_SIDECAR="$PKG_ZIP.sha256"
+    [[ -f $PKG_ZIP && ! -L $PKG_ZIP && -f $PKG_SIDECAR && ! -L $PKG_SIDECAR ]] || fail package_not_found
+    PKG_SHA=$(head -n 1 "$PKG_SIDECAR" | cut -c1-64)
+    [[ $PKG_SHA =~ $SHA_RE && $(head -n 1 "$PKG_SIDECAR") == "$PKG_SHA  $PKG_NAME.zip" ]] || fail sidecar_invalid
+}
+
+# Internal step of package.upload, run by systemd. Re-verifies the package, audits
+# it with the deployed validator in the source runtime, extracts the manifest and
+# uploads the four objects with the instance's own credentials.
+cmd_package_upload_internal() {
+    local collector=$1 project=$2 bucket=$3 region=$4 op_dir=$5 tool audit actual size prefix
+    [[ $collector =~ $UUID_RE && $project =~ $UUID_RE && $bucket =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && $op_dir == "$OPS_DIR/"* ]] || exit 40
+    collector_package "$collector" >/dev/null
+    actual=$(sha256sum "$PKG_ZIP" | cut -c1-64)
+    [[ $actual == "$PKG_SHA" ]] || { echo "PACKAGE_HASH_MISMATCH" >&2; exit 41; }
+    size=$(stat -c %s "$PKG_ZIP")
+    tool="$TOOLS_DIR/$COLLECTOR_TOOL_KEY/$PKG_TOOL_SHA"
+    [[ $(tree_hash "$tool") == "$PKG_TOOL_SHA" ]] || { echo "TOOL_HASH_MISMATCH" >&2; exit 42; }
+    load_source "$PKG_SOURCE" >/dev/null
+    audit="$op_dir/work/audit"
+    chmod 0711 "$op_dir"
+    install -d -o "$SRC_RUN_AS" -g "$SRC_RUN_AS" -m 0700 "$op_dir/work" "$audit"
+    source_exec "$tool:ro" "$PKG_OUTPUT:ro" "$audit"
+    "${SRC_EXEC[@]}" php "$tool/scripts/validate-package.php" "--zip=$PKG_ZIP" "--sidecar=$PKG_SIDECAR" "--report=$audit/validation.json" \
+        || { echo "PACKAGE_VALIDATION_FAILED" >&2; exit 43; }
+    grep -Eq '"result": ?"ok"' "$audit/validation.json" || { echo "PACKAGE_VALIDATION_FAILED" >&2; exit 43; }
+    # shellcheck disable=SC2016
+    "${SRC_EXEC[@]}" php -r '$zip = new ZipArchive; if ($zip->open($argv[1], ZipArchive::RDONLY) !== true) exit(2);
+        $manifest = $zip->getFromName("manifest.json", 1048577); if (!is_string($manifest) || strlen($manifest) > 1048576) exit(3);
+        exit(file_put_contents($argv[2], $manifest) === strlen($manifest) ? 0 : 4);' "$PKG_ZIP" "$audit/manifest.json" \
+        || { echo "MANIFEST_UNAVAILABLE" >&2; exit 44; }
+    prefix="mwt/$project/$PKG_SOURCE/$PKG_SHA"
+    aws s3 cp "$PKG_ZIP" "s3://$bucket/$prefix.zip" --region "$region" --only-show-errors --sse AES256 \
+        --checksum-algorithm SHA256 --metadata "mwt-sha256=$PKG_SHA,mwt-source=$PKG_SOURCE,mwt-project=$project" \
+        || { echo "UPLOAD_FAILED" >&2; exit 45; }
+    local object source_file
+    for object in zip.sha256 manifest.json validation.json; do
+        case $object in
+            zip.sha256) source_file=$PKG_SIDECAR ;;
+            manifest.json) source_file=$audit/manifest.json ;;
+            validation.json) source_file=$audit/validation.json ;;
+        esac
+        aws s3 cp "$source_file" "s3://$bucket/$prefix.$object" --region "$region" --only-show-errors --sse AES256 \
+            --checksum-algorithm SHA256 --metadata "mwt-sha256=$(sha256sum "$source_file" | cut -c1-64)" \
+            || { echo "UPLOAD_FAILED" >&2; exit 45; }
+    done
+    write_atomic "$op_dir/work/result.json" "$(printf '{"bucket":"%s","region":"%s","prefix":"%s","package":"%s","source":"%s","sha256":"%s","size":%s,"manifest_sha256":"%s","validation_sha256":"%s","uploaded_at":"%s"}' \
+        "$bucket" "$region" "$prefix" "$PKG_NAME" "$PKG_SOURCE" "$PKG_SHA" "$size" \
+        "$(sha256sum "$audit/manifest.json" | cut -c1-64)" "$(sha256sum "$audit/validation.json" | cut -c1-64)" "$(now_utc)")"
+    echo "UPLOAD_OK"
+}
+
+cmd_upload_report() {
+    (($# == 1)) || fail invalid_arguments
+    require_operation "$1"
+    [[ -f $OP_DIR/launch.json ]] || fail operation_not_found 4
+    [[ $(sed -n 's/.*"command_key":"\([^"]*\)".*/\1/p' "$OP_DIR/launch.json") == package.upload ]] || fail not_an_upload_operation
+    respond_ok upload-report "{\"operation_uuid\":\"$1\",\"result_base64\":$(encode_document "$OP_DIR/work/result.json")}"
+}
+
 # Bounded base64 of a structured document, "too_large" or null when absent.
 encode_document() {
     if [[ -f $1 && ! -L $1 ]]; then
@@ -578,6 +665,8 @@ case $COMMAND in
     tool-commit) cmd_tool_commit "$@" ;;
     source-check) cmd_source_check "$@" ;;
     collector-report) cmd_collector_report "$@" ;;
+    upload-report) cmd_upload_report "$@" ;;
+    __package-upload) (($# == 5)) || exit 40; cmd_package_upload_internal "$@" ;;
     __run) (($# == 1)) || exit 3; cmd_run "$1" ;;
     *) fail unknown_subcommand ;;
 esac

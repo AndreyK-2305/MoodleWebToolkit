@@ -23,6 +23,18 @@ if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>
 fi
 systemctl enable --now docker >/dev/null 2>&1
 
+CURRENT=aws-cli; stage "$CURRENT"
+# package.upload uploads with the instance role through the AWS CLI. Recent Ubuntu
+# releases no longer package it in apt, so the official v2 installer is used.
+if ! command -v aws >/dev/null 2>&1; then
+    command -v unzip >/dev/null 2>&1 || apt-get install -y -qq unzip >/dev/null
+    installer=$(mktemp -d)
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "$installer/awscliv2.zip"
+    unzip -q "$installer/awscliv2.zip" -d "$installer"
+    "$installer/aws/install" >/dev/null
+    rm -rf "$installer"
+fi
+
 CURRENT=layout; stage "$CURRENT"
 install -d -m 0755 "$ROOT" "$ROOT/runtime"
 install -d -m 0700 -o 33 -g 33 "$ROOT/data"
