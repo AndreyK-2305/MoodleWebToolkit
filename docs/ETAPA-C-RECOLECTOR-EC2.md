@@ -9,8 +9,8 @@ plataforma ya alcanza la EC2 por SSM y mantiene operaciones durables con `mwt-ag
 | ----- | --------------------------------------------------------------------------------------------------------------------- | --------------- |
 | C0    | Moodle sintético 4.5.10 en la EC2 de laboratorio, como origen de prueba                                               | Fusionado (#17) |
 | C1    | Distribución del Recolector 7.4.2 en la EC2, verificada por hash, y operación `collector.742` registrada en el agente | Fusionado (#18) |
-| C2    | Configuración no interactiva desde la plataforma y exportación bajo systemd con progreso real                         | Este PR         |
-| C3    | Subida del ZIP y su `.sha256` a S3 con el rol de la instancia y registro del `SourcePackage` por referencia           | Pendiente       |
+| C2    | Configuración no interactiva desde la plataforma y exportación bajo systemd con progreso real                         | Fusionado (#19) |
+| C3    | Subida del ZIP y su `.sha256` a S3 con el rol de la instancia y registro del `SourcePackage` por referencia           | Este PR         |
 
 ## C0: origen sintético en la EC2
 
@@ -160,13 +160,87 @@ La exportación del origen sintético es tan corta que terminó antes de la prim
 observación: el progreso intermedio solo se comprobó con pruebas automáticas. Un origen
 más grande (por ejemplo, una copia de Pregrado) lo mostrará en vivo.
 
+## C3: paquete en S3 y `SourcePackage` por referencia
+
+### En el servidor de origen (agente 1.3.0, operación `package.upload`)
+
+Parámetros: `collector` (UUID de la exportación), `project` (UUID), `bucket`, `region`.
+Ninguna ruta viaja desde la plataforma.
+
+Antes de crear un proceso, el agente exige que la exportación haya terminado con código 0
+y que el sidecar sea válido. Luego, bajo systemd:
+
+1. recalcula el SHA-256 del ZIP y lo compara con el sidecar;
+2. vuelve a verificar el hash del árbol del Recolector;
+3. ejecuta `scripts/validate-package.php` de la distribución en el runtime del origen, con
+   el paquete montado como solo lectura;
+4. extrae `manifest.json` del ZIP;
+5. sube cuatro objetos con **el rol de la propia instancia** (solo escritura en `mwt/*`),
+   cifrados con SSE-S3, con `--checksum-algorithm SHA256` y metadato `mwt-sha256`, en
+   `mwt/<proyecto>/<perfil>/<sha256>.{zip, zip.sha256, manifest.json, validation.json}`.
+
+`upload-report` devuelve el resultado que escribió esa operación.
+
+### En la plataforma (`RemoteSourcePackagePublisher`)
+
+1. Comprueba que el resultado coincide con la exportación lista. El prefijo se calcula con
+   lo que la plataforma lanzó, nunca con la respuesta del servidor.
+2. Con **su propia identidad**, verifica el ZIP en S3: tamaño, metadato `mwt-sha256` y, si S3
+   guarda un SHA-256 de objeto completo, que sea igual al del paquete.
+3. Lee de S3 el manifiesto y el reporte, verificando cada uno por su hash.
+4. Reconoce el manifiesto con `CollectorPackageMetadata` y exige reporte `ok`, sin fallos,
+   con el mismo SHA-256 y tamaño.
+5. Construye la auditoría `collector-remote-audit.v1` y crea el `Artifact`
+   (`storage_mode=REFERENCE`, `disk=s3`).
+6. Registra y valida el `SourcePackage` (flujo `moodle.source.export`, `CONFIDENTIAL`).
+
+`SourcePackageRegistry` tiene ahora una rama remota. Exige la evidencia de salida del agente
+y el paquete listo con el mismo SHA-256, y valida contra S3 en vez de leer un archivo local.
+La rama local no cambia.
+
+Una subida activa o exitosa se reutiliza. Una fallida permite un nuevo intento con su
+propia identidad (`upload-<sha>-<n>`), sin repetir la exportación.
+
+**Permiso del rol `mwt-ssm-lab`** (política en línea `mwt-package-upload`):
+
+```json
+{
+    "Effect": "Allow",
+    "Action": [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+    ],
+    "Resource": "arn:aws:s3:::<bucket>/mwt/*"
+}
+```
+
+### Prueba en la EC2 y S3 reales (2026-10-20)
+
+| Paso                                          | Resultado                                                                                                                             |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Sin la política del rol                       | Validación `VALIDACION_OK` en el servidor; S3 rechazó `PutObject` (`AccessDenied`); operación `FAILED` (exit 45); **nada registrado** |
+| Con la política, nuevo intento sin reexportar | `SUCCEEDED`; registro y validación en 19 s                                                                                            |
+| `SourcePackage`                               | `aa5eed42-…`, **`VALID`**, origen `origen-ec2-lab`, 29 412 bytes, SHA-256 `ee6c6a27…f8ce9`                                            |
+| Artefacto                                     | `REFERENCE`, `s3`, `kevin-moodle-backups-2026/mwt/<proyecto>/synthetic-lab/<sha>.zip`                                                 |
+| Verificación de S3                            | `S3_FULL_OBJECT_SHA256`: el checksum de S3 coincide con el SHA-256 del paquete                                                        |
+| Auditoría                                     | 10/10 archivos verificados, 2 cursos cruzados con el manifiesto, 0 fallos, 0 advertencias                                             |
+| Comprobación independiente con el CLI         | Los 4 objetos presentes, `AES256`, checksum `FULL_OBJECT` igual al SHA-256 en base64                                                  |
+
+`provision.sh` instala ahora el AWS CLI v2 en el origen de laboratorio.
+
 ## Límites
 
 - Es un origen sintético pequeño: no prueba volumen, archivos grandes ni plugins de
   terceros. Una copia institucional pequeña (por ejemplo, Pregrado) queda para después de C3.
-- El paquete queda en el área de trabajo de la operación en la EC2. Subirlo a S3 y
-  registrar el `SourcePackage` es C3; la validación con `VALIDAR-PAQUETE.sh` todavía se hizo
-  fuera de la plataforma.
+- Las subidas grandes usan multipart: S3 guarda una suma compuesta por partes. La
+  plataforma lo registra como `S3_COMPOSITE_SHA256` y se apoya en el tamaño, el metadato y la
+  verificación previa en el servidor; solo los objetos de una parte comparan el SHA-256 completo.
+- El escaneo de la credencial de la base dentro del ZIP que hace el laboratorio local no se
+  repite en remoto, porque requiere leer `config.php`; se apoya en el validador de la
+  distribución.
+- Todavía no se descarga desde la web un paquete en S3, y la copia local de trabajo en la EC2
+  no se limpia sola.
 - La exportación remota aún no actualiza los estados de la `Execution` ni genera
   `ExecutionEvent`; su estado vive en la `RemoteOperation`.
 - Los fragmentos de un despliegue interrumpido quedan en el staging del agente hasta el
