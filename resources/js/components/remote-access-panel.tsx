@@ -57,6 +57,15 @@ export type RemoteServer = {
         started_at: string | null;
         terminated_at: string | null;
         last_observed_at: string | null;
+        collector: {
+            stage: string | null;
+            completed_courses: number | null;
+            total_courses: number | null;
+            failed_courses: number | null;
+            percent: number | null;
+            package_ready: boolean;
+            package_size: number | null;
+        } | null;
     }[];
 };
 export type RemoteAccess = {
@@ -536,6 +545,18 @@ function Operations({
                             <span className="text-muted-foreground text-xs">
                                 código {operation.exit_code}
                             </span>
+                        )}
+                        {operation.collector && (
+                            <span className="text-muted-foreground text-xs">
+                                {operation.collector.stage ?? 'sin etapa'}
+                                {operation.collector.total_courses !== null &&
+                                    ` · ${operation.collector.completed_courses ?? 0}/${operation.collector.total_courses} cursos`}
+                                {operation.collector.percent !== null &&
+                                    ` (${operation.collector.percent}%)`}
+                            </span>
+                        )}
+                        {operation.collector?.package_ready && (
+                            <Badge>Paquete listo</Badge>
                         )}
                         {operation.manual_intervention_required && (
                             <Badge variant="destructive">
