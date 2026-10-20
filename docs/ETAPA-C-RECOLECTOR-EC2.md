@@ -5,12 +5,12 @@ plataforma ya alcanza la EC2 por SSM y mantiene operaciones durables con `mwt-ag
 
 ## Cortes
 
-| Corte | Alcance                                                                                                               | Estado    |
-| ----- | --------------------------------------------------------------------------------------------------------------------- | --------- |
-| C0    | Moodle sintético 4.5.10 en la EC2 de laboratorio, como origen de prueba                                               | PR #17    |
-| C1    | Distribución del Recolector 7.4.2 en la EC2, verificada por hash, y operación `collector.742` registrada en el agente | Este PR   |
-| C2    | Configuración no interactiva desde la plataforma y exportación bajo systemd con progreso real                         | Pendiente |
-| C3    | Subida del ZIP y su `.sha256` a S3 con el rol de la instancia y registro del `SourcePackage` por referencia           | Pendiente |
+| Corte | Alcance                                                                                                               | Estado          |
+| ----- | --------------------------------------------------------------------------------------------------------------------- | --------------- |
+| C0    | Moodle sintético 4.5.10 en la EC2 de laboratorio, como origen de prueba                                               | Fusionado (#17) |
+| C1    | Distribución del Recolector 7.4.2 en la EC2, verificada por hash, y operación `collector.742` registrada en el agente | Fusionado (#18) |
+| C2    | Configuración no interactiva desde la plataforma y exportación bajo systemd con progreso real                         | Este PR         |
+| C3    | Subida del ZIP y su `.sha256` a S3 con el rol de la instancia y registro del `SourcePackage` por referencia           | Pendiente       |
 
 ## C0: origen sintético en la EC2
 
@@ -110,11 +110,64 @@ php artisan remote:tool source-check <server_uuid> --source=synthetic-lab
 
 `provision.sh` crea ahora el perfil `synthetic-lab` para el origen sintético de C0.
 
+## C2: exportación real desde la plataforma
+
+`RemoteCollectorExport` lanza `collector.742` y lee el estado estructurado del Recolector.
+
+**Antes de lanzar**, exige dos cosas, ambas registradas en la evidencia del servidor:
+
+- que el árbol desplegado tenga el hash del catálogo;
+- que el perfil de origen haya superado `source-check`.
+
+La operación usa la misma maquinaria durable de B2 (systemd, reconciliación, cancelación).
+
+**Observación (agente 1.2.0)**
+
+- `launch.json` registra los parámetros de la operación; todos son identificadores ya
+  validados.
+- El subcomando `collector-report` devuelve en base64, acotados a 16 KiB:
+    - `<paquete>.status.json` y `export-progress.json`, los documentos que escribe el
+      propio Recolector;
+    - el listado del directorio de salida;
+    - la línea del sidecar `.sha256`.
+- La plataforma conserva solo campos permitidos: estado, etapa, código, versión, contadores
+  de cursos y workers. Nunca guarda las rutas del documento, y el texto de consola nunca se
+  interpreta.
+- El progreso es real: `completed_courses / total_courses`. Si no hay un total conocido,
+  queda `null`.
+- El scheduler observa estas operaciones junto con su reporte, de modo que el reporte final
+  se captura en la misma pasada que detecta la terminación. El panel de conexiones muestra
+  etapa, cursos y si el paquete está listo.
+
+**Paquete listo** solo cuando coinciden todas las señales independientes: la operación
+`SUCCEEDED` con exit 0; el estado del Recolector `success/completed` con exit 0; el sidecar
+nombra exactamente `<paquete>.zip` con un SHA-256 válido; y el ZIP existe y no está vacío.
+
+### Exportación real en la EC2 (2026-10-20)
+
+| Paso                                                         | Resultado                                                                                                                                                              |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agente                                                       | 1.2.0 instalado y verificado                                                                                                                                           |
+| Recolector                                                   | Ya presente (`already_present`), mismo hash del catálogo                                                                                                               |
+| Perfil `synthetic-lab`                                       | Listo                                                                                                                                                                  |
+| Lanzamiento                                                  | Unidad `mwt-op-3e0e1325-…`, `CONNECTED/RUNNING`                                                                                                                        |
+| Resultado                                                    | `TERMINATED/SUCCEEDED`, exit 0; Recolector `success/completed` en 3 s                                                                                                  |
+| Progreso                                                     | 2/2 cursos creados (100 %), 0 fallidos                                                                                                                                 |
+| Paquete                                                      | `origen-ec2-lab.zip`, 29 411 bytes, **listo**, SHA-256 `ea8de81a…5c35c5`; 65 líneas de log guardadas                                                                   |
+| Verificación independiente (por SSM, fuera de la plataforma) | `sha256sum` del ZIP igual al sidecar; propietario `www-data`, modo `600`; `VALIDAR-PAQUETE.sh` de la distribución: `VALIDACION_OK archivos=10 cursos=2 advertencias=0` |
+
+La exportación del origen sintético es tan corta que terminó antes de la primera
+observación: el progreso intermedio solo se comprobó con pruebas automáticas. Un origen
+más grande (por ejemplo, una copia de Pregrado) lo mostrará en vivo.
+
 ## Límites
 
 - Es un origen sintético pequeño: no prueba volumen, archivos grandes ni plugins de
   terceros. Una copia institucional pequeña (por ejemplo, Pregrado) queda para después de C3.
-- El Recolector ya está desplegado y verificado, pero todavía no se ha lanzado una
-  exportación real en la EC2 (C2).
+- El paquete queda en el área de trabajo de la operación en la EC2. Subirlo a S3 y
+  registrar el `SourcePackage` es C3; la validación con `VALIDAR-PAQUETE.sh` todavía se hizo
+  fuera de la plataforma.
+- La exportación remota aún no actualiza los estados de la `Execution` ni genera
+  `ExecutionEvent`; su estado vive en la `RemoteOperation`.
 - Los fragmentos de un despliegue interrumpido quedan en el staging del agente hasta el
   siguiente intento; todavía no hay una limpieza periódica.

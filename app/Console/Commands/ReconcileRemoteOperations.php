@@ -17,7 +17,7 @@ class ReconcileRemoteOperations extends Command
 
     protected $description = 'Reconcilia procesos registrados sin volver a lanzar operaciones existentes';
 
-    public function handle(RemoteOperationCoordinator $operations, RemoteAgentOperations $remote): int
+    public function handle(RemoteOperationCoordinator $operations): int
     {
         $limit = min(1000, max(1, (int) $this->option('limit')));
         $failed = 0;
@@ -37,11 +37,12 @@ class ReconcileRemoteOperations extends Command
             ->orderBy('id')
             ->limit($limit)
             ->get()
-            ->each(function (RemoteOperation $operation) use ($operations, $remote, &$failed): void {
+            ->each(function (RemoteOperation $operation) use ($operations, &$failed): void {
                 try {
                     // Remote operations are observed through their agent, never by the local process inspector.
                     if ($operation->provider_key === RemoteAgentOperations::PROVIDER && config('queue.default') === 'sync') {
-                        $remote->reconcile($operation);
+                        // Same job synchronously, so Collector exports also refresh their report.
+                        dispatch_sync(new ReconcileRemoteAgentOperation((int) $operation->getKey()));
                     } elseif ($operation->provider_key === RemoteAgentOperations::PROVIDER) {
                         dispatch((new ReconcileRemoteAgentOperation((int) $operation->getKey()))
                             ->onConnection('redis-tool-runs')->onQueue('tool-runs'));

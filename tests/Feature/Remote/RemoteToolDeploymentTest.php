@@ -170,6 +170,16 @@ class RemoteToolDeploymentTest extends DomainTestCase
         $this->assertDirectoryExists($this->root.'/state/ops/'.$uuid.'/work/output');
         $this->assertDirectoryExists($this->root.'/state/ops/'.$uuid.'/work/tmp');
         $this->assertGreaterThan(0, $status['stdout_bytes'] + $status['stderr_bytes'], 'El Recolector debe haber producido salida propia.');
+        $this->assertSame(['distribution' => $this->distribution->distribution_sha256, 'package' => 'origen-lab',
+            'source' => 'lab', 'workers' => '1'], $status['launch']['parameters']);
+
+        $report = $this->agent()->call($this->target(), 'collector-report', [$uuid]);
+        $this->assertTrue($report->ok, 'Error: '.$report->errorCode);
+        $this->assertSame('origen-lab', $report->data['package']);
+        $this->assertNull($report->data['sidecar']);
+        $collectorStatus = json_decode((string) base64_decode((string) $report->data['status_base64'], true), true);
+        $this->assertSame('error', $collectorStatus['state'], 'El estado proviene del documento que escribe el Recolector.');
+        $this->assertSame('operation_not_found', $this->agent()->call($this->target(), 'collector-report', [(string) Str::uuid()])->errorCode);
     }
 
     public function test_deployment_requires_a_tested_connection(): void
