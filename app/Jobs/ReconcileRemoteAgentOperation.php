@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Domain\Remote\RemoteAgentOperations;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteSourcePackagePublisher;
 use App\Models\RemoteOperation;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -32,7 +33,7 @@ final class ReconcileRemoteAgentOperation implements ShouldBeUnique, ShouldQueue
         return 'remote-agent-operation:'.$this->operationId;
     }
 
-    public function handle(RemoteAgentOperations $operations, RemoteCollectorExport $collector): void
+    public function handle(RemoteAgentOperations $operations, RemoteCollectorExport $collector, RemoteSourcePackagePublisher $publisher): void
     {
         $operation = RemoteOperation::query()->where('provider_key', RemoteAgentOperations::PROVIDER)->find($this->operationId);
         if ($operation === null) {
@@ -42,6 +43,9 @@ final class ReconcileRemoteAgentOperation implements ShouldBeUnique, ShouldQueue
         // final report is captured in the same pass that observes the termination.
         if ($operation->command_key === RemoteCollectorExport::COMMAND) {
             $collector->observe($operation);
+        } elseif ($operation->command_key === RemoteSourcePackagePublisher::COMMAND) {
+            // Registers the SourcePackage in the same pass that observes a successful upload.
+            $publisher->observe($operation);
         } else {
             $operations->reconcile($operation);
         }
