@@ -119,10 +119,28 @@ class RemoteAccessPresenter
                 'public_url' => $report['public_url'] ?? $detected->get($id)['public_url'] ?? null,
                 'docker_version' => $report['docker_version'] ?? null, 'memory_bytes' => $report['memory_bytes'] ?? null,
                 'runtime_free_bytes' => $report['runtime_free_bytes'] ?? null, 'target_running' => ($report['target_running'] ?? false) === true,
-                'destination_written' => ($report['destination_written'] ?? false) === true];
+                'destination_written' => ($report['destination_written'] ?? false) === true,
+                'preparation' => $this->preparation($server, $id)];
         }
 
         return $destinations;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function preparation(Server $server, string $destination): ?array
+    {
+        $preparation = $server->metadata['remote_destination_preparations'][$destination] ?? null;
+        if (! is_array($preparation)) {
+            return null;
+        }
+        $string = fn (string $key): ?string => is_string($preparation[$key] ?? null) ? $preparation[$key] : null;
+
+        return ['state' => $string('state'), 'launched_at' => $string('launched_at'), 'finished_at' => $string('finished_at'),
+            'observed_at' => $string('observed_at'), 'exit_code' => is_int($preparation['exit_code'] ?? null) ? $preparation['exit_code'] : null,
+            'error_code' => $string('error_code'), 'observe_error' => $string('observe_error'), 'last_error_line' => $string('last_error_line'),
+            'markers' => array_values(array_intersect(PrepareRemoteDestination::MARKERS, (array) ($preparation['markers'] ?? []))),
+            // Already redacted when read; only the end is shown.
+            'tail' => mb_substr((string) ($preparation['tail'] ?? ''), -4000)];
     }
 
     /** @return array<string, mixed>|null */

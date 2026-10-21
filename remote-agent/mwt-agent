@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.6.0"
+readonly AGENT_VERSION="1.6.1"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -280,6 +280,21 @@ registered_argv() {
                 collector-prepare "$OP_DIR" "$SRC_RUN_AS" "$work" "${SRC_EXEC[@]}"
                 bash "$tool/EXPORTAR-ORIGEN.sh" "--workers=${params[workers]}" "--output-dir=$work/output" "--temp-dir=$work/tmp"
                 "${params[package]}.zip" "$SRC_MOODLE_CONFIG")
+            ;;
+        consolidator.prepare)
+            [[ ${#params[@]} == 2 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE ]] || fail invalid_parameter
+            load_destination "${params[destination]}"
+            [[ $DST_TOOL_TREE == "${params[distribution]}" ]] || fail tool_tree_mismatch
+            local store
+            store=$(compgen -G "$TOOLS_DIR/moodle-consolidador-*/${params[distribution]}" | head -n 1) || fail tool_not_installed
+            # The stored tree is re-verified on every launch, like the Collector's.
+            (($(unsafe_entries "$store") == 0)) && [[ $(tree_hash "$store") == "${params[distribution]}" ]] || fail tool_hash_mismatch
+            [[ -d $DST_RUNTIME_DIR && ! -L $DST_RUNTIME_DIR && -f $DST_RUNTIME_DIR/.env && -f $DST_RUNTIME_DIR/FILES.sha256 ]] || fail destination_runtime_missing
+            # Preparing again after the Consolidator wrote to the site would recreate its services mid-migration.
+            [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+            (cd "$DST_RUNTIME_DIR" && sha256sum --quiet --check FILES.sha256 >/dev/null 2>&1) || fail engine_modified
+            # shellcheck disable=SC2016
+            REGISTERED_ARGV=(bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh preparar' consolidator-prepare "$DST_RUNTIME_DIR")
             ;;
         package.upload)
             [[ ${#params[@]} == 4 && ${params[collector]:-} =~ $UUID_RE && ${params[project]:-} =~ $UUID_RE
@@ -636,7 +651,7 @@ cmd_destination_list() {
 cmd_destination_check() {
     (($# == 1)) || fail invalid_arguments
     local runtime env env_present=0 env_protected=0 env_url='' env_complete=0 tool_present=0 engine_intact=0
-    local docker_version='' compose_version='' flock_present=0 cpus='' mem_kb='' free='' target_running=0 written=0 required
+    local docker_version='' compose_version='' flock_present=0 cpus='' mem_kb='' free='' target_running=0 written=0 required python_present=0
     load_destination "$1"
     runtime=$DST_RUNTIME_DIR
     [[ -d $runtime && ! -L $runtime ]] || fail destination_runtime_missing
@@ -664,15 +679,16 @@ cmd_destination_check() {
         fi
     fi
     command -v flock >/dev/null 2>&1 && flock_present=1
+    command -v python3 >/dev/null 2>&1 && python_present=1
     cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '')
     [[ -r /proc/meminfo ]] && mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
     free=$(df -PB1 "$runtime" 2>/dev/null | awk 'NR==2 {print $4}') || free=''
     [[ -f $runtime/reports/destination-write.lock.json ]] && written=1
-    respond_ok destination-check "$(printf '{"destination":"%s","public_url":%s,"env_present":%s,"env_protected":%s,"env_matches_url":%s,"env_complete":%s,"tool_tree":"%s","tool_present":%s,"engine_intact":%s,"docker_version":%s,"compose_version":%s,"flock":%s,"cpus":%s,"memory_bytes":%s,"runtime_free_bytes":%s,"target_running":%s,"destination_written":%s}' \
+    respond_ok destination-check "$(printf '{"destination":"%s","public_url":%s,"env_present":%s,"env_protected":%s,"env_matches_url":%s,"env_complete":%s,"tool_tree":"%s","tool_present":%s,"engine_intact":%s,"docker_version":%s,"compose_version":%s,"flock":%s,"python3":%s,"cpus":%s,"memory_bytes":%s,"runtime_free_bytes":%s,"target_running":%s,"destination_written":%s}' \
         "$DST_ID" "$(json_escape "$DST_PUBLIC_URL")" "$(bool "$env_present")" "$(bool "$env_protected")" \
         "$(bool "$([[ -n $env_url && $env_url == "$DST_PUBLIC_URL" ]] && echo 1 || echo 0)")" "$(bool "$env_complete")" \
         "$DST_TOOL_TREE" "$(bool "$tool_present")" "$(bool "$engine_intact")" "$(json_or_null "$docker_version")" \
-        "$(json_or_null "$compose_version")" "$(bool "$flock_present")" "$(int_or_null "$cpus")" \
+        "$(json_or_null "$compose_version")" "$(bool "$flock_present")" "$(bool "$python_present")" "$(int_or_null "$cpus")" \
         "$(if [[ $mem_kb =~ ^[0-9]+$ ]]; then printf '%s' $((mem_kb * 1024)); else printf 'null'; fi)" \
         "$(int_or_null "$free")" "$(bool "$target_running")" "$(bool "$written")")"
 }

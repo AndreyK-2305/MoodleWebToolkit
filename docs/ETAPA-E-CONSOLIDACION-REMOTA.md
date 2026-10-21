@@ -105,3 +105,31 @@ Guía para el administrador: [GUIA-PERFIL-DESTINO.md](GUIA-PERFIL-DESTINO.md).
     - advertencias: `low_memory` (< 3,5 GB), `low_disk` (< 20 GiB) y `destination_written`.
       Una vez que hubo escrituras en el destino, un motor modificado ya no bloquea: las resoluciones
       del operador cambian archivos de `config/`.
+
+## E2: preparación del destino como operación durable
+
+- **Operación del agente.** `consolidator.prepare` (`destination`, `distribution`) ejecuta
+  `moodle-consolidation.sh preparar` desde el runtime del perfil. Antes de crear el proceso, el
+  agente comprueba:
+    - que el perfil nombra ese árbol;
+    - el hash del árbol del almacén;
+    - el runtime con su `.env`;
+    - `FILES.sha256` del runtime;
+    - que no haya escrituras previas (`destination_already_written`).
+- **Ciclo de vida.** Como el Recolector, corre en una unidad systemd que sobrevive a la sesión
+  SSM. La preparación pertenece al servidor y no a una Ejecución: su estado vive en
+  `metadata.remote_destination_preparations.<perfil>`, con los estados `STARTING`, `RUNNING`,
+  `CANCELLING`, `SUCCEEDED`, `FAILED`, `CANCELLED` y `UNKNOWN`.
+- **Observación.** `destinations:observe-preparations` corre cada minuto y encola
+  `ObserveDestinationPreparation` por cada preparación activa. Cada observación es acotada: el
+  estado del proceso, hasta 64 KB nuevos de `stdout` redactados (se conservan los últimos 8 KB)
+  y los marcadores del Consolidador (`PREFLIGHT_OK`, `DESTINO_LISTO`, `EXPORT_TRANSPORT_OK`,
+  `TARGET_SHARED_EMAIL_POLICY_OK`).
+- **Resultado.** Solo hay éxito con código 0 y el último marcador; un código 0 sin él es
+  `markers_missing`. Un fallo conserva el final redactado de `stderr` y su última línea `ERROR`.
+  Un proceso perdido, sin latido ni salida, queda `UNKNOWN`. Un lanzamiento que nunca llegó al
+  servidor se cierra como `launch_not_received` después del margen de 90 s. Tras el éxito se
+  repite la comprobación del perfil, que ya muestra Moodle destino en ejecución.
+- **Interfaz.** Cada perfil comprobado ofrece **Preparar destino** (solo si está listo y sin
+  escrituras), el avance por marcadores, el error, las últimas líneas del registro y
+  **Cancelar preparación**.

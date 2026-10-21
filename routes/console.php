@@ -19,3 +19,7 @@ Schedule::command('executions:reconcile-remote-operations --limit=100')
 Schedule::command('executions:recover-event-outbox --limit=20')
     ->everyMinute()
     ->withoutOverlapping();
+
+Schedule::command('destinations:observe-preparations --limit=50')
+    ->everyMinute()
+    ->withoutOverlapping();

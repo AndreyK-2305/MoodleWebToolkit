@@ -21,6 +21,10 @@ class RemoteCommandRegistry
             'package' => '/^[a-z][a-z0-9_-]{0,63}$/D',
             'workers' => '/^(auto|[1-4])$/D',
         ], 'cancellable' => true],
+        'consolidator.prepare' => ['parameters' => [
+            'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
+            'distribution' => '/^[0-9a-f]{64}$/D',
+        ], 'cancellable' => true],
         'package.upload' => ['parameters' => [
             'collector' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
             'project' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
