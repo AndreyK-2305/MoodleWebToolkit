@@ -41,25 +41,35 @@ Puntos que el estudio no cierra y se resolverán en el corte correspondiente:
 | E2    | Preparación del destino como operación durable (`consolidator.prepare`) con progreso y log; estado del runtime en la ficha del servidor                                                              |
 | E3    | Transferencia S3 → `copias/` en el destino (operación `package.fetch` del agente, con el SHA-256 verificado antes de mover cada ZIP) y bloqueo de cambios una vez hay escritura en el destino     |
 | E4    | Ejecución CONSOLIDATE: configuración (paquetes, workers, piloto), preflight, lanzamiento de `ejecutar-automatico`, pasos reales y progreso por curso                                                    |
-| E5    | Intervenciones: OAuth2 manual e intervención de plugins como formularios declarativos que relanzan el asistente; nunca comandos arbitrarios                                                           |
+| E5    | Intervenciones: «Configurar OAuth2» (Continuar) y plugins como formularios declarativos que relanzan el asistente; nunca comandos arbitrarios                                                    |
 | E6    | REVIEW → COMPLETED: evidencias del cierre, subida de la copia integral a S3, limpieza del disco del destino y publicación como operación aparte                                                      |
 
-## Prerrequisitos del laboratorio (los decide el administrador)
+## Responsabilidades del administrador (decisión del 2026-10-21)
+
+- **Dominio y TLS.** Se asume que el administrador ya tiene montado el destino con un
+  dominio propio y su proxy TLS frente a Moodle. La herramienta no gestiona DNS ni
+  certificados. Solo comprueba en `destination-check` que la URL pública del perfil es HTTPS y
+  coincide con la del `.env`.
+- **OAuth2 de Google.** Cuando el asistente llega a `02-oauth2` (o `03b-oauth2-final`) y se
+  detiene con `WAITING_USER_ACTION`, la Ejecución abre una intervención «Configurar OAuth2».
+  Esa intervención muestra las instrucciones de `reports/oauth2-configuracion-manual.txt`
+  (URI de callback, pasos en Moodle). El administrador configura el servicio en Moodle por su
+  cuenta y pulsa **Continuar** en la herramienta. A partir de ahí se da por listo: la
+  plataforma relanza el asistente y este revalida en vivo. Si la validación vuelve a fallar,
+  la Ejecución regresa a la misma intervención con el mensaje del asistente. La plataforma
+  nunca pide, lee ni guarda el Client ID ni el secret.
+
+## Prerrequisitos del laboratorio
 
 1. **Tamaño de la instancia.** «Claude Destino» (`i-0d69555bdfa275322`) es `t3.small` (2 GiB de
    RAM) con 30 GiB gp3 sin cifrar. Moodle 5.2.1, MariaDB y el runtime pwsh, con los workers de
-   restauración, no caben con holgura en 2 GiB. Se recomienda `t3.medium` (4 GiB) como mínimo
-   para el laboratorio. Los 30 GiB alcanzan para los paquetes sintéticos.
-2. **Nombre con TLS.** Hace falta un nombre DNS estable y un certificado. Dos opciones:
-   - un subdominio propio, con una IP elástica para que la dirección no cambie en cada encendido;
-   - `sslip.io`, con Caddy como proxy TLS frente a `127.0.0.1:8090`. Esta opción requiere el
-     puerto 443 abierto en el grupo de seguridad.
-3. **Cliente OAuth de Google.** En un proyecto de Google Cloud, crear el cliente con la URI
-   `https://<nombre>/admin/oauth2callback.php`. El administrador introduce el Client ID y el
-   secret directamente en Moodle (etapa `02-oauth2`); la plataforma no los solicita.
-4. **Lectura de paquetes en S3.** El rol `mwt-ssm-lab` solo puede escribir en `mwt/`. Para E3
+   restauración, no caben con holgura en 2 GiB. Se recomienda `t3.medium` (4 GiB) como mínimo.
+2. **Lectura de paquetes en S3.** El rol `mwt-ssm-lab` solo puede escribir en `mwt/`. Para E3
    hay dos caminos:
    - una política de lectura `s3:GetObject` restringida a `mwt/` para el destino, idealmente
      con un rol propio. Es la opción recomendada;
    - URLs prefirmadas de 15 minutos que emite la plataforma. No requieren cambiar IAM, pero la
      URL queda en el historial de comandos de SSM mientras es válida.
+3. **Dominio de prueba.** La prueba de punta a punta en AWS (E4–E6) necesita que el destino de
+   laboratorio tenga su dominio y TLS montados, igual que en producción. E1–E3 se pueden
+   validar antes, sin él.
