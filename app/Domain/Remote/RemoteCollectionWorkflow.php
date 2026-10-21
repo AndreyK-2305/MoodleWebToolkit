@@ -122,6 +122,9 @@ class RemoteCollectionWorkflow
             if ($operation->communication_state !== RemoteCommunicationState::TERMINATED || ! $this->reportFinal($operation)) {
                 $this->exports->observe($operation);
             }
+        } elseif ($operation->command_key === RemoteSourcePackagePublisher::COMMAND && $execution->status !== ExecutionStatus::VERIFYING) {
+            // A cancelled or closed Execution never registers a package; its object stays in S3 for the administrator.
+            $this->operations->reconcile($operation);
         } elseif ($operation->command_key === RemoteSourcePackagePublisher::COMMAND) {
             try {
                 $this->publisher->observe($operation);

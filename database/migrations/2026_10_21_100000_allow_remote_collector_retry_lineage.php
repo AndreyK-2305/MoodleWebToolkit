@@ -24,6 +24,10 @@ return new class extends Migration
         }
     }
 
+    /**
+     * @param  literal-string  $adapters
+     * @return literal-string
+     */
     private function guard(string $adapters): string
     {
         return <<<SQL

@@ -251,6 +251,50 @@ class RemoteCollectionExecutionTest extends DomainTestCase
         $this->assertSame(1, $failed->remoteOperations()->count());
     }
 
+    public function test_cancellation_during_publication_never_registers_a_package_and_a_new_attempt_reaches_review(): void
+    {
+        $cancelled = $this->startExecution();
+        $export = $cancelled->remoteOperations()->sole();
+        $this->queueStatus(RemoteCollectorExport::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-20T12:00:00Z']);
+        $this->queueReport(['state' => 'success', 'stage' => 'completed', 'exit_code' => 0, 'source_id' => 'origen-lab'],
+            ['stage' => 'completed', 'total_courses' => 4, 'completed_courses' => 4, 'failed_courses' => 0],
+            [['name' => 'origen-lab.zip', 'size' => 4096]], "{$this->sha}  origen-lab.zip");
+        $this->queueLaunch(RemoteSourcePackagePublisher::COMMAND);
+        dispatch_sync(new ReconcileRemoteAgentOperation($export->id));
+        $upload = $cancelled->remoteOperations()->where('command_key', RemoteSourcePackagePublisher::COMMAND)->sole();
+
+        // The upload already finished on the server when the cancellation arrives.
+        $this->transport->okWith('cancel', fn (string $script): array => ['operation_uuid' => QueuedRemoteTransport::operationUuid($script),
+            'signalled' => false, 'already_finished' => true]);
+        $this->postJson(route('projects.executions.cancel', [$this->project, $cancelled]), [], ['Idempotency-Key' => 'cancel-publishing'])->assertSuccessful();
+        $this->queueStatus(RemoteSourcePackagePublisher::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-20T12:05:00Z']);
+        dispatch_sync(new ReconcileRemoteAgentOperation($upload->id));
+
+        $this->assertSame(ExecutionStatus::CANCELLED, $cancelled->fresh()->status);
+        $this->assertSame(0, SourcePackage::query()->count(), 'Una ejecución cancelada nunca registra el paquete subido.');
+        $this->assertSame(0, $this->transport->pending());
+
+        $this->queueLaunch(RemoteCollectorExport::COMMAND);
+        $this->postJson(route('projects.executions.fresh-export', [$this->project, $cancelled]), ['configuration_version' => 2, 'accept_laboratory' => true],
+            ['Idempotency-Key' => 'fresh-after-cancel'])->assertCreated();
+        $retry = Execution::query()->where('retried_from_execution_id', $cancelled->id)->sole();
+        $retryExport = $retry->remoteOperations()->sole();
+        $this->queueStatus(RemoteCollectorExport::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-20T13:00:00Z']);
+        $this->queueReport(['state' => 'success', 'stage' => 'completed', 'exit_code' => 0, 'source_id' => 'origen-lab'],
+            ['stage' => 'completed', 'total_courses' => 4, 'completed_courses' => 4, 'failed_courses' => 0],
+            [['name' => 'origen-lab.zip', 'size' => 4096]], "{$this->sha}  origen-lab.zip");
+        $this->queueLaunch(RemoteSourcePackagePublisher::COMMAND);
+        dispatch_sync(new ReconcileRemoteAgentOperation($retryExport->id));
+        $retryUpload = $retry->remoteOperations()->where('command_key', RemoteSourcePackagePublisher::COMMAND)->sole();
+        $this->queueStatus(RemoteSourcePackagePublisher::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-20T13:05:00Z']);
+        $this->queueUploadReport($retryUpload);
+        $this->queueS3Package();
+        dispatch_sync(new ReconcileRemoteAgentOperation($retryUpload->id));
+
+        $this->assertSame(ExecutionStatus::REVIEW, $retry->fresh()->status);
+        $this->assertSame($retry->id, SourcePackage::query()->sole()->producer_execution_id);
+    }
+
     public function test_collector_deployment_and_source_check_run_from_the_interface(): void
     {
         $this->transport->ok('source-check', ['source' => 'perfil-nuevo', 'runtime' => 'native', 'run_as' => 'www-data',
