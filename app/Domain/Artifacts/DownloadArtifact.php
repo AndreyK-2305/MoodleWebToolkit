@@ -23,7 +23,6 @@ class DownloadArtifact
         private readonly ArtifactStorage $storage,
         private readonly ArtifactStreamVerifier $verifier,
         private readonly IdempotencyRegistry $idempotency,
-        private readonly RemotePackageObjects $objects,
     ) {}
 
     /**
@@ -40,7 +39,8 @@ class DownloadArtifact
             throw new ArtifactIntegrityException('Solo un administrador puede descargar el paquete fuente desde el almacenamiento.');
         }
         try {
-            $url = $this->objects->downloadUrl($artifact);
+            // Resolved only for S3 references, so local downloads keep no dependency on AWS.
+            $url = app(RemotePackageObjects::class)->downloadUrl($artifact);
         } catch (ToolOperationBlocked $exception) {
             throw new ArtifactIntegrityException($exception->getMessage(), previous: $exception);
         }
