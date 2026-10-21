@@ -133,3 +133,33 @@ Guía para el administrador: [GUIA-PERFIL-DESTINO.md](GUIA-PERFIL-DESTINO.md).
 - **Interfaz.** Cada perfil comprobado ofrece **Preparar destino** (solo si está listo y sin
   escrituras), el avance por marcadores, el error, las últimas líneas del registro y
   **Cancelar preparación**.
+
+## E3: transferencia S3 → `copias/` del destino
+
+Se eligió la lectura con el rol de la instancia: el destino necesita `s3:GetObject` sobre
+`mwt/*` en el bucket de paquetes. Con esto no viajan URLs prefirmadas por SSM.
+
+- **Verificación previa.** Antes de lanzar, la plataforma verifica el objeto en S3 con su
+  propia identidad (`RemotePackageObjects::verifyPackage`). Además exige que la llave siga el
+  contrato de publicación, `mwt/<proyecto>/<source_id>/<sha256>.zip`.
+- **Operación del agente.** `package.fetch` recibe `destination`, `project`, `source`, `sha`,
+  `bucket` y `region`. Descarga primero el sidecar y valida que declare ese SHA-256 y un nombre
+  `*.zip` seguro. Comprueba el espacio libre (ZIP + 10 %) y descarga el ZIP a un staging dentro
+  de `copias/`. Solo mueve los archivos si el ZIP hashea igual y tiene el tamaño de S3, y mueve
+  el sidecar al final. Un paquete idéntico ya presente cuenta como `already_present`; otro con
+  el mismo nombre falla con `destination_name_conflict`. Los fallos son marcadores cerrados en
+  `stderr`: `sidecar_invalid`, `package_hash_mismatch`, `insufficient_disk`, etc.
+- **Éxito.** Solo hay éxito si el SHA-256 que `fetch-report` devuelve desde el servidor es el
+  mismo que la plataforma verificó en S3.
+- **Listado y retiro.** `copias-list` devuelve nombre, tamaño y SHA-256 del sidecar, sin volver
+  a hashear los ZIP; la plataforma los asocia con los `SourcePackage` por hash.
+  `copias-remove` retira un paquete.
+- **Bloqueo.** Ambos quedan bloqueados en el agente y en la plataforma cuando existe
+  `reports/destination-write.lock.json`, es decir, desde la primera escritura del Consolidador.
+- **Estado.** Vive en `metadata.remote_destination_fetches.<perfil>.<paquete>` y
+  `metadata.remote_destination_copias.<perfil>`. El mismo comando del scheduler observa las
+  transferencias activas, una a la vez por destino.
+- **Interfaz.** Paquetes en `copias/` con su sello, **Traer desde S3** (paquetes verificados en
+  S3 de los proyectos que el usuario puede ver), **Retirar** y el historial de transferencias.
+- **Agente 1.7.0.** Agrega `package.fetch` y los subcomandos `fetch-report`, `copias-list` y
+  `copias-remove`.

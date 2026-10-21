@@ -2,10 +2,13 @@
 
 namespace App\Domain\Remote;
 
+use App\Enums\ServerRole;
 use App\Models\Connection;
 use App\Models\Project;
 use App\Models\RemoteOperation;
 use App\Models\Server;
+use App\Models\SourcePackage;
+use Illuminate\Support\Facades\Gate;
 
 /**
  * Inertia props for the remote access panel. Only non-secret, closed values
@@ -19,12 +22,12 @@ class RemoteAccessPresenter
 
     public function __construct(private readonly RemoteAgent $agent) {}
 
-    /** @return array{enabled: bool, agent_version: string|null, servers: list<array<string, mixed>>} */
+    /** @return array{enabled: bool, agent_version: string|null, available_packages: list<array<string, mixed>>, servers: list<array<string, mixed>>} */
     public function present(Project $project): array
     {
         $enabled = (bool) config('toolkit.features.remote_agent.enabled', false);
         if (! $enabled) {
-            return ['enabled' => false, 'agent_version' => null, 'servers' => []];
+            return ['enabled' => false, 'agent_version' => null, 'available_packages' => [], 'servers' => []];
         }
         $servers = $project->servers()->with('connections')->orderBy('role')->orderBy('name')->get();
         $operations = RemoteOperation::query()->where('provider_key', RemoteAgentOperations::PROVIDER)
@@ -33,6 +36,7 @@ class RemoteAccessPresenter
         return [
             'enabled' => true,
             'agent_version' => $this->agent->distribution()['version'],
+            'available_packages' => $servers->contains(fn (Server $server): bool => $server->role === ServerRole::DESTINATION) ? $this->availablePackages() : [],
             'servers' => array_values($servers->map(fn (Server $server): array => [
                 'uuid' => $server->uuid,
                 'name' => $server->name,
@@ -120,10 +124,64 @@ class RemoteAccessPresenter
                 'docker_version' => $report['docker_version'] ?? null, 'memory_bytes' => $report['memory_bytes'] ?? null,
                 'runtime_free_bytes' => $report['runtime_free_bytes'] ?? null, 'target_running' => ($report['target_running'] ?? false) === true,
                 'destination_written' => ($report['destination_written'] ?? false) === true,
-                'preparation' => $this->preparation($server, $id)];
+                'preparation' => $this->preparation($server, $id),
+                'copias' => $this->copias($server, $id),
+                'fetches' => $this->fetches($server, $id)];
         }
 
         return $destinations;
+    }
+
+    /** @return array{listed_at: string|null, write_locked: bool, packages: list<array<string, mixed>>}|null */
+    private function copias(Server $server, string $destination): ?array
+    {
+        $copias = $server->metadata['remote_destination_copias'][$destination] ?? null;
+        if (! is_array($copias)) {
+            return null;
+        }
+
+        return ['listed_at' => is_string($copias['listed_at'] ?? null) ? $copias['listed_at'] : null,
+            'write_locked' => ($copias['write_locked'] ?? false) === true,
+            'packages' => array_values(array_map(fn (array $package): array => array_intersect_key($package,
+                array_flip(['name', 'size', 'sidecar_sha256', 'source_package_uuid', 'source_id'])),
+                array_filter(is_array($copias['packages'] ?? null) ? $copias['packages'] : [], 'is_array')))];
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function fetches(Server $server, string $destination): array
+    {
+        $fetches = $server->metadata['remote_destination_fetches'][$destination] ?? [];
+        $list = [];
+        foreach (is_array($fetches) ? $fetches : [] as $packageUuid => $fetch) {
+            if (is_string($packageUuid) && is_array($fetch)) {
+                $list[] = ['source_package_uuid' => $packageUuid, ...array_intersect_key($fetch, array_flip(['package_name', 'source_id', 'sha256', 'size',
+                    'state', 'error_code', 'error_line', 'name', 'already_present', 'launched_at', 'finished_at', 'observe_error']))];
+            }
+        }
+        usort($list, fn (array $left, array $right): int => strcmp((string) ($right['launched_at'] ?? ''), (string) ($left['launched_at'] ?? '')));
+
+        return array_slice($list, 0, 20);
+    }
+
+    /**
+     * Sealed packages stored in S3 that the viewer may bring to a destination.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function availablePackages(): array
+    {
+        $user = auth()->user();
+        if ($user === null) {
+            return [];
+        }
+
+        return array_values(SourcePackage::query()->with('project:id,uuid,name')->where('validation_state', 'VALID')->where('availability', 'AVAILABLE')
+            ->whereNull('revoked_at')->whereHas('artifact', fn ($artifact) => $artifact->where('storage_mode', 'REFERENCE')->where('disk', 's3'))
+            ->latest('id')->limit(50)->get()
+            ->filter(fn (SourcePackage $package): bool => $package->project !== null && Gate::forUser($user)->allows('view', $package->project))
+            ->map(fn (SourcePackage $package): array => ['uuid' => $package->uuid, 'name' => $package->name, 'source_id' => $package->source_id,
+                'sha256' => $package->sha256, 'size' => $package->size_bytes, 'project' => $package->project?->name])
+            ->all());
     }
 
     /** @return array<string, mixed>|null */

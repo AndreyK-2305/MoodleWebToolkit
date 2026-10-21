@@ -5,7 +5,9 @@ namespace Tests\Feature\Remote;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Remote\CheckRemoteDestination;
 use App\Domain\Remote\DetectRemoteDestinations;
+use App\Domain\Remote\DTOs\RemoteTarget;
 use App\Domain\Remote\PrepareRemoteDestination;
+use App\Domain\Remote\RemoteAgent;
 use App\Domain\Remote\RemoteAgentInstaller;
 use App\Domain\Remote\RemoteServerConnections;
 use App\Domain\Remote\RemoteToolDeployer;
@@ -204,6 +206,72 @@ class RemoteDestinationTest extends DomainTestCase
         $this->assertSame(['FAILED', 'engine_modified'], [$refused['state'], $refused['error_code']]);
     }
 
+    public function test_the_real_fetch_moves_only_a_verified_package_into_copias(): void
+    {
+        $this->requireRoot();
+        DeployRemoteTool::dispatchSync($this->server->getKey(), $this->distribution->getKey(), null);
+        $runtime = $this->root.'/srv/campus';
+        $this->assertSame(0, $this->helper(['campus', '--public-url', self::URL, '--admin-email', 'admin@example.edu', '--runtime-dir', $runtime])->getExitCode());
+        // A test double of the AWS CLI reads objects from a local directory instead of S3.
+        $s3 = $this->root.'/s3';
+        mkdir($this->root.'/bin', 0755, true);
+        file_put_contents($this->root.'/bin/aws', implode("\n", ['#!/bin/bash', 'set -e',
+            'if [[ $1 == s3 && $2 == cp ]]; then src=${3#s3://}; src=${src#*/}; cp "$MWT_FAKE_S3/$src" "$4"; exit; fi',
+            'if [[ $1 == s3api && $2 == head-object ]]; then shift 2; while (($#)); do case $1 in --key) key=$2; shift 2 ;; *) shift ;; esac; done',
+            '    [[ -f $MWT_FAKE_S3/$key ]] || exit 254; stat -c %s "$MWT_FAKE_S3/$key"; exit; fi', 'exit 2', '']));
+        chmod($this->root.'/bin/aws', 0755);
+        $path = (string) getenv('PATH');
+        // Symfony Process inherits $_SERVER/$_ENV, so the double is placed there as well as in the environment.
+        $this->environment(['PATH' => $this->root.'/bin:'.$path, 'MWT_FAKE_S3' => $s3]);
+        try {
+            $project = (string) Str::uuid();
+            $zip = random_bytes(5000);
+            $sha = hash('sha256', $zip);
+            mkdir("{$s3}/mwt/{$project}/pregrado", 0755, true);
+            file_put_contents("{$s3}/mwt/{$project}/pregrado/{$sha}.zip", $zip);
+            file_put_contents("{$s3}/mwt/{$project}/pregrado/{$sha}.zip.sha256", "{$sha}  pregrado.zip\n");
+            $parameters = fn (string $hash): array => ['bucket=kevin-moodle-backups-2026', 'destination=campus', 'project='.$project,
+                'region=us-east-2', 'sha='.$hash, 'source=pregrado'];
+
+            $first = $this->fetchWithAgent($parameters($sha));
+            $stderr = $this->agent()->call($this->target(), 'tail', [$first['operation_uuid'], 'stderr', '0', '4096'])->data['data_base64'] ?? '';
+            $this->assertSame(0, $first['exit']['exit_code'], (string) base64_decode((string) $stderr));
+            $this->assertSame($zip, file_get_contents($runtime.'/copias/pregrado.zip'));
+            $this->assertSame("{$sha}  pregrado.zip\n", file_get_contents($runtime.'/copias/pregrado.zip.sha256'));
+            $this->assertSame([], glob($runtime.'/copias/.incoming-*') ?: [], 'El staging no queda en copias/.');
+            $report = json_decode((string) base64_decode((string) $this->agent()->call($this->target(), 'fetch-report', [$first['operation_uuid']])->data['result_base64']), true);
+            $this->assertSame(['pregrado.zip', $sha, false], [$report['name'], $report['sha256'], $report['already_present']]);
+            $this->assertTrue(json_decode((string) base64_decode((string) $this->agent()->call($this->target(), 'fetch-report',
+                [$this->fetchWithAgent($parameters($sha))['operation_uuid']])->data['result_base64']), true)['already_present']);
+
+            // A sidecar that declares another hash never reaches copias/.
+            $other = hash('sha256', 'otro');
+            copy("{$s3}/mwt/{$project}/pregrado/{$sha}.zip", "{$s3}/mwt/{$project}/pregrado/{$other}.zip");
+            file_put_contents("{$s3}/mwt/{$project}/pregrado/{$other}.zip.sha256", "{$sha}  otro.zip\n");
+            $this->assertSame(53, $this->fetchWithAgent($parameters($other))['exit']['exit_code']);
+            // Right sidecar, wrong bytes: the downloaded ZIP is discarded.
+            file_put_contents("{$s3}/mwt/{$project}/pregrado/{$other}.zip.sha256", "{$other}  otro.zip\n");
+            $this->assertSame(58, $this->fetchWithAgent($parameters($other))['exit']['exit_code']);
+            $this->assertFileDoesNotExist($runtime.'/copias/otro.zip');
+
+            $list = $this->agent()->call($this->target(), 'copias-list', ['campus']);
+            $this->assertSame([['name' => 'pregrado.zip', 'size' => 5000, 'sidecar_sha256' => $sha]], $list->data['packages']);
+            $this->assertStringNotContainsString($runtime, $list->transport->stdout);
+
+            // Once the Consolidator wrote to the site, copias/ is fixed.
+            is_dir($runtime.'/reports') || mkdir($runtime.'/reports', 0700, true);
+            file_put_contents($runtime.'/reports/destination-write.lock.json', '{}');
+            $this->assertSame('destination_already_written', $this->agent()->call($this->target(), 'copias-remove', ['campus', 'pregrado.zip'])->errorCode);
+            $this->assertSame('destination_already_written', $this->agent()->call($this->target(), 'launch',
+                [(string) Str::uuid(), 'package.fetch', ...$parameters($sha)])->errorCode);
+            unlink($runtime.'/reports/destination-write.lock.json');
+            $this->assertTrue($this->agent()->call($this->target(), 'copias-remove', ['campus', 'pregrado.zip'])->data['removed']);
+            $this->assertFileDoesNotExist($runtime.'/copias/pregrado.zip.sha256');
+        } finally {
+            $this->environment(['PATH' => $path, 'MWT_FAKE_S3' => null]);
+        }
+    }
+
     public function test_readiness_blocks_on_missing_facts_and_warns_on_capacity(): void
     {
         $tree = str_repeat('b', 64);
@@ -263,6 +331,51 @@ class RemoteDestinationTest extends DomainTestCase
         $process->run();
 
         return $process;
+    }
+
+    /**
+     * Launches package.fetch with the real agent and waits for its exit.
+     *
+     * @param  list<string>  $parameters
+     * @return array<string, mixed>
+     */
+    private function fetchWithAgent(array $parameters): array
+    {
+        $uuid = (string) Str::uuid();
+        $launch = $this->agent()->call($this->target(), 'launch', [$uuid, 'package.fetch', ...$parameters]);
+        $this->assertTrue($launch->ok, 'Error: '.$launch->errorCode);
+        $deadline = hrtime(true) + 30_000_000_000;
+        do {
+            usleep(200_000);
+            $status = $this->agent()->call($this->target(), 'status', [$uuid])->data;
+        } while ($status['exit'] === null && hrtime(true) < $deadline);
+        $this->assertNotNull($status['exit'], 'La transferencia no terminó a tiempo.');
+
+        return [...$status, 'operation_uuid' => $uuid];
+    }
+
+    private function agent(): RemoteAgent
+    {
+        return app(RemoteAgent::class);
+    }
+
+    private function target(): RemoteTarget
+    {
+        return app(RemoteServerConnections::class)->target($this->server);
+    }
+
+    /** @param array<string, string|null> $variables */
+    private function environment(array $variables): void
+    {
+        foreach ($variables as $name => $value) {
+            if ($value === null) {
+                putenv($name);
+                unset($_SERVER[$name], $_ENV[$name]);
+            } else {
+                putenv($name.'='.$value);
+                $_SERVER[$name] = $_ENV[$name] = $value;
+            }
+        }
     }
 
     private function installedTree(): string

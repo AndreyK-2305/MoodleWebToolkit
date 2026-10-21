@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.6.1"
+readonly AGENT_VERSION="1.7.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -295,6 +295,18 @@ registered_argv() {
             (cd "$DST_RUNTIME_DIR" && sha256sum --quiet --check FILES.sha256 >/dev/null 2>&1) || fail engine_modified
             # shellcheck disable=SC2016
             REGISTERED_ARGV=(bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh preparar' consolidator-prepare "$DST_RUNTIME_DIR")
+            ;;
+        package.fetch)
+            [[ ${#params[@]} == 6 && ${params[destination]:-} =~ $SOURCE_RE && ${params[project]:-} =~ $UUID_RE
+                && ${params[source]:-} =~ ^[a-z][a-z0-9_-]{0,63}$ && ${params[sha]:-} =~ $SHA_RE
+                && ${params[bucket]:-} =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && ${params[region]:-} =~ ^[a-z]{2}(-gov)?-[a-z]+-[1-9]$ ]] || fail invalid_parameter
+            command -v aws >/dev/null 2>&1 || fail aws_cli_unavailable
+            load_destination "${params[destination]}"
+            [[ -d $DST_RUNTIME_DIR && ! -L $DST_RUNTIME_DIR ]] || fail destination_runtime_missing
+            # Packages are fixed once the Consolidator wrote to the site.
+            [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+            [[ ! -L $DST_RUNTIME_DIR/copias ]] || fail destination_profile_unsafe
+            REGISTERED_ARGV=(bash "$SELF_PATH" __package-fetch "${params[destination]}" "${params[project]}" "${params[source]}" "${params[sha]}" "${params[bucket]}" "${params[region]}" "$OP_DIR")
             ;;
         package.upload)
             [[ ${#params[@]} == 4 && ${params[collector]:-} =~ $UUID_RE && ${params[project]:-} =~ $UUID_RE
@@ -770,6 +782,105 @@ cmd_upload_report() {
 }
 
 # Bounded base64 of a structured document, "too_large" or null when absent.
+# Brings one sealed package from S3 into the destination runtime's copias/: the
+# sidecar first, then the ZIP, both into a staging directory on the same
+# filesystem. Nothing reaches copias/ until the ZIP hashes as the platform
+# expects and as its own sidecar declares; the sidecar is moved last.
+cmd_package_fetch_internal() {
+    local destination=$1 project=$2 source=$3 sha=$4 bucket=$5 region=$6 op_dir=$7 copias staging prefix line name size free actual
+    [[ $project =~ $UUID_RE && $sha =~ $SHA_RE && $op_dir == "$OPS_DIR/"* ]] || exit 50
+    load_destination "$destination" >/dev/null
+    [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || { echo "DESTINATION_ALREADY_WRITTEN" >&2; exit 51; }
+    copias="$DST_RUNTIME_DIR/copias"
+    [[ ! -L $copias ]] || exit 50
+    mkdir -p "$copias" "$op_dir/work"
+    staging="$copias/.incoming-$(basename "$op_dir")"
+    rm -rf -- "$staging"
+    mkdir -m 0700 "$staging"
+    # Expanded now: the trap runs after this function's locals are gone.
+    # shellcheck disable=SC2064
+    trap "rm -rf -- $(printf '%q' "$staging")" EXIT
+    prefix="mwt/$project/$source/$sha"
+    aws s3 cp "s3://$bucket/$prefix.zip.sha256" "$staging/sidecar" --region "$region" --only-show-errors \
+        || { echo "SIDECAR_DOWNLOAD_FAILED" >&2; exit 52; }
+    line=$(head -c 512 "$staging/sidecar" | head -n 1 | tr -d '\r')
+    [[ $line =~ ^([0-9a-f]{64})\ [\ *]?([a-z][a-z0-9_-]{0,63}\.zip)$ && ${BASH_REMATCH[1]} == "$sha" ]] || { echo "SIDECAR_INVALID" >&2; exit 53; }
+    name=${BASH_REMATCH[2]}
+    if [[ -f $copias/$name && ! -L $copias/$name ]]; then
+        # Same name already there: only the very same package counts as present.
+        [[ $(sha256sum "$copias/$name" | cut -c1-64) == "$sha" ]] || { echo "DESTINATION_NAME_CONFLICT" >&2; exit 54; }
+        cp "$staging/sidecar" "$copias/$name.sha256.tmp" && mv -f "$copias/$name.sha256.tmp" "$copias/$name.sha256"
+        size=$(stat -c %s "$copias/$name")
+        write_atomic "$op_dir/work/result.json" "$(printf '{"name":"%s","sha256":"%s","size":%s,"already_present":true,"fetched_at":"%s"}' "$name" "$sha" "$size" "$(now_utc)")"
+        echo "FETCH_OK name=$name already_present=1"
+        exit 0
+    fi
+    [[ ! -e $copias/$name ]] || { echo "DESTINATION_NAME_CONFLICT" >&2; exit 54; }
+    size=$(aws s3api head-object --bucket "$bucket" --key "$prefix.zip" --region "$region" --query ContentLength --output text 2>/dev/null) || size=''
+    [[ $size =~ ^[0-9]+$ ]] || { echo "PACKAGE_NOT_FOUND" >&2; exit 55; }
+    free=$(df -PB1 "$copias" | awk 'NR==2 {print $4}')
+    # The ZIP plus a tenth of margin; the Consolidator sizes its own extraction later.
+    ((free > size + size / 10)) || { echo "INSUFFICIENT_DISK" >&2; exit 56; }
+    aws s3 cp "s3://$bucket/$prefix.zip" "$staging/$name" --region "$region" --only-show-errors \
+        || { echo "PACKAGE_DOWNLOAD_FAILED" >&2; exit 57; }
+    actual=$(sha256sum "$staging/$name" | cut -c1-64)
+    [[ $actual == "$sha" && $(stat -c %s "$staging/$name") == "$size" ]] || { echo "PACKAGE_HASH_MISMATCH" >&2; exit 58; }
+    chmod 0644 "$staging/$name" "$staging/sidecar"
+    mv "$staging/$name" "$copias/$name"
+    mv "$staging/sidecar" "$copias/$name.sha256"
+    write_atomic "$op_dir/work/result.json" "$(printf '{"name":"%s","sha256":"%s","size":%s,"already_present":false,"fetched_at":"%s"}' "$name" "$sha" "$size" "$(now_utc)")"
+    echo "FETCH_OK name=$name already_present=0"
+}
+
+cmd_fetch_report() {
+    (($# == 1)) || fail invalid_arguments
+    require_operation "$1"
+    [[ -f $OP_DIR/launch.json ]] || fail operation_not_found 4
+    [[ $(sed -n 's/.*"command_key":"\([^"]*\)".*/\1/p' "$OP_DIR/launch.json") == package.fetch ]] || fail not_a_fetch_operation
+    respond_ok fetch-report "{\"operation_uuid\":\"$1\",\"result_base64\":$(encode_document "$OP_DIR/work/result.json")}"
+}
+
+# The packages in a destination runtime's copias/: name, size and what its
+# sidecar declares. ZIPs are not hashed again here; the fetch verified them.
+cmd_copias_list() {
+    (($# == 1)) || fail invalid_arguments
+    local copias file name entries='' sep='' count=0 sidecar_sha size line
+    load_destination "$1"
+    copias="$DST_RUNTIME_DIR/copias"
+    [[ ! -L $copias ]] || fail destination_profile_unsafe
+    if [[ -d $copias ]]; then
+        while IFS= read -r -d '' file; do
+            ((count < 64)) || break
+            name=$(basename "$file")
+            [[ $name =~ ^[a-z][a-z0-9_-]{0,63}\.zip$ ]] || continue
+            size=$(stat -c %s "$file")
+            sidecar_sha=''
+            if [[ -f $file.sha256 && ! -L $file.sha256 ]]; then
+                line=$(head -c 512 "$file.sha256" | head -n 1 | tr -d '\r')
+                [[ $line =~ ^([0-9a-f]{64})\ [\ *]?([a-z][a-z0-9_-]{0,63}\.zip)$ && ${BASH_REMATCH[2]} == "$name" ]] && sidecar_sha=${BASH_REMATCH[1]}
+            fi
+            entries+="$sep{\"name\":\"$name\",\"size\":$size,\"sidecar_sha256\":$(json_or_null "$sidecar_sha")}"
+            sep=','
+            count=$((count + 1))
+        done < <(find "$copias" -maxdepth 1 -type f -name '*.zip' -print0 | LC_ALL=C sort -z)
+    fi
+    respond_ok copias-list "{\"destination\":\"$1\",\"write_locked\":$(bool "$([[ -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] && echo 1 || echo 0)"),\"packages\":[$entries]}"
+}
+
+# Removes one package from copias/ while the destination has not been written.
+cmd_copias_remove() {
+    (($# == 2)) || fail invalid_arguments
+    local copias name=$2
+    [[ $name =~ ^[a-z][a-z0-9_-]{0,63}\.zip$ ]] || fail invalid_arguments
+    load_destination "$1"
+    [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+    copias="$DST_RUNTIME_DIR/copias"
+    [[ ! -L $copias && ! -L $copias/$name && ! -L $copias/$name.sha256 ]] || fail destination_profile_unsafe
+    [[ -f $copias/$name ]] || fail package_not_found
+    rm -f -- "$copias/$name" "$copias/$name.sha256"
+    respond_ok copias-remove "{\"destination\":\"$1\",\"name\":\"$name\",\"removed\":true}"
+}
+
 encode_document() {
     if [[ -f $1 && ! -L $1 ]]; then
         if (($(stat -c %s "$1") > 16384)); then printf '"too_large"'; else printf '"%s"' "$(base64 -w0 <"$1")"; fi
@@ -874,10 +985,14 @@ case $COMMAND in
     source-list) cmd_source_list "$@" ;;
     destination-list) cmd_destination_list "$@" ;;
     destination-check) cmd_destination_check "$@" ;;
+    fetch-report) cmd_fetch_report "$@" ;;
+    copias-list) cmd_copias_list "$@" ;;
+    copias-remove) cmd_copias_remove "$@" ;;
     collector-report) cmd_collector_report "$@" ;;
     upload-report) cmd_upload_report "$@" ;;
     cleanup) cmd_cleanup "$@" ;;
     __package-upload) (($# == 5)) || exit 40; cmd_package_upload_internal "$@" ;;
+    __package-fetch) (($# == 7)) || exit 50; cmd_package_fetch_internal "$@" ;;
     __run) (($# == 1)) || exit 3; cmd_run "$1" ;;
     *) fail unknown_subcommand ;;
 esac

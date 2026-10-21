@@ -25,6 +25,14 @@ class RemoteCommandRegistry
             'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
             'distribution' => '/^[0-9a-f]{64}$/D',
         ], 'cancellable' => true],
+        'package.fetch' => ['parameters' => [
+            'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
+            'project' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
+            'source' => '/^[a-z][a-z0-9_-]{0,63}$/D',
+            'sha' => '/^[0-9a-f]{64}$/D',
+            'bucket' => '/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/D',
+            'region' => '/^[a-z]{2}(-gov)?-[a-z]+-[1-9]$/D',
+        ], 'cancellable' => true],
         'package.upload' => ['parameters' => [
             'collector' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
             'project' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
