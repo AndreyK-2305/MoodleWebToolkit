@@ -7,6 +7,7 @@ use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteSourceCleanup;
 use App\Models\AcademicProposal;
 use App\Models\Artifact;
 use App\Models\Checkpoint;
@@ -188,6 +189,7 @@ class ExecutionPresenter
                 && ! $execution->remoteOperations()->where('communication_state', '!=', 'TERMINATED')->exists(),
             'server' => Server::query()->where('project_id', $execution->project_id)->where('uuid', $settings['server_uuid'] ?? null)->value('name'),
             'source_profile' => $settings['source_profile'] ?? null,
+            'source_cleanup' => RemoteSourceCleanup::state($execution),
             'report' => is_array($report) ? ['stage' => $courses['stage'] ?? $report['status']['stage'] ?? null,
                 'completed_courses' => $courses['completed_courses'] ?? null, 'total_courses' => $courses['total_courses'] ?? null,
                 'failed_courses' => $courses['failed_courses'] ?? null, 'package_ready' => ($report['package_ready'] ?? false) === true] : null,

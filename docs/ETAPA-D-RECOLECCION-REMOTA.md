@@ -10,7 +10,8 @@ Ejecución con pasos, progreso y eventos, y revisión.
 | Corte | Alcance                                                                                              | Estado          |
 | ----- | ---------------------------------------------------------------------------------------------------- | --------------- |
 | D1    | Modo `REMOTE` de COLLECT: configuración, preflight, Ejecución hasta `REVIEW`, cancelación e interfaz | Fusionado (#22) |
-| D2    | Confirmación final (`REVIEW` → `COMPLETED`) de un paquete remoto y nuevo intento desde la Ejecución  | Este PR         |
+| D2    | Confirmación final (`REVIEW` → `COMPLETED`) de un paquete remoto y nuevo intento desde la Ejecución  | Fusionado (#23) |
+| D3a   | Limpieza del disco en el servidor de origen al terminar                                              | Este PR         |
 
 ## D1: modo `REMOTE`
 
@@ -106,6 +107,14 @@ La descarga queda en `artifact_downloads` y en auditoría (`delivery: S3_PRESIGN
 - En modo remoto, el wizard ya no muestra escenarios simulados: el paso 3 remite a la
   tarjeta de recolección remota y los textos de instancias y preflight dejan de decir
   "simulado" cuando hay acceso remoto.
+
+## D3a: limpieza del disco en el origen
+
+El agente 1.4.0 añade `cleanup <operación>`. Sobre una operación terminada (con `exit.json` y sin proceso vivo) borra solo lo pesado: el ZIP, el árbol de trabajo `.moodle-collector-work-<paquete>` y `tmp/` del Recolector, y `audit/` de la publicación. Conserva `launch.json`, `exit.json`, los logs, el sidecar SHA-256 y el `status.json`, y deja `cleanup.json` con los bytes liberados. Valida todas las rutas antes de tocar nada: un enlace en cualquiera de ellas aborta sin borrar. No cruza sistemas de archivos y es idempotente.
+
+La plataforma (`RemoteSourceCleanup`) lo pide cuando el paquete ya no hace falta en el origen: verificado en S3 (`REVIEW` en adelante) o cuando la Ejecución se cerró sin él (`FAILED`/`CANCELLED`). Si el servidor no responde, reintenta con backoff (1 min a 1 h) sin bloquear la revisión, y lo marca para revisión tras 8 intentos. La Ejecución muestra el espacio liberado.
+
+Para que el agente quepa en una sola llamada de instalación, ahora viaja comprimido (gzip + base64, unos 14 KB). El SHA-256 se sigue verificando sobre el archivo descomprimido.
 
 ## Límites
 

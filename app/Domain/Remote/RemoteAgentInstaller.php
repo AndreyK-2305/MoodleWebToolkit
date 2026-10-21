@@ -40,8 +40,9 @@ class RemoteAgentInstaller
             'expected='.escapeshellarg($distribution['sha256']),
             'mkdir -p "$dir"',
             'tmp=$(mktemp "$dir/.mwt-agent.XXXXXX")',
+            // Compressed to fit one call; the hash below is checked on the decompressed file.
             // The base64 alphabet has no quote characters, so single quotes are sufficient.
-            "printf %s '".base64_encode((string) file_get_contents($distribution['path']))."' | base64 -d > \"\$tmp\"",
+            "printf %s '".base64_encode((string) gzencode((string) file_get_contents($distribution['path']), 9))."' | base64 -d | gzip -dc > \"\$tmp\"",
             'actual=$(sha256sum "$tmp" | cut -d" " -f1)',
             'if [ "$actual" != "$expected" ]; then rm -f "$tmp"; trap - ERR; printf "%s\n" "$hash_mismatch"; exit 2; fi',
             'chmod 0755 "$tmp"',

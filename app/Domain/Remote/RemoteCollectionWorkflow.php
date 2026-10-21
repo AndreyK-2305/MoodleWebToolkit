@@ -40,6 +40,7 @@ class RemoteCollectionWorkflow
         private readonly ExecutionLifecycle $lifecycle,
         private readonly ExecutionEventRecorder $events,
         private readonly SourcePackageRegistry $packages,
+        private readonly RemoteSourceCleanup $cleanup,
     ) {}
 
     /** Launches the export once; a launch the platform rejects closes the Execution as failed. */
@@ -147,6 +148,8 @@ class RemoteCollectionWorkflow
         }
         try {
             $this->advanceLocked($execution->fresh());
+            // Once the package is verified in S3 or the Execution closed, the source keeps only evidence.
+            $this->cleanup->clean($execution->fresh());
         } finally {
             $pdo->prepare('SELECT pg_advisory_unlock('.self::LOCK.', ?)')->execute([$execution->id]);
         }
