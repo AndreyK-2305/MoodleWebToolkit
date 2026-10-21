@@ -441,16 +441,23 @@ class ProjectWizardTest extends TestCase
             ->assertSessionHasNoErrors();
         $this->assertDatabaseCount('moodle_instances', 0);
 
+        // A collection exports from up to eight sources; a destination or a ninth source is rejected.
+        foreach ([
+            [$this->instancePayload('SOURCE', 1), $this->instancePayload('DESTINATION', 2, 'PREPARED')],
+            array_map(fn (int $index): array => $this->instancePayload('SOURCE', $index), range(1, 9)),
+        ] as $instances) {
+            $this->actingAs($operator)
+                ->put(route('projects.wizard.instances', $project->uuid), ['instances' => $instances])
+                ->assertSessionHasErrors('instances');
+        }
+        $this->assertDatabaseCount('moodle_instances', 0);
+
         $this->actingAs($operator)
             ->put(route('projects.wizard.instances', $project->uuid), [
-                'instances' => [
-                    $this->instancePayload('SOURCE', 1),
-                    $this->instancePayload('SOURCE', 2),
-                ],
+                'instances' => [$this->instancePayload('SOURCE', 1), $this->instancePayload('SOURCE', 2)],
             ])
-            ->assertSessionHasErrors('instances');
-
-        $this->assertDatabaseCount('moodle_instances', 0);
+            ->assertSessionHasNoErrors();
+        $this->assertDatabaseCount('moodle_instances', 2);
     }
 
     public function test_incompatible_destination_and_cross_project_references_are_rejected(): void
