@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Remote\CheckRemoteSource;
+use App\Domain\Remote\DetectRemoteSources;
 use App\Domain\Remote\InstallRemoteAgent;
 use App\Domain\Remote\RemoteCollectorExport;
 use App\Domain\Remote\RemoteServerConnections;
@@ -93,6 +94,22 @@ final class RemoteConnectionController extends Controller
         Inertia::flash('toast', $result['installed']
             ? ['type' => 'success', 'message' => $result['already_present'] ? 'El Recolector 7.4.2 ya estaba desplegado e íntegro.' : 'Recolector 7.4.2 desplegado y verificado por hash.']
             : ['type' => 'error', 'message' => 'No se desplegó el Recolector ('.$result['error_code'].').']);
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    /** Lists the profiles the server's administrator defined, by identifier only. */
+    public function detectSources(Request $request, Project $project, Server $server, DetectRemoteSources $sources): RedirectResponse
+    {
+        $this->authorizeServer($project, $server);
+        /** @var User $actor */
+        $actor = $request->user();
+        $result = $sources->handle($server, $actor);
+        Inertia::flash('toast', $result['detected']
+            ? ['type' => count($result['sources']) > 0 ? 'success' : 'warning', 'message' => count($result['sources']) > 0
+                ? 'Perfiles de origen detectados: '.count($result['sources']).'.'
+                : 'El servidor no tiene perfiles de origen; el administrador debe crearlos (ver la guía).']
+            : ['type' => 'error', 'message' => 'No se pudieron listar los perfiles ('.$result['error_code'].').']);
 
         return to_route('projects.show', $project->uuid);
     }

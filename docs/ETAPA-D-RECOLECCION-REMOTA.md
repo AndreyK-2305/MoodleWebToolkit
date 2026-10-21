@@ -12,6 +12,7 @@ Ejecución con pasos, progreso y eventos, y revisión.
 | D1    | Modo `REMOTE` de COLLECT: configuración, preflight, Ejecución hasta `REVIEW`, cancelación e interfaz | Fusionado (#22) |
 | D2    | Confirmación final (`REVIEW` → `COMPLETED`) de un paquete remoto y nuevo intento desde la Ejecución  | Fusionado (#23) |
 | D3a   | Limpieza del disco en el servidor de origen al terminar                                              | Este PR         |
+| D3b   | Perfiles de origen institucionales: detección, comprobación ampliada y guía                          | Este PR         |
 
 ## D1: modo `REMOTE`
 
@@ -115,6 +116,13 @@ El agente 1.4.0 añade `cleanup <operación>`. Sobre una operación terminada (c
 La plataforma (`RemoteSourceCleanup`) lo pide cuando el paquete ya no hace falta en el origen: verificado en S3 (`REVIEW` en adelante) o cuando la Ejecución se cerró sin él (`FAILED`/`CANCELLED`). Si el servidor no responde, reintenta con backoff (1 min a 1 h) sin bloquear la revisión, y lo marca para revisión tras 8 intentos. La Ejecución muestra el espacio liberado.
 
 Para que el agente quepa en una sola llamada de instalación, ahora viaja comprimido (gzip + base64, unos 14 KB). El SHA-256 se sigue verificando sobre el archivo descomprimido.
+
+## D3b: perfiles de origen institucionales
+
+- Agente 1.5.0, `source-list`: lista los perfiles de `/etc/mwt-agent/sources` por nombre, con su validez, runtime y usuario, **sin rutas**. Los perfiles con permisos abiertos o claves desconocidas aparecen como inválidos, con un código cerrado.
+- `source-check` también informa la versión de Moodle, que lee de `version.php` tras cargar solo la configuración (`ABORT_AFTER_CONFIG`, sin conectar a la base). Informa además el espacio libre en `moodledata` y en el directorio del agente. Un perfil queda listo solo si Moodle se detecta y `moodledata` es escribible.
+- Interfaz: «Detectar perfiles del servidor» y los detalles del perfil elegido (Moodle, PHP, espacio libre o el motivo de invalidez).
+- `remote-agent/mwt-source-profile` y [la guía](GUIA-PERFIL-ORIGEN.md) para que el administrador del servidor cree el perfil como root. La plataforma sigue sin escribir perfiles.
 
 ## Límites
 

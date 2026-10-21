@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.4.0"
+readonly AGENT_VERSION="1.5.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -522,7 +522,7 @@ cmd_tool_commit() {
 # runtime user and PHP with the extensions it needs. Prints no paths or content.
 cmd_source_check() {
     (($# == 1)) || fail invalid_arguments
-    local report php_version='' zip=0 dom=0 readable=0
+    local report php_version='' zip=0 dom=0 readable=0 moodle='' release='' version='' data_free='' data_writable=0 state_free='' probe_dir
     load_source "$1"
     source_exec
     # shellcheck disable=SC2016
@@ -532,7 +532,50 @@ cmd_source_check() {
     else
         fail source_runtime_unavailable
     fi
-    respond_ok source-check "$(printf '{"source":"%s","runtime":"%s","run_as":"%s","php_version":"%s","zip":%s,"dom":%s,"config_readable":%s}'         "$SRC_ID" "$SRC_RUNTIME" "$SRC_RUN_AS" "$php_version" "$(bool "$zip")" "$(bool "$dom")" "$(bool "$readable")")"
+    # Moodle loads only its configuration (no database connection) to report its
+    # release and the space left in moodledata; paths and settings never leave.
+    # shellcheck disable=SC2016
+    moodle=$("${SRC_EXEC[@]}" php -r 'define("CLI_SCRIPT", true); define("ABORT_AFTER_CONFIG", true); ob_start();
+        require $argv[1]; ob_end_clean(); $release = null; $version = null;
+        if (is_readable($CFG->dirroot."/version.php")) { (function ($file) use (&$release, &$version) { include $file; })($CFG->dirroot."/version.php"); }
+        $free = @disk_free_space($CFG->dataroot);
+        echo "MWT|", is_string($release) ? $release : "", "|", is_numeric($version) ? (int) $version : "", "|",
+            is_float($free) ? (int) $free : "", "|", (int) is_writable($CFG->dataroot);' "$SRC_MOODLE_CONFIG" 2>/dev/null | tail -n 1) || moodle=''
+    if [[ $moodle =~ ^MWT\|([0-9A-Za-z\ .+()_:-]{0,64})\|([0-9]{0,12})\|([0-9]{0,20})\|([01])$ ]]; then
+        release=${BASH_REMATCH[1]} version=${BASH_REMATCH[2]} data_free=${BASH_REMATCH[3]} data_writable=${BASH_REMATCH[4]}
+    fi
+    probe_dir=$STATE_DIR
+    [[ -d $probe_dir ]] || probe_dir=$(dirname "$STATE_DIR")
+    state_free=$(df -PB1 "$probe_dir" 2>/dev/null | awk 'NR==2 {print $4}') || state_free=''
+    respond_ok source-check "$(printf '{"source":"%s","runtime":"%s","run_as":"%s","php_version":"%s","zip":%s,"dom":%s,"config_readable":%s,"moodle_release":%s,"moodle_version":%s,"dataroot_free_bytes":%s,"dataroot_writable":%s,"state_free_bytes":%s}' \
+        "$SRC_ID" "$SRC_RUNTIME" "$SRC_RUN_AS" "$php_version" "$(bool "$zip")" "$(bool "$dom")" "$(bool "$readable")" \
+        "$(json_or_null "$release")" "$(int_or_null "$version")" "$(int_or_null "$data_free")" "$(bool "$data_writable")" "$(int_or_null "$state_free")")"
+}
+
+# Profiles the administrator defined on this server, with their validity and
+# runtime only: the files' paths and settings are never returned.
+cmd_source_list() {
+    (($# == 0)) || fail invalid_arguments
+    local file id out entries='' sep='' count=0 runtime run_as code
+    if [[ -d $SOURCES_DIR && ! -L $SOURCES_DIR ]]; then
+        while IFS= read -r -d '' file; do
+            ((count < 50)) || break
+            id=$(basename "$file" .conf)
+            [[ $id =~ $SOURCE_RE ]] || continue
+            # load_source exits on the first problem; a subshell keeps the listing going.
+            out=$(load_source "$id"; printf 'MWT_OK %s %s' "$SRC_RUNTIME" "$SRC_RUN_AS") || true
+            if [[ $out =~ ^MWT_OK\ (native|compose)\ ([a-z_][a-z0-9_-]{0,31})$ ]]; then
+                runtime=${BASH_REMATCH[1]} run_as=${BASH_REMATCH[2]}
+                entries+="$sep{\"id\":\"$id\",\"valid\":true,\"runtime\":\"$runtime\",\"run_as\":\"$run_as\",\"error_code\":null}"
+            else
+                code=$(sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p' <<<"$out")
+                entries+="$sep{\"id\":\"$id\",\"valid\":false,\"runtime\":null,\"run_as\":null,\"error_code\":$(json_or_null "${code:-source_profile_invalid}")}"
+            fi
+            sep=','
+            count=$((count + 1))
+        done < <(find "$SOURCES_DIR" -maxdepth 1 -type f -name '*.conf' -print0 | LC_ALL=C sort -z)
+    fi
+    respond_ok source-list "{\"sources_dir_exists\":$(bool "$([[ -d $SOURCES_DIR ]] && echo 1 || echo 0)"),\"sources\":[$entries]}"
 }
 
 # Sets PKG_* for a finished collector.742 operation whose ZIP matches its sidecar.
@@ -713,6 +756,7 @@ case $COMMAND in
     tool-status) cmd_tool_status "$@" ;;
     tool-commit) cmd_tool_commit "$@" ;;
     source-check) cmd_source_check "$@" ;;
+    source-list) cmd_source_list "$@" ;;
     collector-report) cmd_collector_report "$@" ;;
     upload-report) cmd_upload_report "$@" ;;
     cleanup) cmd_cleanup "$@" ;;

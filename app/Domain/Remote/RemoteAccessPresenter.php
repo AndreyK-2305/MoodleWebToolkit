@@ -42,6 +42,7 @@ class RemoteAccessPresenter
                 'evidence' => $this->evidence($server),
                 'collector_deployed' => is_string($server->metadata['remote_tools'][RemoteCollectorExport::DISTRIBUTION_KEY]['tree_sha256'] ?? null),
                 'sources' => $this->sources($server),
+                'sources_detected_at' => $server->metadata['remote_sources_detected']['detected_at'] ?? null,
                 'operations' => ($operations->get($server->uuid) ?? collect())->take(5)->map(fn (RemoteOperation $operation): array => [
                     'uuid' => $operation->operation_uuid,
                     'command_key' => $operation->command_key,
@@ -59,15 +60,24 @@ class RemoteAccessPresenter
         ];
     }
 
-    /** @return list<array{id: string, ready: bool, checked_at: string|null}> */
+    /** @return list<array<string, mixed>> */
     private function sources(Server $server): array
     {
+        $checked = is_array($server->metadata['remote_sources'] ?? null) ? $server->metadata['remote_sources'] : [];
+        $listed = $server->metadata['remote_sources_detected']['sources'] ?? null;
+        $detected = collect(is_array($listed) ? $listed : [])->filter(fn ($source): bool => is_array($source)
+            && is_string($source['id'] ?? null))->keyBy('id');
         $sources = [];
-        foreach (is_array($server->metadata['remote_sources'] ?? null) ? $server->metadata['remote_sources'] : [] as $id => $source) {
-            if (is_string($id) && is_array($source)) {
-                $sources[] = ['id' => $id, 'ready' => ($source['ready'] ?? false) === true,
-                    'checked_at' => is_string($source['checked_at'] ?? null) ? $source['checked_at'] : null];
-            }
+        foreach (collect(array_keys($checked))->merge($detected->keys())->filter(fn ($id): bool => is_string($id))->unique()->sort()->values() as $id) {
+            $check = is_array($checked[$id] ?? null) ? $checked[$id] : null;
+            $report = is_array($check['report'] ?? null) ? $check['report'] : [];
+            $sources[] = ['id' => $id, 'ready' => ($check['ready'] ?? false) === true,
+                'checked_at' => is_string($check['checked_at'] ?? null) ? $check['checked_at'] : null,
+                'check_error' => is_string($check['error_code'] ?? null) ? $check['error_code'] : null,
+                'detected' => $detected->has($id), 'valid' => $detected->has($id) ? $detected->get($id)['valid'] === true : null,
+                'profile_error' => $detected->get($id)['error_code'] ?? null, 'runtime' => $report['runtime'] ?? $detected->get($id)['runtime'] ?? null,
+                'moodle_release' => $report['moodle_release'] ?? null, 'php_version' => $report['php_version'] ?? null,
+                'dataroot_free_bytes' => $report['dataroot_free_bytes'] ?? null, 'state_free_bytes' => $report['state_free_bytes'] ?? null];
         }
 
         return $sources;
