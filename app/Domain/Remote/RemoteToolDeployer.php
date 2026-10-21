@@ -112,11 +112,9 @@ class RemoteToolDeployer
         if ($distribution->verification_state !== 'VERIFIED') {
             throw new ToolOperationBlocked('Solo se despliegan distribuciones verificadas del catálogo.');
         }
-        // A deployed tree must hash exactly like the catalog entry; excluded or mutable
-        // files would change that hash and need their own contract.
-        if (($distribution->deployment_exclusions ?? []) !== [] || ($distribution->mutable_paths ?? []) !== []) {
-            throw new ToolOperationBlocked('La distribución tiene archivos excluidos o mutables; su despliegue remoto no está soportado todavía.');
-        }
+        // The whole verified tree travels, excluded and mutable files included, so the remote
+        // copy hashes exactly like the catalog entry. It stays immutable in the agent's tool
+        // store; per-site configuration lives in the runtime the administrator derives from it.
     }
 
     private function bundle(string $root): string

@@ -16,6 +16,7 @@ return [
         'agent_state_dir' => env('TOOL_REMOTE_AGENT_STATE_DIR', '/var/lib/mwt-agent'),
         'agent_tools_dir' => env('TOOL_REMOTE_AGENT_TOOLS_DIR', '/opt/mwt-agent/tools'),
         'agent_sources_dir' => env('TOOL_REMOTE_AGENT_SOURCES_DIR', '/etc/mwt-agent/sources'),
+        'agent_destinations_dir' => env('TOOL_REMOTE_AGENT_DESTINATIONS_DIR', '/etc/mwt-agent/destinations'),
         // Base64 characters per staging call; the installer already proved ~20 KB per SSM call.
         'deploy_chunk_bytes' => (int) env('TOOL_REMOTE_DEPLOY_CHUNK_BYTES', 16384),
         // Source packages uploaded by the source server's own role, under mwt/<project>/<source>/<sha256>.

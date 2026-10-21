@@ -43,6 +43,9 @@ class RemoteAccessPresenter
                 'collector_deployed' => is_string($server->metadata['remote_tools'][RemoteCollectorExport::DISTRIBUTION_KEY]['tree_sha256'] ?? null),
                 'sources' => $this->sources($server),
                 'sources_detected_at' => $server->metadata['remote_sources_detected']['detected_at'] ?? null,
+                'consolidator' => $this->consolidator($server),
+                'destinations' => $this->destinations($server),
+                'destinations_detected_at' => $server->metadata['remote_destinations_detected']['detected_at'] ?? null,
                 'operations' => ($operations->get($server->uuid) ?? collect())->take(5)->map(fn (RemoteOperation $operation): array => [
                     'uuid' => $operation->operation_uuid,
                     'command_key' => $operation->command_key,
@@ -81,6 +84,45 @@ class RemoteAccessPresenter
         }
 
         return $sources;
+    }
+
+    /** @return array{deployed: bool, deployment_state: string|null, deployment_error: string|null, updated_at: string|null} */
+    private function consolidator(Server $server): array
+    {
+        $deployment = $server->metadata['remote_tool_deployments'][CheckRemoteDestination::DISTRIBUTION_KEY] ?? null;
+        $deployment = is_array($deployment) ? $deployment : [];
+
+        return ['deployed' => is_string($server->metadata['remote_tools'][CheckRemoteDestination::DISTRIBUTION_KEY]['tree_sha256'] ?? null),
+            'deployment_state' => in_array($deployment['state'] ?? null, ['QUEUED', 'RUNNING', 'DEPLOYED', 'FAILED'], true) ? $deployment['state'] : null,
+            'deployment_error' => is_string($deployment['error_code'] ?? null) ? $deployment['error_code'] : null,
+            'updated_at' => is_string($deployment['updated_at'] ?? null) ? $deployment['updated_at'] : null];
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function destinations(Server $server): array
+    {
+        $checked = is_array($server->metadata['remote_destinations'] ?? null) ? $server->metadata['remote_destinations'] : [];
+        $listed = $server->metadata['remote_destinations_detected']['destinations'] ?? null;
+        $detected = collect(is_array($listed) ? $listed : [])->filter(fn ($destination): bool => is_array($destination)
+            && is_string($destination['id'] ?? null))->keyBy('id');
+        $destinations = [];
+        foreach (collect(array_keys($checked))->merge($detected->keys())->filter(fn ($id): bool => is_string($id))->unique()->sort()->values() as $id) {
+            $check = is_array($checked[$id] ?? null) ? $checked[$id] : null;
+            $report = is_array($check['report'] ?? null) ? $check['report'] : [];
+            $destinations[] = ['id' => $id, 'ready' => ($check['ready'] ?? false) === true,
+                'checked_at' => is_string($check['checked_at'] ?? null) ? $check['checked_at'] : null,
+                'check_error' => is_string($check['error_code'] ?? null) ? $check['error_code'] : null,
+                'blockers' => array_values(array_filter($check['blockers'] ?? [], 'is_string')),
+                'warnings' => array_values(array_filter($check['warnings'] ?? [], 'is_string')),
+                'detected' => $detected->has($id), 'valid' => $detected->has($id) ? $detected->get($id)['valid'] === true : null,
+                'profile_error' => $detected->get($id)['error_code'] ?? null,
+                'public_url' => $report['public_url'] ?? $detected->get($id)['public_url'] ?? null,
+                'docker_version' => $report['docker_version'] ?? null, 'memory_bytes' => $report['memory_bytes'] ?? null,
+                'runtime_free_bytes' => $report['runtime_free_bytes'] ?? null, 'target_running' => ($report['target_running'] ?? false) === true,
+                'destination_written' => ($report['destination_written'] ?? false) === true];
+        }
+
+        return $destinations;
     }
 
     /** @return array<string, mixed>|null */
