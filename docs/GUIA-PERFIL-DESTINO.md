@@ -9,6 +9,8 @@ Para el administrador del servidor de destino. La plataforma despliega el Consol
 | Sistema       | Linux/Ubuntu de 64 bits con systemd, Bash 4 o superior y `flock` (`util-linux`)                                                  |
 | Acceso        | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                                     |
 | Docker        | Docker Engine en marcha y Docker Compose v2 (`docker compose`)                                                                   |
+| AWS CLI v2    | Instalado en el servidor: trae los paquetes de S3 con el rol de la instancia                                                     |
+| Rol IAM (EC2) | `AmazonSSMManagedInstanceCore` y lectura **solo** del prefijo `mwt/` del bucket de paquetes (`s3:GetObject`)                     |
 | Dominio y TLS | El dominio definitivo del sitio con su certificado y un proxy TLS hacia `127.0.0.1:<puerto>` (8090 por defecto). Lo monta usted  |
 | Internet      | Salida a Internet durante la primera preparación: se construyen las imágenes de Moodle 5.2.1, MariaDB y el runtime del asistente |
 | Memoria       | 4 GiB o más; con menos, la comprobación lo advierte                                                                              |
@@ -79,12 +81,21 @@ El proceso corre en el servidor, así que cerrar la página o perder la conexió
 
 Una vez que el Consolidador escribió en el destino, la preparación queda bloqueada: repetirla recrearía sus servicios a mitad de la migración.
 
-## 6. Qué ve la plataforma y qué no
+## 6. Traer los paquetes
+
+En **Paquetes en copias/**, **Traer desde S3** lista los paquetes sellados y verificados en S3 de los proyectos que usted puede ver. El servidor los descarga con su propio rol. Antes de dejar un paquete en `copias/`:
+
+- la plataforma verifica el objeto en S3;
+- el agente comprueba que el ZIP coincida con el SHA-256 y el tamaño esperados y que su sello `.zip.sha256` declare ese mismo hash.
+
+Un paquete incompleto nunca llega a `copias/`. **Retirar** quita un paquete. Desde la primera escritura del Consolidador en el sitio, los paquetes quedan fijados y no se pueden agregar ni retirar.
+
+## 7. Qué ve la plataforma y qué no
 
 | La plataforma guarda                                               | Nunca recibe                                                              |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
 | Nombre del perfil, URL pública, hechos cerrados de la comprobación | Rutas del servidor, valores del `.env`, claves, Client ID/secret de OAuth |
 
-## 7. OAuth2 durante la consolidación
+## 8. OAuth2 durante la consolidación
 
 Cuando el asistente llega a la etapa de OAuth2, la Ejecución se detiene en la intervención «Configurar OAuth2» y muestra las instrucciones del Consolidador. Usted configura el servicio de Google en Moodle (`Administración del sitio > Servidor > Servicios OAuth 2`) y pulsa **Continuar** en la plataforma. El asistente revalida en vivo y, si algo falta, la Ejecución vuelve a la misma intervención.

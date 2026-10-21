@@ -9,6 +9,7 @@ use App\Domain\Remote\DetectRemoteSources;
 use App\Domain\Remote\InstallRemoteAgent;
 use App\Domain\Remote\PrepareRemoteDestination;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteDestinationPackages;
 use App\Domain\Remote\RemoteServerConnections;
 use App\Domain\Remote\RemoteToolDeployer;
 use App\Domain\Remote\TestRemoteConnection;
@@ -20,6 +21,7 @@ use App\Exceptions\ToolOperationBlocked;
 use App\Jobs\DeployRemoteTool;
 use App\Models\Project;
 use App\Models\Server;
+use App\Models\SourcePackage;
 use App\Models\ToolDistribution;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
@@ -215,6 +217,62 @@ final class RemoteConnectionController extends Controller
         try {
             $preparations->cancel($server, (string) $input['destination'], $actor);
             Inertia::flash('toast', ['type' => 'success', 'message' => 'Cancelación de la preparación solicitada.']);
+        } catch (ToolOperationBlocked|RemoteAgentUnavailable $exception) {
+            Inertia::flash('toast', ['type' => 'error', 'message' => $exception->getMessage()]);
+        }
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    /** Brings a verified source package from S3 into the destination runtime's copias/. */
+    public function fetchDestinationPackage(Request $request, Project $project, Server $server, RemoteDestinationPackages $packages): RedirectResponse
+    {
+        $this->authorizeDestination($project, $server);
+        $input = $request->validate(['destination' => ['required', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D'],
+            'source_package' => ['required', 'uuid']]);
+        $package = SourcePackage::query()->where('uuid', $input['source_package'])->with('project')->firstOrFail();
+        // The package may come from another project; its own project must be visible to the actor.
+        Gate::authorize('view', $package->project);
+        /** @var User $actor */
+        $actor = $request->user();
+        try {
+            $result = $packages->fetch($server, (string) $input['destination'], $package, $actor);
+            Inertia::flash('toast', ($result['state'] ?? null) === 'FAILED'
+                ? ['type' => 'error', 'message' => 'El agente rechazó la transferencia ('.($result['error_code'] ?? 'error').').']
+                : ['type' => 'success', 'message' => 'Transferencia del paquete '.$package->name.' iniciada en el servidor.']);
+        } catch (ToolOperationBlocked $exception) {
+            Inertia::flash('toast', ['type' => 'error', 'message' => $exception->getMessage()]);
+        }
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    public function listDestinationPackages(Request $request, Project $project, Server $server, RemoteDestinationPackages $packages): RedirectResponse
+    {
+        $this->authorizeDestination($project, $server);
+        $input = $request->validate(['destination' => ['required', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D']]);
+        try {
+            $result = $packages->list($server, (string) $input['destination']);
+            Inertia::flash('toast', $result['listed']
+                ? ['type' => 'success', 'message' => 'Paquetes en el destino: '.count($result['packages']).'.']
+                : ['type' => 'error', 'message' => 'No se pudo listar copias/ ('.$result['error_code'].').']);
+        } catch (ToolOperationBlocked $exception) {
+            Inertia::flash('toast', ['type' => 'error', 'message' => $exception->getMessage()]);
+        }
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    public function removeDestinationPackage(Request $request, Project $project, Server $server, RemoteDestinationPackages $packages): RedirectResponse
+    {
+        $this->authorizeDestination($project, $server);
+        $input = $request->validate(['destination' => ['required', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D'],
+            'name' => ['required', 'string', 'regex:/^[a-z][a-z0-9_-]{0,63}\.zip$/D']]);
+        /** @var User $actor */
+        $actor = $request->user();
+        try {
+            $packages->remove($server, (string) $input['destination'], (string) $input['name'], $actor);
+            Inertia::flash('toast', ['type' => 'success', 'message' => 'Paquete '.$input['name'].' retirado del destino.']);
         } catch (ToolOperationBlocked|RemoteAgentUnavailable $exception) {
             Inertia::flash('toast', ['type' => 'error', 'message' => $exception->getMessage()]);
         }

@@ -75,6 +75,30 @@ export type RemoteDestinationProfile = {
         markers: string[];
         tail: string;
     } | null;
+    copias: {
+        listed_at: string | null;
+        write_locked: boolean;
+        packages: {
+            name: string;
+            size: number | null;
+            sidecar_sha256: string | null;
+            source_package_uuid: string | null;
+            source_id: string | null;
+        }[];
+    } | null;
+    fetches: {
+        source_package_uuid: string;
+        package_name?: string;
+        source_id?: string;
+        state?: string;
+        error_code?: string | null;
+        error_line?: string | null;
+        name?: string | null;
+        already_present?: boolean | null;
+        launched_at?: string;
+        finished_at?: string | null;
+        observe_error?: string | null;
+    }[];
 };
 export type RemoteServer = {
     uuid: string;
@@ -122,9 +146,18 @@ export type RemoteServer = {
         } | null;
     }[];
 };
+export type AvailablePackage = {
+    uuid: string;
+    name: string;
+    source_id: string;
+    sha256: string;
+    size: number;
+    project: string | null;
+};
 export type RemoteAccess = {
     enabled: boolean;
     agent_version: string | null;
+    available_packages: AvailablePackage[];
     servers: RemoteServer[];
 };
 
@@ -174,6 +207,7 @@ export default function RemoteAccessPanel({
                             projectUuid={projectUuid}
                             server={server}
                             agentVersion={access.agent_version}
+                            availablePackages={access.available_packages}
                             editable={editable}
                         />
                     ))
@@ -187,11 +221,13 @@ function ServerConnection({
     projectUuid,
     server,
     agentVersion,
+    availablePackages,
     editable,
 }: {
     projectUuid: string;
     server: RemoteServer;
     agentVersion: string | null;
+    availablePackages: AvailablePackage[];
     editable: boolean;
 }) {
     const connection = server.connection;
@@ -447,6 +483,7 @@ function ServerConnection({
                     <DestinationRuntime
                         projectUuid={projectUuid}
                         server={server}
+                        availablePackages={availablePackages}
                         editable={editable}
                     />
                 )}
@@ -489,10 +526,12 @@ const destinationCodes: Record<string, string> = {
 function DestinationRuntime({
     projectUuid,
     server,
+    availablePackages,
     editable,
 }: {
     projectUuid: string;
     server: RemoteServer;
+    availablePackages: AvailablePackage[];
     editable: boolean;
 }) {
     const actions = useForm({});
@@ -682,6 +721,12 @@ function DestinationRuntime({
                                 destination={destination}
                                 editable={editable}
                             />
+                            <DestinationPackages
+                                base={base}
+                                destination={destination}
+                                availablePackages={availablePackages}
+                                editable={editable}
+                            />
                         </li>
                     ))}
                 </ul>
@@ -834,6 +879,220 @@ function Preparation({
                         </details>
                     )}
                 </>
+            )}
+        </div>
+    );
+}
+
+const fetchLabels: Record<string, string> = {
+    STARTING: 'Iniciando',
+    RUNNING: 'Transfiriendo',
+    CANCELLING: 'Cancelando',
+    SUCCEEDED: 'En copias/',
+    FAILED: 'Fallida',
+    CANCELLED: 'Cancelada',
+    UNKNOWN: 'Estado desconocido',
+};
+
+/** The sealed packages in a destination's copias/ and the transfers bringing them from S3. */
+function DestinationPackages({
+    base,
+    destination,
+    availablePackages,
+    editable,
+}: {
+    base: string;
+    destination: RemoteDestinationProfile;
+    availablePackages: AvailablePackage[];
+    editable: boolean;
+}) {
+    const fetch = useForm({ destination: destination.id, source_package: '' });
+    const actions = useForm({ destination: destination.id });
+    const copias = destination.copias;
+    const locked =
+        destination.destination_written || copias?.write_locked === true;
+    const active = destination.fetches.some((item) =>
+        ['STARTING', 'RUNNING', 'CANCELLING'].includes(item.state ?? ''),
+    );
+    const present = new Set(
+        (copias?.packages ?? []).map((item) => item.sidecar_sha256),
+    );
+    const candidates = availablePackages.filter(
+        (item) => !present.has(item.sha256),
+    );
+    const mib = (value: number | null | undefined) =>
+        typeof value === 'number' ? `${(value / 1048576).toFixed(1)} MiB` : '—';
+
+    return (
+        <div className="space-y-2 border-t pt-2">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium">Paquetes en copias/</span>
+                {locked && (
+                    <Badge variant="secondary">
+                        Fijados: el destino ya recibió escrituras
+                    </Badge>
+                )}
+                {editable && (
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="ml-auto"
+                        disabled={actions.processing}
+                        onClick={() =>
+                            actions.post(`${base}/destinations/packages/list`, {
+                                preserveScroll: true,
+                            })
+                        }
+                    >
+                        Actualizar lista
+                    </Button>
+                )}
+            </div>
+            {!copias || copias.packages.length === 0 ? (
+                <p className="text-muted-foreground text-xs">
+                    {copias
+                        ? 'copias/ está vacío.'
+                        : 'Aún no se ha listado copias/.'}
+                </p>
+            ) : (
+                <ul className="grid gap-1 text-xs">
+                    {copias.packages.map((item) => (
+                        <li
+                            key={item.name}
+                            className="flex flex-wrap items-center gap-2"
+                        >
+                            <span className="font-mono">{item.name}</span>
+                            <span className="text-muted-foreground">
+                                {mib(item.size)}
+                            </span>
+                            {item.sidecar_sha256 ? (
+                                <span className="text-muted-foreground font-mono">
+                                    {item.sidecar_sha256.slice(0, 12)}
+                                </span>
+                            ) : (
+                                <span className="text-red-600">
+                                    sin sello .sha256
+                                </span>
+                            )}
+                            {item.source_package_uuid === null && (
+                                <span className="text-amber-600">
+                                    paquete no registrado en la plataforma
+                                </span>
+                            )}
+                            {editable && !locked && (
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    className="ml-auto h-6"
+                                    disabled={actions.processing}
+                                    onClick={() => {
+                                        actions.transform(() => ({
+                                            destination: destination.id,
+                                            name: item.name,
+                                        }));
+                                        actions.post(
+                                            `${base}/destinations/packages/remove`,
+                                            { preserveScroll: true },
+                                        );
+                                    }}
+                                >
+                                    Retirar
+                                </Button>
+                            )}
+                        </li>
+                    ))}
+                </ul>
+            )}
+            {editable && !locked && destination.ready && (
+                <form
+                    className="flex flex-wrap items-center gap-2"
+                    onSubmit={(event) => {
+                        event.preventDefault();
+                        fetch.post(`${base}/destinations/packages`, {
+                            preserveScroll: true,
+                        });
+                    }}
+                >
+                    <Label
+                        htmlFor={`fetch-${destination.id}`}
+                        className="text-xs"
+                    >
+                        Traer desde S3
+                    </Label>
+                    <select
+                        id={`fetch-${destination.id}`}
+                        className="border-input bg-background h-8 rounded-md border px-2 text-xs"
+                        value={fetch.data.source_package}
+                        onChange={(event) =>
+                            fetch.setData('source_package', event.target.value)
+                        }
+                    >
+                        <option value="">
+                            Seleccione un paquete verificado
+                        </option>
+                        {candidates.map((item) => (
+                            <option key={item.uuid} value={item.uuid}>
+                                {item.name} · {item.project ?? '—'} ·{' '}
+                                {mib(item.size)}
+                            </option>
+                        ))}
+                    </select>
+                    <Button
+                        type="submit"
+                        size="sm"
+                        disabled={
+                            fetch.processing ||
+                            active ||
+                            fetch.data.source_package === ''
+                        }
+                    >
+                        Transferir
+                    </Button>
+                </form>
+            )}
+            {destination.fetches.length > 0 && (
+                <ul className="grid gap-1 text-xs">
+                    {destination.fetches.map((item) => (
+                        <li
+                            key={item.source_package_uuid}
+                            className="flex flex-wrap items-center gap-2"
+                        >
+                            <span>{item.package_name}</span>
+                            <Badge
+                                variant={
+                                    item.state === 'SUCCEEDED'
+                                        ? 'default'
+                                        : [
+                                                'STARTING',
+                                                'RUNNING',
+                                                'CANCELLING',
+                                            ].includes(item.state ?? '')
+                                          ? 'secondary'
+                                          : 'destructive'
+                                }
+                            >
+                                {fetchLabels[item.state ?? ''] ?? item.state}
+                            </Badge>
+                            {item.already_present && (
+                                <span className="text-muted-foreground">
+                                    ya estaba en el destino
+                                </span>
+                            )}
+                            {item.error_code && (
+                                <span className="text-red-600">
+                                    {item.error_code}
+                                </span>
+                            )}
+                            {item.observe_error && (
+                                <span className="text-amber-600">
+                                    sin contacto ({item.observe_error})
+                                </span>
+                            )}
+                        </li>
+                    ))}
+                </ul>
             )}
         </div>
     );
