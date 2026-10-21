@@ -11,8 +11,9 @@ Ejecución con pasos, progreso y eventos, y revisión.
 | ----- | ---------------------------------------------------------------------------------------------------- | --------------- |
 | D1    | Modo `REMOTE` de COLLECT: configuración, preflight, Ejecución hasta `REVIEW`, cancelación e interfaz | Fusionado (#22) |
 | D2    | Confirmación final (`REVIEW` → `COMPLETED`) de un paquete remoto y nuevo intento desde la Ejecución  | Fusionado (#23) |
-| D3a   | Limpieza del disco en el servidor de origen al terminar                                              | Este PR         |
-| D3b   | Perfiles de origen institucionales: detección, comprobación ampliada y guía                          | Este PR         |
+| D3a   | Limpieza del disco en el servidor de origen al terminar                                              | Fusionado (#25) |
+| D3b   | Perfiles de origen institucionales: detección, comprobación ampliada y guía                          | Fusionado (#26) |
+| D3c   | Varios orígenes por proyecto: una exportación y un paquete por origen                                | Este PR         |
 
 ## D1: modo `REMOTE`
 
@@ -124,9 +125,18 @@ Para que el agente quepa en una sola llamada de instalación, ahora viaja compri
 - Interfaz: «Detectar perfiles del servidor» y los detalles del perfil elegido (Moodle, PHP, espacio libre o el motivo de invalidez).
 - `remote-agent/mwt-source-profile` y [la guía](GUIA-PERFIL-ORIGEN.md) para que el administrador del servidor cree el perfil como root. La plataforma sigue sin escribir perfiles.
 
+## D3c: varios orígenes por proyecto
+
+- Un proyecto COLLECT admite hasta 8 servidores de origen. La configuración `collector-remote.v2` guarda una lista de orígenes (servidor, perfil, nombre de paquete) y los workers por origen. Las revisiones v1, de un solo origen, se siguen leyendo como una lista de uno.
+- El preflight conserva sus identificadores de comprobación. Cada uno agrega todos los orígenes y nombra en el detalle los que faltan.
+- La Ejecución comprueba **todos** los orígenes antes de lanzar ninguno. Después lanza una exportación por origen en paralelo, y el progreso real suma los cursos de todos cuando cada origen ya informó su total.
+- Pasa a `VERIFYING` cuando todas las exportaciones tienen paquete y publica uno por origen. **Los paquetes se registran solo cuando todas las subidas terminaron bien**, así un fallo parcial nunca deja un `SourcePackage` que bloquee el nuevo intento.
+- Si un origen falla, se registra `collector.source_failed`, se cancelan los demás y la Ejecución se cierra como `FAILED` cuando todos terminan.
+- La revisión, la confirmación final, el informe de cierre y la limpieza del disco trabajan con un paquete por origen. La huella de revisión con un solo paquete es idéntica a la anterior.
+- El hash de revisión de configuración se calcula ahora sobre una forma canónica en todos los niveles: `jsonb` reordena las claves de los objetos anidados.
+
 ## Límites
 
 - La versión 7.4.2 del catálogo debe estar autorizada (`enabled` y flag `recolector_742`),
   como en cualquier ejecución real.
-- Varios orígenes por proyecto, perfiles institucionales reales y limpieza del directorio
-  de trabajo en el origen quedan para D3.
+- Faltan pruebas de D3 en las EC2 reales (2 orígenes y 1 destino ya creados).

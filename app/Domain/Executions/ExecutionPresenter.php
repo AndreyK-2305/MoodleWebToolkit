@@ -5,6 +5,7 @@ namespace App\Domain\Executions;
 use App\Domain\Academic\AcademicPreview;
 use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Remote\RemoteCollectionConfiguration;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorExport;
 use App\Domain\Remote\RemoteSourceCleanup;
@@ -178,21 +179,40 @@ class ExecutionPresenter
     private function remoteCollector(Execution $execution, ?RemoteOperation $operation): array
     {
         $settings = $execution->toolBinding->configuration_snapshot ?? [];
-        $export = $execution->remoteOperations()->where('command_key', RemoteCollectorExport::COMMAND)->orderBy('id')->first();
-        $report = $export?->evidence['collector'] ?? null;
-        $courses = is_array($report['progress'] ?? null) ? $report['progress'] : [];
+        $configured = RemoteCollectionConfiguration::sources($settings);
+        $names = Server::query()->where('project_id', $execution->project_id)->whereIn('uuid', array_column($configured, 'server_uuid'))->pluck('name', 'uuid');
+        $exports = $execution->remoteOperations()->where('command_key', RemoteCollectorExport::COMMAND)->orderBy('id')->get()
+            ->keyBy(fn (RemoteOperation $export): string => (string) ($export->evidence['parameters']['package'] ?? ''));
+        $sources = [];
+        foreach ($configured as $source) {
+            $export = $exports->get($source['package_name']);
+            $report = $export?->evidence['collector'] ?? null;
+            $courses = is_array($report['progress'] ?? null) ? $report['progress'] : [];
+            $sources[] = ['server' => $names[$source['server_uuid']] ?? null, 'source_profile' => $source['source_profile'],
+                'package_name' => $source['package_name'],
+                'report' => is_array($report) ? ['stage' => $courses['stage'] ?? $report['status']['stage'] ?? null,
+                    'completed_courses' => $courses['completed_courses'] ?? null, 'total_courses' => $courses['total_courses'] ?? null,
+                    'failed_courses' => $courses['failed_courses'] ?? null, 'package_ready' => ($report['package_ready'] ?? false) === true] : null,
+                'operation' => $export === null ? null : ['uuid' => $export->operation_uuid, 'communication_state' => $export->communication_state->value,
+                    'functional_state' => $export->functional_state->value, 'manual_intervention_required' => $export->manual_intervention_required]];
+        }
+        $reports = array_values(array_filter(array_column($sources, 'report')));
+        $sum = fn (string $field): ?int => count($reports) === count($sources) && collect($reports)->every(fn (array $report): bool => is_int($report[$field]))
+            ? (int) collect($reports)->sum($field) : null;
 
         return ['mode' => 'REMOTE', 'producer_version' => '7.4.2-linux', 'resume_supported' => false,
             'configuration_version' => $execution->project->configuration?->version,
             'can_fresh_export' => in_array($execution->status->value, ['FAILED', 'CANCELLED'], true)
                 && (int) $execution->project->executions()->max('attempt') === $execution->attempt
                 && ! $execution->remoteOperations()->where('communication_state', '!=', 'TERMINATED')->exists(),
-            'server' => Server::query()->where('project_id', $execution->project_id)->where('uuid', $settings['server_uuid'] ?? null)->value('name'),
-            'source_profile' => $settings['source_profile'] ?? null,
+            // Summary across sources; the detail per source is in "sources".
+            'server' => implode(', ', array_filter(array_column($sources, 'server'))),
+            'source_profile' => implode(', ', array_column($sources, 'source_profile')),
+            'sources' => $sources,
             'source_cleanup' => RemoteSourceCleanup::state($execution),
-            'report' => is_array($report) ? ['stage' => $courses['stage'] ?? $report['status']['stage'] ?? null,
-                'completed_courses' => $courses['completed_courses'] ?? null, 'total_courses' => $courses['total_courses'] ?? null,
-                'failed_courses' => $courses['failed_courses'] ?? null, 'package_ready' => ($report['package_ready'] ?? false) === true] : null,
+            'report' => $reports === [] ? null : ['stage' => count($sources) === 1 ? ($reports[0]['stage'] ?? null) : null,
+                'completed_courses' => $sum('completed_courses'), 'total_courses' => $sum('total_courses'), 'failed_courses' => $sum('failed_courses'),
+                'package_ready' => count($reports) === count($sources) && collect($reports)->every(fn (array $report): bool => $report['package_ready'])],
             'operation' => $operation === null ? null : ['uuid' => $operation->operation_uuid, 'command_key' => $operation->command_key,
                 'communication_state' => $operation->communication_state->value, 'functional_state' => $operation->functional_state->value,
                 'manual_intervention_required' => $operation->manual_intervention_required]];

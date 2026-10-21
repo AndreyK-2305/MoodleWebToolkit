@@ -31,22 +31,37 @@ final class RemoteCollectionPreflight
     {
         $errors = $this->configurationErrors($project, $configuration);
         $checks = [$this->check('collector.configuration', 'Configuración remota vigente', $errors === [],
-            $errors === [] ? 'La revisión, el servidor de origen y el perfil coinciden.' : implode(' ', $errors))];
+            $errors === [] ? 'La revisión, los servidores de origen y sus perfiles coinciden.' : implode(' ', $errors))];
         if ($errors !== []) {
             return $checks;
         }
         $settings = $this->configurations->settings($configuration);
-        $server = $this->configurations->server($configuration);
-        $connection = $this->connections->primary($server);
-        $connected = $connection !== null && $connection->status === ConnectionStatus::VALID;
-        $checks[] = $this->check('remote.connection', 'Conexión con el servidor de origen', $connected,
-            $connected ? 'La última prueba de conexión y del agente fue satisfactoria.' : 'Configura la conexión e instala el agente; la prueba de conexión debe ser satisfactoria.');
-        $deployed = $this->deployed($server);
-        $checks[] = $this->check('collector.distribution', 'Recolector 7.4.2 desplegado', $deployed,
-            $deployed ? 'El árbol desplegado coincide con la distribución verificada del catálogo.' : 'Despliega en el servidor la distribución verificada del Recolector 7.4.2.');
-        $source = ($server->metadata['remote_sources'][$settings['source_profile']]['ready'] ?? false) === true;
-        $checks[] = $this->check('remote.source', 'Perfil de origen comprobado', $source,
-            $source ? 'El perfil del servidor superó la comprobación de Moodle y runtime.' : 'El perfil de origen no existe en el servidor o no superó su comprobación.');
+        // One check per kind across every source; the detail names the sources still pending.
+        $pending = ['connection' => [], 'distribution' => [], 'source' => []];
+        foreach ($settings['sources'] as $source) {
+            $server = Server::query()->where('project_id', $project->id)->where('uuid', $source['server_uuid'])->firstOrFail();
+            $label = $server->name.' ('.$source['source_profile'].')';
+            $connection = $this->connections->primary($server);
+            if ($connection === null || $connection->status !== ConnectionStatus::VALID) {
+                $pending['connection'][] = $label;
+            }
+            if (! $this->deployed($server)) {
+                $pending['distribution'][] = $label;
+            }
+            if (($server->metadata['remote_sources'][$source['source_profile']]['ready'] ?? false) !== true) {
+                $pending['source'][] = $label;
+            }
+        }
+        $count = count($settings['sources']);
+        $checks[] = $this->check('remote.connection', 'Conexión con los servidores de origen', $pending['connection'] === [],
+            $pending['connection'] === [] ? "La última prueba de conexión y del agente fue satisfactoria en los {$count} orígenes."
+                : 'Configura la conexión e instala el agente en: '.implode(', ', $pending['connection']).'.');
+        $checks[] = $this->check('collector.distribution', 'Recolector 7.4.2 desplegado', $pending['distribution'] === [],
+            $pending['distribution'] === [] ? 'El árbol desplegado coincide con la distribución verificada del catálogo en cada origen.'
+                : 'Despliega la distribución verificada del Recolector 7.4.2 en: '.implode(', ', $pending['distribution']).'.');
+        $checks[] = $this->check('remote.source', 'Perfiles de origen comprobados', $pending['source'] === [],
+            $pending['source'] === [] ? 'Cada perfil superó la comprobación de Moodle, PHP y moodledata.'
+                : 'Comprueba el perfil de origen en: '.implode(', ', $pending['source']).'.');
         $bucket = is_string(config('toolkit.remote.package_bucket')) && config('toolkit.remote.package_bucket') !== '';
         $checks[] = $this->check('remote.bucket', 'Destino de paquetes', $bucket,
             $bucket ? 'Hay un bucket configurado para publicar el paquete fuente.' : 'Configura el bucket de paquetes fuente de la plataforma.');
@@ -74,19 +89,24 @@ final class RemoteCollectionPreflight
     public function fingerprint(Project $project, ProjectConfiguration $configuration): string
     {
         $options = $configuration->settings['options'] ?? [];
-        $server = is_string($options['server_uuid'] ?? null)
-            ? Server::query()->where('project_id', $project->id)->where('uuid', $options['server_uuid'])->first() : null;
-        $connection = $server === null ? null : $this->connections->primary($server);
-        $source = is_string($options['source_profile'] ?? null) ? ($server?->metadata['remote_sources'][$options['source_profile']] ?? null) : null;
+        $sources = [];
+        foreach (RemoteCollectionConfiguration::sources(is_array($options) ? $options : []) as $source) {
+            $server = Server::query()->where('project_id', $project->id)->where('uuid', $source['server_uuid'])->first();
+            $connection = $server === null ? null : $this->connections->primary($server);
+            $profile = $server?->metadata['remote_sources'][$source['source_profile']] ?? null;
+            $sources[] = [
+                'connection' => $connection === null ? null : ['type' => $connection->type, 'status' => $connection->status->value,
+                    'configuration_sha256' => $this->hashes->hash($connection->configuration ?? [])],
+                'deployed_sha256' => $server?->metadata['remote_tools'][RemoteCollectorExport::DISTRIBUTION_KEY]['tree_sha256'] ?? null,
+                'source' => is_array($profile) ? $this->hashes->hash($profile) : null,
+            ];
+        }
 
         return $this->hashes->hash([
-            'schema_version' => 'collector-remote-preflight.v1', 'project_uuid' => $project->uuid,
+            'schema_version' => 'collector-remote-preflight.v2', 'project_uuid' => $project->uuid,
             'configuration_version' => $configuration->version, 'options_sha256' => $this->hashes->hash(is_array($options) ? $options : []),
-            'connection' => $connection === null ? null : ['type' => $connection->type, 'status' => $connection->status->value,
-                'configuration_sha256' => $this->hashes->hash($connection->configuration ?? [])],
-            'deployed_sha256' => $server?->metadata['remote_tools'][RemoteCollectorExport::DISTRIBUTION_KEY]['tree_sha256'] ?? null,
+            'sources' => $sources,
             'distribution_sha256' => ToolDistribution::query()->where('key', RemoteCollectorExport::DISTRIBUTION_KEY)->value('distribution_sha256'),
-            'source' => is_array($source) ? $this->hashes->hash($source) : null,
             'bucket' => config('toolkit.remote.package_bucket'), 'region' => config('toolkit.remote.package_region'),
         ]);
     }

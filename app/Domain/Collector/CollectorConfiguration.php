@@ -135,8 +135,23 @@ final class CollectorConfiguration
     /** @param array<string, mixed> $options */
     public function hash(array $options): string
     {
-        ksort($options, SORT_STRING);
+        return hash('sha256', json_encode($this->canonical($options), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
 
-        return hash('sha256', json_encode($options, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    /**
+     * Keys sorted at every level: jsonb reorders nested objects, so only a
+     * canonical form hashes the same before and after storage. Lists keep
+     * their order; for flat options this equals sorting the top level.
+     *
+     * @param  array<mixed>  $value
+     * @return array<mixed>
+     */
+    private function canonical(array $value): array
+    {
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return array_map(fn (mixed $item): mixed => is_array($item) ? $this->canonical($item) : $item, $value);
     }
 }

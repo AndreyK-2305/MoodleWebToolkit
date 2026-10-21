@@ -21,6 +21,7 @@ use App\Models\Execution;
 use App\Models\ExecutionCommand;
 use App\Models\ExecutionFinalization;
 use App\Models\ExecutionStep;
+use App\Models\SourcePackage;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -392,8 +393,8 @@ class ProcessExecutionFinalization
         $artifacts = $state->artifacts;
         $remote = RemoteCollectionPreparation::selected($execution->toolBinding);
         $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY || $remote;
-        // The laboratory captures six artifacts of its own run; a remote collection holds one S3 reference.
-        $expectedExisting = $remote ? 1 : ($real ? 6 : 0);
+        // The laboratory captures six artifacts of its own run; a remote collection holds one S3 reference per source.
+        $expectedExisting = $remote ? SourcePackage::query()->where('producer_execution_id', $execution->id)->count() : ($real ? 6 : 0);
         $existingCount = $execution->artifacts()->count();
 
         if (count($artifacts) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)

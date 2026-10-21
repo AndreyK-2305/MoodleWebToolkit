@@ -485,19 +485,27 @@ class GenerateFinalArtifacts
     /** @return array<string, mixed> */
     private function collectorReport(Execution $execution): array
     {
-        $package = SourcePackage::query()->with('artifact')->where('producer_execution_id', $execution->id)->sole();
         $remote = RemoteCollectionPreparation::selected($execution->toolBinding);
-        // The package stays where it was published; retention is the administrator's decision.
-        $storage = $remote && $package->artifact !== null ? ['provider' => 's3', ...app(RemotePackageObjects::class)->location($package->artifact),
-            'retention' => 'ADMINISTRATOR', 'note' => 'El paquete queda publicado en este bucket a disposición del administrador; la plataforma no lo borra ni lo expira.'] : null;
+        $packages = SourcePackage::query()->with('artifact')->where('producer_execution_id', $execution->id)->orderBy('id')->get();
+        $describe = fn (SourcePackage $package): array => ['uuid' => $package->uuid, 'name' => $package->name, 'producer_version' => $package->producer_tool_version,
+            'schema_version' => $package->schema_version, 'sha256' => $package->sha256, 'size_bytes' => $package->size_bytes,
+            'manifest_sha256' => $package->manifest_sha256, 'validation_state' => $package->validation_state,
+            'capabilities' => $package->capabilities];
+        if (! $remote) {
+            $package = $packages->sole();
 
-        return ['mode' => $remote ? 'REMOTE' : 'LABORATORY', 'adapter' => $remote ? RemoteCollectionPreparation::ADAPTER_KEY : CollectorExecutionPreparation::ADAPTER_KEY,
-            'storage' => $storage,
-            'source_package' => ['uuid' => $package->uuid, 'name' => $package->name, 'producer_version' => $package->producer_tool_version,
-                'schema_version' => $package->schema_version, 'sha256' => $package->sha256, 'size_bytes' => $package->size_bytes,
-                'manifest_sha256' => $package->manifest_sha256, 'validation_state' => $package->validation_state,
-                'capabilities' => $package->capabilities],
-            'audit' => $package->evidence['collector_audit'] ?? null,
+            return ['mode' => 'LABORATORY', 'adapter' => CollectorExecutionPreparation::ADAPTER_KEY, 'storage' => null,
+                'source_package' => $describe($package), 'audit' => $package->evidence['collector_audit'] ?? null,
+                'source_fingerprint' => $execution->review_fingerprint];
+        }
+
+        // One package per source, each left where it was published: retention is the administrator's decision.
+        return ['mode' => 'REMOTE', 'adapter' => RemoteCollectionPreparation::ADAPTER_KEY,
+            'source_packages' => $packages->map(fn (SourcePackage $package): array => [...$describe($package),
+                'source_id' => $package->source_id, 'audit' => $package->evidence['collector_audit'] ?? null,
+                'storage' => $package->artifact === null ? null : ['provider' => 's3', ...app(RemotePackageObjects::class)->location($package->artifact),
+                    'retention' => 'ADMINISTRATOR', 'note' => 'El paquete queda publicado en este bucket a disposición del administrador; la plataforma no lo borra ni lo expira.']],
+            )->values()->all(),
             'source_fingerprint' => $execution->review_fingerprint];
     }
 
