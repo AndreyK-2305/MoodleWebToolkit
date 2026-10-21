@@ -57,6 +57,7 @@ export type Snapshot = {
                 uuid: string;
                 communication_state: string;
                 functional_state: string;
+                started_at: string | null;
             } | null;
         } | null;
         last_event_sequence: number;
