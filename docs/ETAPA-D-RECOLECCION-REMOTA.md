@@ -7,10 +7,10 @@ Ejecución con pasos, progreso y eventos, y revisión.
 
 ## Cortes
 
-| Corte | Alcance                                                                                              | Estado  |
-| ----- | ---------------------------------------------------------------------------------------------------- | ------- |
-| D1    | Modo `REMOTE` de COLLECT: configuración, preflight, Ejecución hasta `REVIEW`, cancelación e interfaz | Este PR |
-| D2    | Confirmación final (`REVIEW` → `COMPLETED`) de un paquete remoto y nuevo intento desde la Ejecución  | Próximo |
+| Corte | Alcance                                                                                              | Estado          |
+| ----- | ---------------------------------------------------------------------------------------------------- | --------------- |
+| D1    | Modo `REMOTE` de COLLECT: configuración, preflight, Ejecución hasta `REVIEW`, cancelación e interfaz | Fusionado (#22) |
+| D2    | Confirmación final (`REVIEW` → `COMPLETED`) de un paquete remoto y nuevo intento desde la Ejecución  | Este PR         |
 
 ## D1: modo `REMOTE`
 
@@ -45,7 +45,7 @@ en la plataforma.
 | -------------- | ----------------------------------------------------------------------------------------------- |
 | `collection`   | `RemoteCollectorExport` lanza `collector.742`; el progreso es cursos completados sobre el total |
 | `verification` | `RemoteSourcePackagePublisher` publica y verifica en S3; se registra el `SourcePackage`         |
-| `finalization` | Pendiente de D2; la plataforma rechaza finalizar antes de crear un comando                      |
+| `finalization` | Confirmación final con informes de cierre (D2)                                                  |
 
 `ReconcileRemoteAgentOperation` observa la operación y avanza la Ejecución en la misma pasada
 (`RemoteCollectionWorkflow::advance`). El scheduler sigue despachándola mientras la Ejecución
@@ -68,10 +68,48 @@ Reglas que conserva:
 - Proyecto: el formulario "Recolección desde el servidor de origen" elige servidor, perfil,
   workers y nombre, y muestra si la conexión, el Recolector y el perfil están listos.
 - Ejecución: muestra el servidor, el perfil, la etapa y los cursos exportados, y en `REVIEW`
-  el paquete con sus hashes. No ofrece "Finalizar" hasta D2.
+  el paquete con sus hashes.
+
+## D2: cierre de la recolección remota
+
+### Confirmación final (`REVIEW` → `COMPLETED`)
+
+Usa la misma finalización incremental que el laboratorio (logs, eventos, cuatro informes,
+verificación y promoción). Para el modo remoto:
+
+- Antes de cada paso se vuelve a comprobar: exportación y publicación terminadas con éxito,
+  `SourcePackage` `VALID` y el objeto en S3 con el mismo tamaño y SHA-256 que se revisó. Si el
+  objeto cambió, la Ejecución no se cierra.
+- Se espera un solo artefacto previo (la referencia S3) más los cuatro informes de cierre.
+- El informe de cierre registra la ubicación del paquete (`region`, `bucket`, `key`) con
+  `retention: ADMINISTRATOR`: **el paquete queda publicado en el bucket a disposición del
+  administrador; la herramienta no lo borra ni lo expira.** La política de retención la
+  decide el administrador del bucket.
+
+### Descarga del paquete
+
+`GET …/artifacts/{artifact}/download` de un artefacto S3 por referencia redirige a un enlace
+firmado de 15 minutos, solo para administradores, después de verificar el objeto otra vez.
+La descarga queda en `artifact_downloads` y en auditoría (`delivery: S3_PRESIGNED`).
+
+### Nuevo intento
+
+`RetryCollectorExecution` sirve a los dos modos: desde el último intento `FAILED` o
+`CANCELLED`, con el preflight vigente, crea una Ejecución nueva con linaje
+(`retried_from_execution_id`) y conserva la anterior con su evidencia. La migración
+`allow_remote_collector_retry_lineage` amplía el guardia de PostgreSQL al adaptador remoto.
+
+### Interfaz
+
+- Botones "Desplegar Recolector 7.4.2" y "Comprobar perfil de origen" en el formulario de
+  recolección remota (`POST …/servers/{server}/collector/deploy` y `…/sources/check`).
+- En modo remoto, el wizard ya no muestra escenarios simulados: el paso 3 remite a la
+  tarjeta de recolección remota y los textos de instancias y preflight dejan de decir
+  "simulado" cuando hay acceso remoto.
 
 ## Límites
 
 - La versión 7.4.2 del catálogo debe estar autorizada (`enabled` y flag `recolector_742`),
   como en cualquier ejecución real.
-- La confirmación final y el nuevo intento de una recolección remota quedan para D2.
+- Varios orígenes por proyecto, perfiles institucionales reales y limpieza del directorio
+  de trabajo en el origen quedan para D3.

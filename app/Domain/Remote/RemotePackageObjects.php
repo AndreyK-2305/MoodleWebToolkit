@@ -14,6 +14,8 @@ class RemotePackageObjects
 {
     private const MAX_DOCUMENT_BYTES = 1048576;
 
+    public const DOWNLOAD_SECONDS = 900;
+
     public function __construct(private readonly S3ClientFactory $clients) {}
 
     /**
@@ -66,6 +68,21 @@ class RemotePackageObjects
         }
 
         return $body;
+    }
+
+    /**
+     * A short-lived URL to the verified package. The object is checked again
+     * first, so a link is never issued for a package that changed in S3.
+     */
+    public function downloadUrl(Artifact $artifact): string
+    {
+        $location = $this->location($artifact);
+        $this->verifyPackage($location['region'], $location['bucket'], $location['key'], (string) $artifact->sha256, (int) $artifact->size);
+        $client = $this->clients->make($location['region']);
+        $command = $client->getCommand('GetObject', ['Bucket' => $location['bucket'], 'Key' => $location['key'],
+            'ResponseContentDisposition' => 'attachment; filename="'.str_replace('"', '', (string) $artifact->filename).'"']);
+
+        return (string) $client->createPresignedRequest($command, '+'.self::DOWNLOAD_SECONDS.' seconds')->getUri();
     }
 
     /** @return array{region: string, bucket: string, key: string} */

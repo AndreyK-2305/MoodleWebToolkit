@@ -1,4 +1,5 @@
-import { useForm } from '@inertiajs/react';
+import { router, useForm } from '@inertiajs/react';
+import { useState } from 'react';
 import InputError from '@/components/input-error';
 import type { RemoteServer } from '@/components/remote-access-panel';
 import { Badge } from '@/components/ui/badge';
@@ -49,6 +50,22 @@ export default function RemoteCollectionForm({
         (source) => source.id === form.data.source_profile,
     );
     const errors = form.errors as Record<string, string>;
+    const [busy, setBusy] = useState<'deploy' | 'check' | null>(null);
+    const connected = server?.connection?.status === 'VALID';
+    const serverAction = (
+        action: 'deploy' | 'check',
+        path: string,
+        data: Record<string, string> = {},
+    ) =>
+        router.post(
+            `/projects/${projectUuid}/servers/${server?.uuid}/${path}`,
+            data,
+            {
+                preserveScroll: true,
+                onStart: () => setBusy(action),
+                onFinish: () => setBusy(null),
+            },
+        );
     const readiness = server
         ? [
               {
@@ -187,6 +204,50 @@ export default function RemoteCollectionForm({
                                 </Badge>
                             ))}
                         </div>
+                        {editable && server && (
+                            <div className="flex flex-wrap gap-2 md:col-span-2">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={!connected || busy !== null}
+                                    onClick={() =>
+                                        serverAction(
+                                            'deploy',
+                                            'collector/deploy',
+                                        )
+                                    }
+                                >
+                                    {busy === 'deploy'
+                                        ? 'Desplegando…'
+                                        : server.collector_deployed
+                                          ? 'Verificar despliegue del Recolector'
+                                          : 'Desplegar Recolector 7.4.2'}
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={
+                                        !connected ||
+                                        busy !== null ||
+                                        form.data.source_profile === ''
+                                    }
+                                    onClick={() =>
+                                        serverAction('check', 'sources/check', {
+                                            source: form.data.source_profile,
+                                        })
+                                    }
+                                >
+                                    {busy === 'check'
+                                        ? 'Comprobando…'
+                                        : 'Comprobar perfil de origen'}
+                                </Button>
+                                {!connected && (
+                                    <p className="text-muted-foreground text-sm">
+                                        Pruebe primero la conexión del servidor.
+                                    </p>
+                                )}
+                            </div>
+                        )}
                         <div className="md:col-span-2">
                             {Object.entries(errors).map(([key, error]) => (
                                 <InputError key={key} message={error} />

@@ -4,7 +4,6 @@ namespace App\Domain\Executions;
 
 use App\Domain\Executions\DTOs\StartExecutionResult;
 use App\Domain\Idempotency\IdempotencyRegistry;
-use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -80,9 +79,6 @@ class RequestExecutionFinalization
 
             if ($locked->status !== ExecutionStatus::REVIEW || $project->status->value !== ExecutionStatus::REVIEW->value) {
                 throw ValidationException::withMessages(['execution' => 'La ejecución sólo puede finalizarse desde REVIEW.']);
-            }
-            if (RemoteCollectionPreparation::selected($locked->toolBinding)) {
-                throw ValidationException::withMessages(['execution' => 'La confirmación final de una recolección remota todavía no está disponible.']);
             }
 
             $verification = $locked->verifications()

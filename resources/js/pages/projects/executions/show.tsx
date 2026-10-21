@@ -188,6 +188,7 @@ type ReviewData = {
     verifications: VerificationData[];
     artifacts: Array<{
         id: number;
+        location?: string | null;
         type: string;
         filename: string;
         mime_type: string | null;
@@ -1200,6 +1201,11 @@ function ArtifactDownloadLink({
                 <span className="text-muted-foreground mt-1 block font-mono text-xs break-all">
                     {artifact.size} bytes · {artifact.sha256}
                 </span>
+                {artifact.location && (
+                    <span className="text-muted-foreground mt-1 block font-mono text-xs break-all">
+                        {artifact.location}
+                    </span>
+                )}
             </span>
             <Badge variant="outline">{artifact.type}</Badge>
         </a>
@@ -1273,7 +1279,10 @@ function ExecutionActions({
                             disabled={disabled || freshForm.processing}
                             onClick={() => setFreshOpen(true)}
                         >
-                            <RotateCcw /> Nueva exportación LAB
+                            <RotateCcw />{' '}
+                            {execution.collector?.mode === 'REMOTE'
+                                ? 'Nueva exportación'
+                                : 'Nueva exportación LAB'}
                         </Button>
                     )}
                     {cancellable && (
@@ -1344,8 +1353,7 @@ function ExecutionActions({
                             </Button>
                         )}
                     {execution.status === 'REVIEW' &&
-                        review.validation_current &&
-                        execution.collector?.mode !== 'REMOTE' && (
+                        review.validation_current && (
                             <Button
                                 disabled={disabled || finalizeForm.processing}
                                 onClick={() =>
@@ -1377,7 +1385,9 @@ function ExecutionActions({
                     <DialogContent>
                         <DialogHeader>
                             <DialogTitle>
-                                Nueva exportación de laboratorio
+                                {execution.collector?.mode === 'REMOTE'
+                                    ? 'Nueva exportación desde el servidor de origen'
+                                    : 'Nueva exportación de laboratorio'}
                             </DialogTitle>
                             <DialogDescription>
                                 El Recolector requiere otro intento desde cero.
@@ -1396,7 +1406,9 @@ function ExecutionActions({
                                     )
                                 }
                             />
-                            Acepto una nueva exportación sobre Moodle sintético
+                            {execution.collector?.mode === 'REMOTE'
+                                ? 'Acepto una nueva exportación completa sobre el Moodle de origen'
+                                : 'Acepto una nueva exportación sobre Moodle sintético'}
                         </label>
                         <Button
                             disabled={
@@ -1477,8 +1489,17 @@ function CollectorReview({
                 {remote && execution.status === 'REVIEW' && (
                     <p className="text-sm">
                         El paquete se validó en el origen y la plataforma lo
-                        verificó en el almacenamiento. La confirmación final de
-                        paquetes remotos llegará en una etapa posterior.
+                        verificó en el almacenamiento. Al finalizar se vuelve a
+                        comprobar en S3 y se generan los informes de cierre.
+                    </p>
+                )}
+                {remote && (
+                    <p className="text-muted-foreground text-sm">
+                        El paquete queda publicado en el bucket de la
+                        plataforma, a disposición del administrador: la
+                        herramienta no lo borra ni lo expira. Solo un
+                        administrador puede descargarlo, mediante un enlace
+                        firmado que vence en 15 minutos.
                     </p>
                 )}
                 {execution.retried_from_execution_uuid && (

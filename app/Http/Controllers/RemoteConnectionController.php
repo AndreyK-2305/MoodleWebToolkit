@@ -2,12 +2,16 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Remote\CheckRemoteSource;
 use App\Domain\Remote\InstallRemoteAgent;
+use App\Domain\Remote\RemoteCollectorExport;
 use App\Domain\Remote\RemoteServerConnections;
+use App\Domain\Remote\RemoteToolDeployer;
 use App\Domain\Remote\TestRemoteConnection;
 use App\Enums\ConnectionType;
 use App\Models\Project;
 use App\Models\Server;
+use App\Models\ToolDistribution;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -74,6 +78,36 @@ final class RemoteConnectionController extends Controller
         Inertia::flash('toast', $result['status'] === 'VALID'
             ? ['type' => 'success', 'message' => 'Conexión verificada.']
             : ['type' => 'error', 'message' => 'La conexión no superó la prueba; revise las comprobaciones.']);
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    /** Deploys the verified Collector distribution of the catalog; it is hash-checked on the server. */
+    public function deployCollector(Request $request, Project $project, Server $server, RemoteToolDeployer $deployer): RedirectResponse
+    {
+        $this->authorizeServer($project, $server);
+        /** @var User $actor */
+        $actor = $request->user();
+        $distribution = ToolDistribution::query()->where('key', RemoteCollectorExport::DISTRIBUTION_KEY)->sole();
+        $result = $deployer->deploy($server, $distribution, $actor);
+        Inertia::flash('toast', $result['installed']
+            ? ['type' => 'success', 'message' => $result['already_present'] ? 'El Recolector 7.4.2 ya estaba desplegado e íntegro.' : 'Recolector 7.4.2 desplegado y verificado por hash.']
+            : ['type' => 'error', 'message' => 'No se desplegó el Recolector ('.$result['error_code'].').']);
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    /** Checks a root-owned source profile on the server; the platform never sees its paths or secrets. */
+    public function checkSource(Request $request, Project $project, Server $server, CheckRemoteSource $sources): RedirectResponse
+    {
+        $this->authorizeServer($project, $server);
+        $input = $request->validate(['source' => ['required', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D']]);
+        /** @var User $actor */
+        $actor = $request->user();
+        $result = $sources->handle($server, (string) $input['source'], $actor);
+        Inertia::flash('toast', $result['ready']
+            ? ['type' => 'success', 'message' => 'El perfil '.$result['source'].' está listo para recolectar.']
+            : ['type' => 'error', 'message' => 'El perfil '.$result['source'].' no superó la comprobación'.($result['error_code'] ? ' ('.$result['error_code'].')' : '').'.']);
 
         return to_route('projects.show', $project->uuid);
     }

@@ -9,13 +9,13 @@ use App\Domain\Artifacts\ResumableSha256;
 use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemoteCollectionWorkflow;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
 use App\Enums\ExecutionStepStatus;
 use App\Exceptions\ArtifactIntegrityException;
 use App\Exceptions\ExecutionCommandLeaseLost;
-use App\Exceptions\ToolOperationBlocked;
 use App\Models\AuditLog;
 use App\Models\Execution;
 use App\Models\ExecutionCommand;
@@ -390,13 +390,17 @@ class ProcessExecutionFinalization
     ): void {
         $execution = $command->execution;
         $artifacts = $state->artifacts;
-        $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY;
+        $remote = RemoteCollectionPreparation::selected($execution->toolBinding);
+        $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY || $remote;
+        // The laboratory captures six artifacts of its own run; a remote collection holds one S3 reference.
+        $expectedExisting = $remote ? 1 : ($real ? 6 : 0);
         $existingCount = $execution->artifacts()->count();
 
         if (count($artifacts) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
             || count($state->verified_types) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
             || count($state->promoted_types) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
-            || ($real ? $existingCount !== 6 || $execution->artifacts()->whereIn('type', GenerateFinalArtifacts::REQUIRED_TYPES)->exists() : $existingCount !== 0)
+            || $existingCount !== $expectedExisting
+            || ($real && $execution->artifacts()->whereIn('type', GenerateFinalArtifacts::REQUIRED_TYPES)->exists())
         ) {
             throw new RuntimeException('La finalización no alcanzó una salida íntegra y única.');
         }
@@ -433,7 +437,7 @@ class ProcessExecutionFinalization
             'proposal_version' => $execution->proposal_version,
             'fingerprint' => $execution->review_fingerprint,
             'artifact_count' => $existingCount + count(GenerateFinalArtifacts::REQUIRED_TYPES),
-            'adapter' => $real ? CollectorExecutionPreparation::ADAPTER_KEY : 'fake',
+            'adapter' => $remote ? RemoteCollectionPreparation::ADAPTER_KEY : ($real ? CollectorExecutionPreparation::ADAPTER_KEY : 'fake'),
             'finalization_started_at' => $state->finalization_started_at?->toIso8601String(),
             'completed_at' => $completionAt->toIso8601String(),
         ];
@@ -499,7 +503,7 @@ class ProcessExecutionFinalization
             app(CollectorWorkflow::class)->assertFinalizable($execution);
         }
         if (RemoteCollectionPreparation::selected($execution->toolBinding)) {
-            throw new ToolOperationBlocked('La confirmación final de una recolección remota todavía no está disponible.');
+            app(RemoteCollectionWorkflow::class)->assertFinalizable($execution);
         }
         if ($execution->review_fingerprint === null
             || $execution->validated_fingerprint === null

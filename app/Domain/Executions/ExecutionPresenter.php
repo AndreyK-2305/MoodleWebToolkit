@@ -148,6 +148,8 @@ class ExecutionPresenter
                 'mime_type' => $artifact->mime_type,
                 'size' => $artifact->size,
                 'sha256' => $artifact->sha256,
+                // A package published by reference stays in its bucket at the administrator's disposal.
+                'location' => $artifact->disk === 's3' ? 's3://'.$artifact->path : null,
                 'created_at' => $artifact->created_at?->toIso8601String(),
             ])->values()->all(),
             'completion_summary' => $execution->completion_summary,
@@ -180,7 +182,10 @@ class ExecutionPresenter
         $courses = is_array($report['progress'] ?? null) ? $report['progress'] : [];
 
         return ['mode' => 'REMOTE', 'producer_version' => '7.4.2-linux', 'resume_supported' => false,
-            'configuration_version' => $execution->project->configuration?->version, 'can_fresh_export' => false,
+            'configuration_version' => $execution->project->configuration?->version,
+            'can_fresh_export' => in_array($execution->status->value, ['FAILED', 'CANCELLED'], true)
+                && (int) $execution->project->executions()->max('attempt') === $execution->attempt
+                && ! $execution->remoteOperations()->where('communication_state', '!=', 'TERMINATED')->exists(),
             'server' => Server::query()->where('project_id', $execution->project_id)->where('uuid', $settings['server_uuid'] ?? null)->value('name'),
             'source_profile' => $settings['source_profile'] ?? null,
             'report' => is_array($report) ? ['stage' => $courses['stage'] ?? $report['status']['stage'] ?? null,

@@ -128,6 +128,11 @@ class RemoteSourcePackagePublisher
             throw new ToolOperationBlocked('El manifiesto o el reporte de validación no son JSON válidos.');
         }
         $metadata = $this->metadata->recognize($manifest);
+        // A project holds one package per source; another Execution's package is never replaced here.
+        if (SourcePackage::query()->where('project_id', $export->execution->project_id)->where('source_id', $metadata['source_id'])
+            ->where('producer_execution_id', '!=', $export->execution_id)->exists()) {
+            throw new ToolOperationBlocked('El proyecto ya tiene un paquete registrado para este origen desde otra ejecución.');
+        }
         if ($metadata['source_id'] !== $source || ($validation['result'] ?? null) !== 'ok' || ($validation['failures'] ?? null) !== []
             || ($validation['outer_zip']['sha256'] ?? null) !== $sha || ($validation['outer_zip']['bytes'] ?? null) !== $size) {
             throw new ToolOperationBlocked('La validación del paquete no acredita el contenido publicado.');
