@@ -63,6 +63,18 @@ export type RemoteDestinationProfile = {
     runtime_free_bytes: number | null;
     target_running: boolean;
     destination_written: boolean;
+    preparation: {
+        state: string | null;
+        launched_at: string | null;
+        finished_at: string | null;
+        observed_at: string | null;
+        exit_code: number | null;
+        error_code: string | null;
+        observe_error: string | null;
+        last_error_line: string | null;
+        markers: string[];
+        tail: string;
+    } | null;
 };
 export type RemoteServer = {
     uuid: string;
@@ -463,6 +475,7 @@ const destinationCodes: Record<string, string> = {
     tool_missing: 'el árbol del perfil no está desplegado',
     tool_tree_mismatch: 'el perfil usa otro árbol que el desplegado',
     flock_missing: 'falta flock',
+    python3_missing: 'falta python3',
     public_url_not_https: 'la URL pública no es HTTPS',
     engine_modified: 'el motor del runtime fue modificado',
     docker_unavailable: 'Docker no responde',
@@ -664,9 +677,163 @@ function DestinationRuntime({
                                     />
                                 </dl>
                             )}
+                            <Preparation
+                                base={base}
+                                destination={destination}
+                                editable={editable}
+                            />
                         </li>
                     ))}
                 </ul>
+            )}
+        </div>
+    );
+}
+
+const preparationLabels: Record<string, string> = {
+    STARTING: 'Iniciando',
+    RUNNING: 'Preparando',
+    CANCELLING: 'Cancelando',
+    SUCCEEDED: 'Destino preparado',
+    FAILED: 'Preparación fallida',
+    CANCELLED: 'Preparación cancelada',
+    UNKNOWN: 'Estado desconocido',
+};
+const preparationMarkers: { key: string; label: string }[] = [
+    { key: 'PREFLIGHT_OK', label: 'Preflight' },
+    { key: 'DESTINO_LISTO', label: 'Moodle 5.2.1 instalado' },
+    { key: 'EXPORT_TRANSPORT_OK', label: 'Intercambio /exports' },
+    { key: 'TARGET_SHARED_EMAIL_POLICY_OK', label: 'Política de correo' },
+];
+
+/** The durable preparation of one destination profile: launch, progress, result and log tail. */
+function Preparation({
+    base,
+    destination,
+    editable,
+}: {
+    base: string;
+    destination: RemoteDestinationProfile;
+    editable: boolean;
+}) {
+    const form = useForm({ destination: destination.id });
+    const preparation = destination.preparation;
+    const active =
+        preparation !== null &&
+        ['STARTING', 'RUNNING', 'CANCELLING'].includes(preparation.state ?? '');
+    const canPrepare =
+        editable &&
+        destination.ready &&
+        !destination.destination_written &&
+        !active;
+
+    return (
+        <div className="space-y-2 border-t pt-2">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium">Preparación</span>
+                {preparation?.state ? (
+                    <Badge
+                        variant={
+                            preparation.state === 'SUCCEEDED'
+                                ? 'default'
+                                : active
+                                  ? 'secondary'
+                                  : 'destructive'
+                        }
+                    >
+                        {preparationLabels[preparation.state] ??
+                            preparation.state}
+                    </Badge>
+                ) : (
+                    <span className="text-muted-foreground text-xs">
+                        Sin preparar
+                    </span>
+                )}
+                {preparation?.error_code && (
+                    <span className="text-muted-foreground text-xs">
+                        {preparation.error_code}
+                        {preparation.exit_code !== null &&
+                            ` · código ${preparation.exit_code}`}
+                    </span>
+                )}
+                {canPrepare && (
+                    <Button
+                        type="button"
+                        size="sm"
+                        className="ml-auto"
+                        disabled={form.processing}
+                        onClick={() =>
+                            form.post(`${base}/destinations/prepare`, {
+                                preserveScroll: true,
+                            })
+                        }
+                    >
+                        Preparar destino
+                    </Button>
+                )}
+                {editable && active && preparation?.state !== 'CANCELLING' && (
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="ml-auto"
+                        disabled={form.processing}
+                        onClick={() =>
+                            form.post(`${base}/destinations/prepare/cancel`, {
+                                preserveScroll: true,
+                            })
+                        }
+                    >
+                        Cancelar preparación
+                    </Button>
+                )}
+            </div>
+            {!destination.ready && !preparation && (
+                <p className="text-muted-foreground text-xs">
+                    Disponible cuando el perfil supere su comprobación.
+                </p>
+            )}
+            {preparation && (
+                <>
+                    <ol className="flex flex-wrap gap-2 text-xs">
+                        {preparationMarkers.map((marker) => (
+                            <li
+                                key={marker.key}
+                                className={cn(
+                                    'flex items-center gap-1',
+                                    preparation.markers.includes(marker.key)
+                                        ? 'text-emerald-600'
+                                        : 'text-muted-foreground',
+                                )}
+                            >
+                                <CheckCircle2 className="size-3" />
+                                {marker.label}
+                            </li>
+                        ))}
+                    </ol>
+                    {preparation.last_error_line && (
+                        <p className="text-xs text-red-600">
+                            {preparation.last_error_line}
+                        </p>
+                    )}
+                    {preparation.observe_error && active && (
+                        <p className="text-xs text-amber-600">
+                            Sin contacto con el servidor (
+                            {preparation.observe_error}); el proceso sigue allí
+                            y se vuelve a consultar.
+                        </p>
+                    )}
+                    {preparation.tail !== '' && (
+                        <details>
+                            <summary className="text-muted-foreground cursor-pointer text-xs">
+                                Últimas líneas del registro
+                            </summary>
+                            <pre className="bg-muted mt-1 max-h-60 overflow-auto rounded p-2 text-xs whitespace-pre-wrap">
+                                {preparation.tail}
+                            </pre>
+                        </details>
+                    )}
+                </>
             )}
         </div>
     );

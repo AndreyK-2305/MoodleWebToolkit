@@ -25,7 +25,7 @@ class CheckRemoteDestination
     public const MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024;
 
     private const FIELDS = ['destination', 'public_url', 'env_present', 'env_protected', 'env_matches_url', 'env_complete', 'tool_tree',
-        'tool_present', 'engine_intact', 'docker_version', 'compose_version', 'flock', 'cpus', 'memory_bytes', 'runtime_free_bytes',
+        'tool_present', 'engine_intact', 'docker_version', 'compose_version', 'flock', 'python3', 'cpus', 'memory_bytes', 'runtime_free_bytes',
         'target_running', 'destination_written'];
 
     public function __construct(
@@ -79,7 +79,7 @@ class CheckRemoteDestination
     {
         $blockers = [];
         $required = ['env_present' => 'env_missing', 'env_protected' => 'env_unprotected', 'env_complete' => 'env_incomplete',
-            'env_matches_url' => 'env_url_mismatch', 'tool_present' => 'tool_missing', 'flock' => 'flock_missing'];
+            'env_matches_url' => 'env_url_mismatch', 'tool_present' => 'tool_missing', 'flock' => 'flock_missing', 'python3' => 'python3_missing'];
         foreach ($required as $field => $code) {
             if (($report[$field] ?? false) !== true) {
                 $blockers[] = $code;

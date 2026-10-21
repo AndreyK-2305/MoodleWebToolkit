@@ -35,6 +35,8 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::post('projects/{project:uuid}/servers/{server:uuid}/consolidator/deploy', [RemoteConnectionController::class, 'deployConsolidator'])->middleware('action.confirmed')->name('projects.servers.consolidator.deploy');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/destinations/check', [RemoteConnectionController::class, 'checkDestination'])->middleware('action.confirmed')->name('projects.servers.destinations.check');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/destinations/detect', [RemoteConnectionController::class, 'detectDestinations'])->middleware('action.confirmed')->name('projects.servers.destinations.detect');
+    Route::post('projects/{project:uuid}/servers/{server:uuid}/destinations/prepare', [RemoteConnectionController::class, 'prepareDestination'])->middleware('action.confirmed')->name('projects.servers.destinations.prepare');
+    Route::post('projects/{project:uuid}/servers/{server:uuid}/destinations/prepare/cancel', [RemoteConnectionController::class, 'cancelDestinationPreparation'])->middleware('action.confirmed')->name('projects.servers.destinations.prepare.cancel');
     Route::post('projects/{project:uuid}/executions', [ExecutionController::class, 'store'])->middleware('action.confirmed')->name('projects.executions.store');
     Route::get('projects/{project:uuid}/executions/{execution:uuid}', [ExecutionController::class, 'show'])->name('projects.executions.show');
     Route::get('projects/{project:uuid}/executions/{execution:uuid}/events', [ExecutionEventController::class, 'index'])->name('projects.executions.events');

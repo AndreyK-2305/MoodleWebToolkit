@@ -61,16 +61,30 @@ Con `--force` el runtime no se toca. La URL indicada debe coincidir con `MOODLE_
     - el `.env` existe, está protegido, completo y declara la misma URL;
     - el runtime no fue modificado;
     - el árbol coincide con el desplegado;
-    - Docker, Compose v2 y `flock` están disponibles;
+    - Docker, Compose v2, `flock` y `python3` están disponibles;
     - memoria y disco libre;
     - si Moodle destino está corriendo y si el destino ya recibió escrituras.
 
-## 5. Qué ve la plataforma y qué no
+## 5. Preparar el destino
+
+Con el perfil listo, **Preparar destino** ejecuta en el servidor el `preparar` del propio Consolidador: construye las imágenes, instala un Moodle 5.2.1 vacío y lo deja en marcha detrás de su proxy. La primera vez tarda varios minutos, por la descarga y construcción de las imágenes.
+
+El proceso corre en el servidor, así que cerrar la página o perder la conexión no lo detiene, y la plataforma lo consulta cada minuto. El panel muestra:
+
+- los pasos cumplidos;
+- la última línea de error, si la hay;
+- las últimas líneas del registro, con los valores sensibles ocultos.
+
+**Cancelar preparación** detiene el proceso. Al terminar con éxito, la plataforma repite la comprobación del perfil.
+
+Una vez que el Consolidador escribió en el destino, la preparación queda bloqueada: repetirla recrearía sus servicios a mitad de la migración.
+
+## 6. Qué ve la plataforma y qué no
 
 | La plataforma guarda                                               | Nunca recibe                                                              |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
 | Nombre del perfil, URL pública, hechos cerrados de la comprobación | Rutas del servidor, valores del `.env`, claves, Client ID/secret de OAuth |
 
-## 6. OAuth2 durante la consolidación
+## 7. OAuth2 durante la consolidación
 
 Cuando el asistente llega a la etapa de OAuth2, la Ejecución se detiene en la intervención «Configurar OAuth2» y muestra las instrucciones del Consolidador. Usted configura el servicio de Google en Moodle (`Administración del sitio > Servidor > Servicios OAuth 2`) y pulsa **Continuar** en la plataforma. El asistente revalida en vivo y, si algo falta, la Ejecución vuelve a la misma intervención.

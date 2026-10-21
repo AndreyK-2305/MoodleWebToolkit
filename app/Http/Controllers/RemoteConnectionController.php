@@ -7,6 +7,7 @@ use App\Domain\Remote\CheckRemoteSource;
 use App\Domain\Remote\DetectRemoteDestinations;
 use App\Domain\Remote\DetectRemoteSources;
 use App\Domain\Remote\InstallRemoteAgent;
+use App\Domain\Remote\PrepareRemoteDestination;
 use App\Domain\Remote\RemoteCollectorExport;
 use App\Domain\Remote\RemoteServerConnections;
 use App\Domain\Remote\RemoteToolDeployer;
@@ -14,6 +15,8 @@ use App\Domain\Remote\TestRemoteConnection;
 use App\Enums\ConnectionStatus;
 use App\Enums\ConnectionType;
 use App\Enums\ServerRole;
+use App\Exceptions\RemoteAgentUnavailable;
+use App\Exceptions\ToolOperationBlocked;
 use App\Jobs\DeployRemoteTool;
 use App\Models\Project;
 use App\Models\Server;
@@ -180,6 +183,41 @@ final class RemoteConnectionController extends Controller
                 .($result['warnings'] === [] ? '.' : ', con advertencias: '.implode(', ', $result['warnings']).'.')]
             : ['type' => 'error', 'message' => 'El perfil '.$result['destination'].' no superó la comprobación ('
                 .($result['error_code'] ?? implode(', ', $result['blockers'])).').']);
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    /** Launches the Consolidator's preparation as a durable operation on the server. */
+    public function prepareDestination(Request $request, Project $project, Server $server, PrepareRemoteDestination $preparations): RedirectResponse
+    {
+        $this->authorizeDestination($project, $server);
+        $input = $request->validate(['destination' => ['required', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D']]);
+        /** @var User $actor */
+        $actor = $request->user();
+        try {
+            $result = $preparations->start($server, (string) $input['destination'], $actor);
+            Inertia::flash('toast', ($result['state'] ?? null) === 'FAILED'
+                ? ['type' => 'error', 'message' => 'El agente rechazó la preparación ('.($result['error_code'] ?? 'error').').']
+                : ['type' => 'success', 'message' => 'Preparación del destino iniciada; continúa en el servidor aunque se cierre esta página.']);
+        } catch (ToolOperationBlocked $exception) {
+            Inertia::flash('toast', ['type' => 'error', 'message' => $exception->getMessage()]);
+        }
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    public function cancelDestinationPreparation(Request $request, Project $project, Server $server, PrepareRemoteDestination $preparations): RedirectResponse
+    {
+        $this->authorizeDestination($project, $server);
+        $input = $request->validate(['destination' => ['required', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D']]);
+        /** @var User $actor */
+        $actor = $request->user();
+        try {
+            $preparations->cancel($server, (string) $input['destination'], $actor);
+            Inertia::flash('toast', ['type' => 'success', 'message' => 'Cancelación de la preparación solicitada.']);
+        } catch (ToolOperationBlocked|RemoteAgentUnavailable $exception) {
+            Inertia::flash('toast', ['type' => 'error', 'message' => $exception->getMessage()]);
+        }
 
         return to_route('projects.show', $project->uuid);
     }

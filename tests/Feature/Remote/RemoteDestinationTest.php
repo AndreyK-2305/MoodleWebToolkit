@@ -5,6 +5,7 @@ namespace Tests\Feature\Remote;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Remote\CheckRemoteDestination;
 use App\Domain\Remote\DetectRemoteDestinations;
+use App\Domain\Remote\PrepareRemoteDestination;
 use App\Domain\Remote\RemoteAgentInstaller;
 use App\Domain\Remote\RemoteServerConnections;
 use App\Domain\Remote\RemoteToolDeployer;
@@ -129,7 +130,7 @@ class RemoteDestinationTest extends DomainTestCase
         $this->assertSame($this->distribution->distribution_sha256, $report['tool_tree']);
         $this->assertFalse($report['destination_written']);
         // This test host has no Docker daemon: only the Docker facts may block.
-        $this->assertSame([], array_diff($check['blockers'], ['docker_unavailable', 'compose_v2_missing', 'flock_missing']));
+        $this->assertSame([], array_diff($check['blockers'], ['docker_unavailable', 'compose_v2_missing', 'flock_missing', 'python3_missing']));
         $this->assertSame($check['blockers'] === [], $check['ready']);
         foreach (['MOODLE_ADMIN_PASSWORD', 'MOODLE_DB_PASSWORD', 'MARIADB_ROOT_PASSWORD'] as $secret) {
             preg_match('/^'.$secret.'=(.+)$/m', $env, $value);
@@ -172,12 +173,43 @@ class RemoteDestinationTest extends DomainTestCase
         $this->assertSame('destination_not_found', app(CheckRemoteDestination::class)->handle($this->server, 'otro', null)['error_code']);
     }
 
+    public function test_the_real_preparation_runs_the_consolidator_from_the_verified_runtime(): void
+    {
+        $this->requireRoot();
+        DeployRemoteTool::dispatchSync($this->server->getKey(), $this->distribution->getKey(), null);
+        $runtime = $this->root.'/srv/campus';
+        $this->assertSame(0, $this->helper(['campus', '--public-url', self::URL, '--admin-email', 'admin@example.edu', '--runtime-dir', $runtime])->getExitCode());
+        app(CheckRemoteDestination::class)->handle($this->server, 'campus', null);
+        // This host has no Docker: mark the check ready so the real launch path runs to the Consolidator itself.
+        $metadata = $this->server->refresh()->metadata;
+        $metadata['remote_destinations']['campus']['ready'] = true;
+        $this->server->update(['metadata' => $metadata]);
+
+        $started = app(PrepareRemoteDestination::class)->start($this->server->refresh(), 'campus', null);
+        $this->assertSame('RUNNING', $started['state'], (string) ($started['error_code'] ?? ''));
+        $deadline = hrtime(true) + 60_000_000_000;
+        do {
+            usleep(500_000);
+            $observed = app(PrepareRemoteDestination::class)->observe($this->server->refresh(), 'campus');
+        } while (in_array($observed['state'], PrepareRemoteDestination::ACTIVE, true) && hrtime(true) < $deadline);
+
+        // The Consolidator's own preflight refuses to continue without Docker, and says so.
+        $this->assertSame(['FAILED', 'prepare_failed'], [$observed['state'], $observed['error_code']]);
+        $this->assertStringContainsString('Docker', (string) $observed['last_error_line']);
+        $this->assertDirectoryDoesNotExist($runtime.'/reports/destination-write.lock.json');
+
+        // A modified runtime is refused by the agent before any process starts.
+        file_put_contents($runtime.'/scripts/phase6-lib.php', "\n// alterado\n", FILE_APPEND);
+        $refused = app(PrepareRemoteDestination::class)->start($this->server->refresh(), 'campus', null);
+        $this->assertSame(['FAILED', 'engine_modified'], [$refused['state'], $refused['error_code']]);
+    }
+
     public function test_readiness_blocks_on_missing_facts_and_warns_on_capacity(): void
     {
         $tree = str_repeat('b', 64);
         $report = ['public_url' => self::URL, 'env_present' => true, 'env_protected' => true, 'env_complete' => true, 'env_matches_url' => true,
             'tool_tree' => $tree, 'tool_present' => true, 'engine_intact' => true, 'docker_version' => '27.3.1', 'compose_version' => '2.29.7',
-            'flock' => true, 'memory_bytes' => 2_000_000_000, 'runtime_free_bytes' => 10 * 1073741824, 'destination_written' => false];
+            'flock' => true, 'python3' => true, 'memory_bytes' => 2_000_000_000, 'runtime_free_bytes' => 10 * 1073741824, 'destination_written' => false];
 
         $this->assertSame([[], ['low_memory', 'low_disk']], CheckRemoteDestination::assess($report, $tree));
         $this->assertSame([['tool_tree_mismatch'], ['low_memory', 'low_disk']], CheckRemoteDestination::assess($report, null));
