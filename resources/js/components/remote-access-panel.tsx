@@ -39,6 +39,8 @@ export type RemoteServer = {
     role: 'SOURCE' | 'DESTINATION' | 'AUXILIARY';
     host: string | null;
     connection: RemoteConnection | null;
+    collector_deployed: boolean;
+    sources: { id: string; ready: boolean; checked_at: string | null }[];
     evidence: {
         checked_at: string | null;
         status: string | null;

@@ -7,6 +7,9 @@ use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Executions\DTOs\StartExecutionResult;
 use App\Domain\Projects\ConfirmedProjectValidator;
 use App\Domain\Projects\ProjectExecutionManager;
+use App\Domain\Remote\RemoteCollectionConfiguration;
+use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemoteCollectorAdapter;
 use App\Domain\Tools\CollectorAdapter;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Enums\ExecutionCommandType;
@@ -95,10 +98,17 @@ class StartProjectExecution
             if ($real && ! CollectorAdapter::httpEnabled()) {
                 throw new ToolOperationBlocked('La integración HTTP de COLLECT LAB todavía no está habilitada.');
             }
-            $adapter = $real ? app(CollectorAdapter::class) : $this->adapter;
+            $remote = app(RemoteCollectionConfiguration::class)->selected($lockedProject->configuration);
+            $adapter = match (true) {
+                $real => app(CollectorAdapter::class),
+                $remote => app(RemoteCollectorAdapter::class),
+                default => $this->adapter,
+            };
             $execution = $this->executionManager->queue($lockedProject, $actor);
             if ($real) {
                 app(CollectorExecutionPreparation::class)->prepare($execution, $lockedProject->configuration, $actor);
+            } elseif ($remote) {
+                app(RemoteCollectionPreparation::class)->prepare($execution, $lockedProject->configuration, $actor);
             }
 
             foreach ($adapter->plan($lockedProject) as $definition) {
