@@ -67,6 +67,22 @@ type ExecutionData = {
         producer_version: string;
         server?: string | null;
         source_profile?: string | null;
+        sources?: {
+            server: string | null;
+            source_profile: string;
+            package_name: string;
+            report: {
+                stage: string | null;
+                completed_courses: number | null;
+                total_courses: number | null;
+                failed_courses: number | null;
+                package_ready: boolean;
+            } | null;
+            operation: {
+                communication_state: string;
+                functional_state: string;
+            } | null;
+        }[];
         source_cleanup?: {
             state: 'CLEANED' | 'PENDING' | 'MANUAL';
             freed_bytes: number | null;
@@ -1474,10 +1490,23 @@ function CollectorReview({
                     seguimiento recupera los eventos persistidos al volver.
                 </p>
                 {remote && (
-                    <p className="text-sm">
-                        Servidor {execution.collector?.server ?? '—'} · perfil{' '}
-                        {execution.collector?.source_profile ?? '—'}
-                    </p>
+                    <ul className="space-y-1 text-sm">
+                        {(execution.collector?.sources ?? []).map((source) => (
+                            <li key={source.package_name}>
+                                <span className="font-medium">
+                                    {source.server ?? '—'}
+                                </span>{' '}
+                                · perfil {source.source_profile} · paquete{' '}
+                                {source.package_name}
+                                {source.report &&
+                                    ` · cursos ${source.report.completed_courses ?? '—'} de ${source.report.total_courses ?? '—'}`}
+                                {source.report?.package_ready &&
+                                    ' · paquete listo'}
+                                {source.operation &&
+                                    ` · ${source.operation.communication_state} · ${source.operation.functional_state}`}
+                            </li>
+                        ))}
+                    </ul>
                 )}
                 {remote && execution.collector?.source_cleanup && (
                     <p className="text-sm">

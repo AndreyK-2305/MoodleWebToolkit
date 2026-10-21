@@ -97,8 +97,9 @@ class RemoteCollectionExecutionTest extends DomainTestCase
 
         $this->put(route('projects.collector.remote-configuration', $this->project), $this->input())->assertRedirect()->assertSessionHasNoErrors();
         $options = $this->project->fresh()->configuration->settings['options'];
-        $this->assertSame(['REMOTE', $this->server->uuid, 'synthetic-lab', 2, 'origen-lab'],
-            [$options['mode'], $options['server_uuid'], $options['source_profile'], $options['workers'], $options['package_name']]);
+        // The single-source shape is still accepted and stored as a list of one (jsonb may reorder keys).
+        $this->assertEquals(['REMOTE', 'collector-remote.v2', 2, [['server_uuid' => $this->server->uuid, 'source_profile' => 'synthetic-lab', 'package_name' => 'origen-lab']]],
+            [$options['mode'], $options['schema_version'], $options['workers'], $options['sources']]);
     }
 
     public function test_preflight_blocks_confirmation_until_the_server_is_ready(): void
@@ -373,6 +374,106 @@ class RemoteCollectionExecutionTest extends DomainTestCase
         $this->assertSame(1, $execution->events()->where('type', 'collector.source_cleaned')->count());
     }
 
+    public function test_two_sources_export_and_reach_review_with_one_package_each(): void
+    {
+        [$execution, $first, $second] = $this->startTwoSources();
+        $this->assertSame(['synthetic-lab', 'posgrado'], [$first->evidence['parameters']['source'], $second->evidence['parameters']['source']]);
+        $this->assertSame(2, $execution->events()->where('type', 'collector.operation_registered')->count());
+        $shaTwo = hash('sha256', 'second package');
+
+        // The first source finishes; the Execution waits for the second one before publishing.
+        $this->queueStatus(RemoteCollectorExport::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
+        $this->queueReport(['state' => 'success', 'stage' => 'completed', 'exit_code' => 0, 'source_id' => 'origen-lab'],
+            ['stage' => 'completed', 'total_courses' => 4, 'completed_courses' => 4, 'failed_courses' => 0],
+            [['name' => 'origen-lab.zip', 'size' => 4096]], "{$this->sha}  origen-lab.zip");
+        dispatch_sync(new ReconcileRemoteAgentOperation($first->id));
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertNull($execution->fresh()->progress, 'Sin el total del segundo origen el progreso es desconocido.');
+
+        $this->queueStatus(RemoteCollectorExport::COMMAND, alive: true);
+        $this->queueReport(['state' => 'running', 'stage' => 'export', 'exit_code' => 0, 'source_id' => 'origen-dos'],
+            ['stage' => 'courses', 'total_courses' => 4, 'completed_courses' => 2, 'failed_courses' => 0], package: 'origen-dos');
+        dispatch_sync(new ReconcileRemoteAgentOperation($second->id));
+        $this->assertSame(75, $execution->fresh()->progress, '6 de 8 cursos entre los dos orígenes.');
+
+        $this->queueStatus(RemoteCollectorExport::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:10:00Z']);
+        $this->queueReport(['state' => 'success', 'stage' => 'completed', 'exit_code' => 0, 'source_id' => 'origen-dos'],
+            ['stage' => 'completed', 'total_courses' => 4, 'completed_courses' => 4, 'failed_courses' => 0],
+            [['name' => 'origen-dos.zip', 'size' => 4096]], "{$shaTwo}  origen-dos.zip", 'origen-dos');
+        $this->queueLaunch(RemoteSourcePackagePublisher::COMMAND);
+        $this->queueLaunch(RemoteSourcePackagePublisher::COMMAND);
+        dispatch_sync(new ReconcileRemoteAgentOperation($second->id));
+        $this->assertSame(ExecutionStatus::VERIFYING, $execution->fresh()->status);
+        $uploads = $execution->remoteOperations()->where('command_key', RemoteSourcePackagePublisher::COMMAND)->orderBy('id')->get();
+        $this->assertCount(2, $uploads);
+
+        // One upload ending does not register anything until the other one ends too.
+        $this->queueStatus(RemoteSourcePackagePublisher::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:15:00Z']);
+        dispatch_sync(new ReconcileRemoteAgentOperation($uploads[0]->id));
+        $this->assertSame(0, SourcePackage::query()->count());
+
+        $this->queueStatus(RemoteSourcePackagePublisher::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:16:00Z']);
+        $this->queueUploadReport($uploads[0]);
+        $this->queueS3Package();
+        $this->queueUploadReport($uploads[1], $shaTwo, 'posgrado', 'origen-dos', 'origen-dos');
+        $this->queueS3Package($shaTwo, 'origen-dos');
+        dispatch_sync(new ReconcileRemoteAgentOperation($uploads[1]->id));
+
+        $execution->refresh();
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->status);
+        $this->assertEqualsCanonicalizing(['origen-lab', 'origen-dos'], SourcePackage::query()->pluck('source_id')->all());
+        $this->assertSame(2, $execution->events()->where('type', 'collector.package_registered')->count());
+        $page = $this->getJson(route('projects.executions.events', [$this->project, $execution]))->assertOk();
+        $page->assertJsonPath('execution.collector.sources.1.server', 'Origen Posgrado')->assertJsonCount(2, 'review.source_packages');
+
+        // Final confirmation re-checks both objects in S3 and keeps one reference per source.
+        $this->objectStored = true;
+        $this->post(route('projects.executions.finalize', [$this->project, $execution]), [], ['Idempotency-Key' => 'finalize-two'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertSame(ExecutionStatus::COMPLETED, $execution->fresh()->status);
+        $this->assertSame(6, $execution->artifacts()->count(), 'Dos referencias S3 y cuatro informes.');
+    }
+
+    public function test_a_failed_source_cancels_the_others_and_registers_no_package(): void
+    {
+        [$execution, $first, $second] = $this->startTwoSources();
+        $this->queueStatus(RemoteCollectorExport::COMMAND, alive: false, exit: ['exit_code' => 3, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
+        $this->queueReport(['state' => 'error', 'stage' => 'export', 'exit_code' => 3, 'source_id' => 'origen-lab'], ['stage' => 'courses']);
+        $this->transport->okWith('cancel', fn (string $script): array => ['operation_uuid' => QueuedRemoteTransport::operationUuid($script),
+            'signalled' => true, 'already_finished' => false]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($first->id));
+
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status, 'Espera a que termine el origen cancelado.');
+        $this->assertArrayHasKey('cancel_requested_at', $second->fresh()->evidence);
+        $this->assertSame(1, $execution->events()->where('type', 'collector.source_failed')->count());
+
+        $this->queueStatus(RemoteCollectorExport::COMMAND, alive: false, exit: ['exit_code' => 143, 'cancel_requested' => true, 'finished_at' => '2026-10-21T12:01:00Z']);
+        $this->queueReport(['state' => 'cancelled', 'stage' => 'export', 'source_id' => 'origen-dos'], ['stage' => 'courses'], package: 'origen-dos');
+        dispatch_sync(new ReconcileRemoteAgentOperation($second->id));
+
+        $this->assertSame(ExecutionStatus::FAILED, $execution->fresh()->status);
+        $this->assertSame(0, SourcePackage::query()->count());
+        $this->assertSame(0, $execution->remoteOperations()->where('command_key', RemoteSourcePackagePublisher::COMMAND)->count());
+    }
+
+    public function test_sources_must_be_distinct_profiles_with_their_own_package(): void
+    {
+        $second = $this->secondSource();
+        $row = fn (Server $server, string $profile, string $package): array => ['server_uuid' => $server->uuid, 'source_profile' => $profile, 'package_name' => $package];
+        foreach ([
+            [$row($this->server, 'synthetic-lab', 'uno'), $row($this->server, 'synthetic-lab', 'dos')],
+            [$row($this->server, 'synthetic-lab', 'uno'), $row($second, 'posgrado', 'uno')],
+            array_fill(0, 9, $row($this->server, 'synthetic-lab', 'uno')),
+        ] as $sources) {
+            $this->put(route('projects.collector.remote-configuration', $this->project), ['workers' => 1, 'sources' => $sources])
+                ->assertSessionHasErrors();
+        }
+        $this->put(route('projects.collector.remote-configuration', $this->project), ['workers' => 2, 'sources' => [
+            $row($this->server, 'synthetic-lab', 'uno'), $row($second, 'posgrado', 'dos')]])->assertRedirect()->assertSessionHasNoErrors();
+        $options = $this->project->fresh()->configuration->settings['options'];
+        $this->assertSame(['collector-remote.v2', 2, ['uno', 'dos']], [$options['schema_version'], $options['workers'], array_column($options['sources'], 'package_name')]);
+    }
+
     public function test_export_that_fails_closes_the_execution_without_publishing(): void
     {
         $execution = $this->startExecution();
@@ -454,6 +555,39 @@ class RemoteCollectionExecutionTest extends DomainTestCase
         return $execution->fresh();
     }
 
+    private function secondSource(): Server
+    {
+        $server = $this->project->servers()->create(['name' => 'Origen Posgrado', 'role' => ServerRole::SOURCE, 'host' => 'posgrado.example.edu',
+            'metadata' => ['remote_tools' => [RemoteCollectorExport::DISTRIBUTION_KEY => ['tree_sha256' => ToolDistribution::query()
+                ->where('key', RemoteCollectorExport::DISTRIBUTION_KEY)->value('distribution_sha256')]],
+                'remote_sources' => ['posgrado' => ['ready' => true]]]]);
+        app(RemoteServerConnections::class)->configure($server, ConnectionType::AWS_SSM,
+            ['instance_id' => 'i-0fedcba9876543210', 'region' => 'us-east-2'], null, null)->update(['status' => ConnectionStatus::VALID]);
+
+        return $server->refresh();
+    }
+
+    /** @return array{0: Execution, 1: RemoteOperation, 2: RemoteOperation} */
+    private function startTwoSources(): array
+    {
+        $second = $this->secondSource();
+        $this->put(route('projects.collector.remote-configuration', $this->project), ['workers' => 1, 'sources' => [
+            ['server_uuid' => $this->server->uuid, 'source_profile' => 'synthetic-lab', 'package_name' => 'origen-lab'],
+            ['server_uuid' => $second->uuid, 'source_profile' => 'posgrado', 'package_name' => 'origen-dos'],
+        ]])->assertRedirect()->assertSessionHasNoErrors();
+        $this->post(route('projects.wizard.preflight', $this->project))->assertRedirect()->assertSessionHasNoErrors();
+        $this->post(route('projects.wizard.confirm', $this->project), ['configuration_version' => 2, 'accepted_warning_ids' => ['collector.remote_source']])
+            ->assertRedirect()->assertSessionHasNoErrors();
+        $this->queueLaunch(RemoteCollectorExport::COMMAND);
+        $this->queueLaunch(RemoteCollectorExport::COMMAND);
+        $this->postJson(route('projects.executions.store', $this->project), ['configuration_version' => 2], ['Idempotency-Key' => 'two-sources'])->assertCreated();
+        $execution = $this->project->executions()->sole();
+        $exports = $execution->remoteOperations()->orderBy('id')->get();
+        $this->assertCount(2, $exports);
+
+        return [$execution->fresh(), $exports[0], $exports[1]];
+    }
+
     private function startExecution(): Execution
     {
         $this->put(route('projects.collector.remote-configuration', $this->project), $this->input())->assertRedirect()->assertSessionHasNoErrors();
@@ -508,44 +642,46 @@ class RemoteCollectionExecutionTest extends DomainTestCase
      * @param  array<string, mixed>  $progress
      * @param  list<array{name: string, size: int}>  $outputs
      */
-    private function queueReport(array $status, array $progress, array $outputs = [], ?string $sidecar = null): void
+    private function queueReport(array $status, array $progress, array $outputs = [], ?string $sidecar = null, string $package = 'origen-lab'): void
     {
         $this->transport->okWith('collector-report', fn (string $script): array => [
-            'operation_uuid' => QueuedRemoteTransport::operationUuid($script), 'package' => 'origen-lab',
+            'operation_uuid' => QueuedRemoteTransport::operationUuid($script), 'package' => $package,
             'status_base64' => base64_encode((string) json_encode($status)), 'progress_base64' => base64_encode((string) json_encode($progress)),
             'outputs' => $outputs, 'sidecar' => $sidecar, 'observed_at' => now()->utc()->toIso8601String(),
         ]);
     }
 
-    private function queueUploadReport(RemoteOperation $upload): void
+    private function queueUploadReport(RemoteOperation $upload, ?string $sha = null, string $profile = 'synthetic-lab', string $package = 'origen-lab', string $sourceId = 'origen-lab'): void
     {
-        $result = ['bucket' => self::BUCKET, 'region' => 'us-east-2', 'prefix' => 'mwt/'.$this->project->uuid.'/synthetic-lab/'.$this->sha,
-            'package' => 'origen-lab', 'source' => 'synthetic-lab', 'sha256' => $this->sha, 'size' => 4096,
-            'manifest_sha256' => hash('sha256', $this->manifest()), 'validation_sha256' => hash('sha256', $this->validation()),
+        $sha ??= $this->sha;
+        $result = ['bucket' => self::BUCKET, 'region' => 'us-east-2', 'prefix' => 'mwt/'.$this->project->uuid.'/'.$profile.'/'.$sha,
+            'package' => $package, 'source' => $profile, 'sha256' => $sha, 'size' => 4096,
+            'manifest_sha256' => hash('sha256', $this->manifest($sourceId)), 'validation_sha256' => hash('sha256', $this->validation($sha)),
             'uploaded_at' => '2026-10-20T12:05:00Z'];
         $this->transport->ok('upload-report', ['operation_uuid' => $upload->operation_uuid, 'result_base64' => base64_encode((string) json_encode($result))]);
     }
 
-    private function queueS3Package(): void
+    private function queueS3Package(?string $sha = null, string $sourceId = 'origen-lab'): void
     {
-        $head = fn () => new Result(['ContentLength' => 4096, 'Metadata' => ['mwt-sha256' => $this->sha],
-            'ChecksumSHA256' => base64_encode((string) hex2bin($this->sha)), 'ChecksumType' => 'FULL_OBJECT']);
-        $this->s3->append($head(), new Result(['ContentLength' => strlen($this->manifest()), 'Body' => Utils::streamFor($this->manifest())]),
-            new Result(['ContentLength' => strlen($this->validation()), 'Body' => Utils::streamFor($this->validation())]), $head());
+        $sha ??= $this->sha;
+        $head = fn () => new Result(['ContentLength' => 4096, 'Metadata' => ['mwt-sha256' => $sha],
+            'ChecksumSHA256' => base64_encode((string) hex2bin($sha)), 'ChecksumType' => 'FULL_OBJECT']);
+        $this->s3->append($head(), new Result(['ContentLength' => strlen($this->manifest($sourceId)), 'Body' => Utils::streamFor($this->manifest($sourceId))]),
+            new Result(['ContentLength' => strlen($this->validation($sha)), 'Body' => Utils::streamFor($this->validation($sha))]), $head());
     }
 
-    private function manifest(): string
+    private function manifest(string $sourceId = 'origen-lab'): string
     {
         return (string) json_encode(['collector_version' => '7.4.2-linux', 'schema_version' => '1.0',
             'package_type' => 'moodle-consolidation-source', 'package_status' => 'sealed', 'source_write_performed' => false,
-            'destination_write_performed' => false, 'source_id' => 'origen-lab', 'courses_expected' => 4,
+            'destination_write_performed' => false, 'source_id' => $sourceId, 'courses_expected' => 4,
             'capabilities' => ['theme_inventory' => '1.0'], 'source_name' => 'Origen de laboratorio']);
     }
 
-    private function validation(): string
+    private function validation(?string $sha = null): string
     {
         return (string) json_encode(['result' => 'ok', 'failures' => [], 'warnings' => [],
-            'outer_zip' => ['sha256' => $this->sha, 'bytes' => 4096, 'sidecar_status' => 'ok'], 'counts' => ['files' => 10, 'courses' => 4]]);
+            'outer_zip' => ['sha256' => $sha ?? $this->sha, 'bytes' => 4096, 'sidecar_status' => 'ok'], 'counts' => ['files' => 10, 'courses' => 4]]);
     }
 
     /** @return array<string, mixed> */
@@ -564,8 +700,11 @@ class RemoteCollectionExecutionTest extends DomainTestCase
         $client = new S3Client(['region' => 'us-east-2', 'version' => '2006-03-01', 'credentials' => ['key' => 'test', 'secret' => 'test'],
             'handler' => function (CommandInterface $command, $request) {
                 if ($this->objectStored && $command->getName() === 'HeadObject' && $this->s3->count() === 0) {
-                    return Create::promiseFor(new Result(['ContentLength' => 4096, 'Metadata' => ['mwt-sha256' => $this->sha],
-                        'ChecksumSHA256' => base64_encode((string) hex2bin($this->sha)), 'ChecksumType' => 'FULL_OBJECT']));
+                    // Each stored object answers with its own hash: the key ends in <sha256>.zip.
+                    $sha = basename((string) $command['Key'], '.zip');
+
+                    return Create::promiseFor(new Result(['ContentLength' => 4096, 'Metadata' => ['mwt-sha256' => $sha],
+                        'ChecksumSHA256' => base64_encode((string) hex2bin($sha)), 'ChecksumType' => 'FULL_OBJECT']));
                 }
 
                 return ($this->s3)($command, $request);

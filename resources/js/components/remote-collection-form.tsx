@@ -11,17 +11,64 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
-export type RemoteCollectionOptions = {
-    mode?: string | null;
-    server_uuid?: string | null;
-    source_profile?: string | null;
-    workers?: number | null;
-    package_name?: string | null;
+type SourceRow = {
+    server_uuid: string;
+    source_profile: string;
+    package_name: string;
 };
 
+export type RemoteCollectionOptions = {
+    mode?: string | null;
+    sources?: SourceRow[] | null;
+    // Single-source revisions saved before several sources existed.
+    server_uuid?: string | null;
+    source_profile?: string | null;
+    package_name?: string | null;
+    workers?: number | null;
+};
+
+const MAX_SOURCES = 8;
+
+function packageName(server: RemoteServer | undefined, index: number): string {
+    const slug = (server?.name ?? '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+    return /^[a-z]/.test(slug) ? slug.slice(0, 64) : `origen-${index + 1}`;
+}
+
+function initialRows(
+    options: RemoteCollectionOptions,
+    sources: RemoteServer[],
+): SourceRow[] {
+    if (options.mode === 'REMOTE' && options.sources?.length) {
+        return options.sources;
+    }
+    if (options.mode === 'REMOTE' && options.server_uuid) {
+        return [
+            {
+                server_uuid: options.server_uuid,
+                source_profile: options.source_profile ?? '',
+                package_name: options.package_name ?? '',
+            },
+        ];
+    }
+
+    // One row per source server, with the first ready profile of each.
+    return sources.slice(0, MAX_SOURCES).map((server, index) => ({
+        server_uuid: server.uuid,
+        source_profile: server.sources.find((source) => source.ready)?.id ?? '',
+        package_name: packageName(server, index),
+    }));
+}
+
 /**
- * Chooses the source server and profile that the Collector exports from.
- * Only identifiers are sent; paths and credentials stay on the server.
+ * Chooses the source servers and profiles the Collector exports from, one
+ * package per source. Only identifiers are sent; paths and credentials stay
+ * on each server.
  */
 export default function RemoteCollectionForm({
     projectUuid,
@@ -35,75 +82,60 @@ export default function RemoteCollectionForm({
     editable: boolean;
 }) {
     const sources = servers.filter((server) => server.role === 'SOURCE');
-    const current = options.mode === 'REMOTE' ? options : {};
-    const initialServer =
-        sources.find((server) => server.uuid === current.server_uuid) ??
-        sources[0];
     const form = useForm({
-        server_uuid: initialServer?.uuid ?? '',
-        source_profile:
-            current.source_profile ??
-            initialServer?.sources.find((source) => source.ready)?.id ??
-            '',
-        workers: current.workers ?? 1,
-        package_name: current.package_name ?? 'origen',
+        sources: initialRows(options, sources),
+        workers: options.mode === 'REMOTE' ? (options.workers ?? 1) : 1,
     });
-    const server = sources.find((item) => item.uuid === form.data.server_uuid);
-    const profile = server?.sources.find(
-        (source) => source.id === form.data.source_profile,
-    );
     const errors = form.errors as Record<string, string>;
-    const [busy, setBusy] = useState<'deploy' | 'check' | 'detect' | null>(
-        null,
-    );
-    const connected = server?.connection?.status === 'VALID';
+    const [busy, setBusy] = useState<string | null>(null);
+    const updateRow = (index: number, row: Partial<SourceRow>) =>
+        form.setData(
+            'sources',
+            form.data.sources.map((current, position) =>
+                position === index ? { ...current, ...row } : current,
+            ),
+        );
     const serverAction = (
-        action: 'deploy' | 'check' | 'detect',
+        key: string,
+        server: RemoteServer,
         path: string,
         data: Record<string, string> = {},
     ) =>
         router.post(
-            `/projects/${projectUuid}/servers/${server?.uuid}/${path}`,
+            `/projects/${projectUuid}/servers/${server.uuid}/${path}`,
             data,
             {
                 preserveScroll: true,
-                onStart: () => setBusy(action),
+                onStart: () => setBusy(key),
                 onFinish: () => setBusy(null),
             },
         );
-    const readiness = server
-        ? [
-              {
-                  label: 'Conexión',
-                  ok: server.connection?.status === 'VALID',
-              },
-              { label: 'Recolector desplegado', ok: server.collector_deployed },
-              { label: 'Perfil comprobado', ok: profile?.ready === true },
-          ]
-        : [];
 
     return (
         <Card>
             <CardHeader>
-                <CardTitle>Recolección desde el servidor de origen</CardTitle>
+                <CardTitle>
+                    Recolección desde los servidores de origen
+                </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
                 <p className="text-muted-foreground text-sm">
-                    El Recolector 7.4.2 se ejecuta en el servidor mediante su
-                    agente. Al guardar, la configuración queda versionada;
-                    después ejecute el preflight, confirme e inicie la
-                    ejecución.
+                    El Recolector 7.4.2 se ejecuta en cada servidor mediante su
+                    agente y produce un paquete por origen. Al guardar, la
+                    configuración queda versionada; después ejecute el
+                    preflight, confirme e inicie la ejecución.
                     {options.mode === 'REMOTE' &&
                         ' Esta es la configuración vigente del proyecto.'}
                 </p>
                 {sources.length === 0 ? (
                     <p className="text-sm">
-                        Registre un servidor de origen en el paso de instancias
-                        y configure su conexión para habilitar la recolección.
+                        Registre al menos un servidor de origen en el paso de
+                        instancias y configure su conexión para habilitar la
+                        recolección.
                     </p>
                 ) : (
                     <form
-                        className="grid gap-4 md:grid-cols-2"
+                        className="space-y-4"
                         onSubmit={(event) => {
                             event.preventDefault();
                             form.put(
@@ -112,183 +144,315 @@ export default function RemoteCollectionForm({
                             );
                         }}
                     >
-                        <div className="grid gap-2">
-                            <Label htmlFor="remote-server">
-                                Servidor de origen
-                            </Label>
-                            <select
-                                id="remote-server"
-                                className="border-input rounded-md border p-2"
-                                value={form.data.server_uuid}
-                                disabled={!editable}
-                                onChange={(event) => {
-                                    const next = sources.find(
-                                        (item) =>
-                                            item.uuid === event.target.value,
-                                    );
-                                    form.setData({
-                                        ...form.data,
-                                        server_uuid: event.target.value,
-                                        source_profile:
-                                            next?.sources.find(
-                                                (source) => source.ready,
-                                            )?.id ?? '',
-                                    });
-                                }}
-                            >
-                                {sources.map((item) => (
-                                    <option value={item.uuid} key={item.uuid}>
-                                        {item.name}
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                        <div className="grid gap-2">
-                            <Label htmlFor="remote-profile">
-                                Perfil de origen
-                            </Label>
-                            <Input
-                                id="remote-profile"
-                                list="remote-profiles"
-                                value={form.data.source_profile}
-                                disabled={!editable}
-                                onChange={(event) =>
-                                    form.setData(
-                                        'source_profile',
-                                        event.target.value,
-                                    )
-                                }
-                            />
-                            <datalist id="remote-profiles">
-                                {server?.sources.map((source) => (
-                                    <option value={source.id} key={source.id} />
-                                ))}
-                            </datalist>
-                        </div>
-                        <div className="grid gap-2">
-                            <Label htmlFor="remote-package">
-                                Nombre del paquete
-                            </Label>
-                            <Input
-                                id="remote-package"
-                                value={form.data.package_name}
-                                disabled={!editable}
-                                onChange={(event) =>
-                                    form.setData(
-                                        'package_name',
-                                        event.target.value,
-                                    )
-                                }
-                            />
-                        </div>
-                        <div className="grid gap-2">
-                            <Label htmlFor="remote-workers">Workers</Label>
-                            <Input
-                                id="remote-workers"
-                                type="number"
-                                min={1}
-                                max={4}
-                                value={form.data.workers}
-                                disabled={!editable}
-                                onChange={(event) =>
-                                    form.setData(
-                                        'workers',
-                                        Number(event.target.value),
-                                    )
-                                }
-                            />
-                        </div>
-                        <div className="flex flex-wrap gap-2 md:col-span-2">
-                            {readiness.map((item) => (
-                                <Badge
-                                    key={item.label}
-                                    variant={item.ok ? 'default' : 'outline'}
+                        {form.data.sources.map((row, index) => {
+                            const server = sources.find(
+                                (item) => item.uuid === row.server_uuid,
+                            );
+                            const profile = server?.sources.find(
+                                (source) => source.id === row.source_profile,
+                            );
+                            const connected =
+                                server?.connection?.status === 'VALID';
+                            const listId = `remote-profiles-${index}`;
+
+                            return (
+                                <fieldset
+                                    key={index}
+                                    className="space-y-3 rounded-md border p-4"
                                 >
-                                    {item.label}:{' '}
-                                    {item.ok ? 'listo' : 'pendiente'}
-                                </Badge>
-                            ))}
-                        </div>
-                        {profile && <ProfileDetails profile={profile} />}
-                        {server &&
-                            server.sources_detected_at !== null &&
-                            server.sources.every(
-                                (source) => !source.detected,
-                            ) && (
-                                <p className="text-muted-foreground text-sm md:col-span-2">
-                                    El servidor no tiene perfiles de origen. El
-                                    administrador del servidor debe crearlos
-                                    (guía GUIA-PERFIL-ORIGEN.md).
-                                </p>
-                            )}
-                        {editable && server && (
-                            <div className="flex flex-wrap gap-2 md:col-span-2">
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    disabled={!connected || busy !== null}
-                                    onClick={() =>
-                                        serverAction('detect', 'sources/detect')
-                                    }
-                                >
-                                    {busy === 'detect'
-                                        ? 'Detectando…'
-                                        : 'Detectar perfiles del servidor'}
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    disabled={!connected || busy !== null}
-                                    onClick={() =>
-                                        serverAction(
-                                            'deploy',
-                                            'collector/deploy',
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <legend className="font-medium">
+                                            Origen {index + 1}
+                                        </legend>
+                                        {editable &&
+                                            form.data.sources.length > 1 && (
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() =>
+                                                        form.setData(
+                                                            'sources',
+                                                            form.data.sources.filter(
+                                                                (_, position) =>
+                                                                    position !==
+                                                                    index,
+                                                            ),
+                                                        )
+                                                    }
+                                                >
+                                                    Quitar origen
+                                                </Button>
+                                            )}
+                                    </div>
+                                    <div className="grid gap-4 md:grid-cols-3">
+                                        <div className="grid gap-2">
+                                            <Label
+                                                htmlFor={`remote-server-${index}`}
+                                            >
+                                                Servidor
+                                            </Label>
+                                            <select
+                                                id={`remote-server-${index}`}
+                                                className="border-input rounded-md border p-2"
+                                                value={row.server_uuid}
+                                                disabled={!editable}
+                                                onChange={(event) => {
+                                                    const next = sources.find(
+                                                        (item) =>
+                                                            item.uuid ===
+                                                            event.target.value,
+                                                    );
+                                                    updateRow(index, {
+                                                        server_uuid:
+                                                            event.target.value,
+                                                        source_profile:
+                                                            next?.sources.find(
+                                                                (source) =>
+                                                                    source.ready,
+                                                            )?.id ?? '',
+                                                    });
+                                                }}
+                                            >
+                                                {sources.map((item) => (
+                                                    <option
+                                                        value={item.uuid}
+                                                        key={item.uuid}
+                                                    >
+                                                        {item.name}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="grid gap-2">
+                                            <Label
+                                                htmlFor={`remote-profile-${index}`}
+                                            >
+                                                Perfil de origen
+                                            </Label>
+                                            <Input
+                                                id={`remote-profile-${index}`}
+                                                list={listId}
+                                                value={row.source_profile}
+                                                disabled={!editable}
+                                                onChange={(event) =>
+                                                    updateRow(index, {
+                                                        source_profile:
+                                                            event.target.value,
+                                                    })
+                                                }
+                                            />
+                                            <datalist id={listId}>
+                                                {server?.sources.map(
+                                                    (source) => (
+                                                        <option
+                                                            value={source.id}
+                                                            key={source.id}
+                                                        />
+                                                    ),
+                                                )}
+                                            </datalist>
+                                        </div>
+                                        <div className="grid gap-2">
+                                            <Label
+                                                htmlFor={`remote-package-${index}`}
+                                            >
+                                                Nombre del paquete
+                                            </Label>
+                                            <Input
+                                                id={`remote-package-${index}`}
+                                                value={row.package_name}
+                                                disabled={!editable}
+                                                onChange={(event) =>
+                                                    updateRow(index, {
+                                                        package_name:
+                                                            event.target.value,
+                                                    })
+                                                }
+                                            />
+                                        </div>
+                                    </div>
+                                    {server && (
+                                        <div className="flex flex-wrap gap-2">
+                                            {[
+                                                {
+                                                    label: 'Conexión',
+                                                    ok: connected,
+                                                },
+                                                {
+                                                    label: 'Recolector desplegado',
+                                                    ok: server.collector_deployed,
+                                                },
+                                                {
+                                                    label: 'Perfil comprobado',
+                                                    ok: profile?.ready === true,
+                                                },
+                                            ].map((item) => (
+                                                <Badge
+                                                    key={item.label}
+                                                    variant={
+                                                        item.ok
+                                                            ? 'default'
+                                                            : 'outline'
+                                                    }
+                                                >
+                                                    {item.label}:{' '}
+                                                    {item.ok
+                                                        ? 'listo'
+                                                        : 'pendiente'}
+                                                </Badge>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {profile && (
+                                        <ProfileDetails profile={profile} />
+                                    )}
+                                    {server &&
+                                        server.sources_detected_at !== null &&
+                                        server.sources.every(
+                                            (source) => !source.detected,
+                                        ) && (
+                                            <p className="text-muted-foreground text-sm">
+                                                {server.name} no tiene perfiles
+                                                de origen. Su administrador debe
+                                                crearlos (guía
+                                                GUIA-PERFIL-ORIGEN.md).
+                                            </p>
+                                        )}
+                                    {editable && server && (
+                                        <div className="flex flex-wrap gap-2">
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={
+                                                    !connected || busy !== null
+                                                }
+                                                onClick={() =>
+                                                    serverAction(
+                                                        `deploy-${index}`,
+                                                        server,
+                                                        'collector/deploy',
+                                                    )
+                                                }
+                                            >
+                                                {busy === `deploy-${index}`
+                                                    ? 'Desplegando…'
+                                                    : server.collector_deployed
+                                                      ? 'Verificar despliegue'
+                                                      : 'Desplegar Recolector 7.4.2'}
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={
+                                                    !connected || busy !== null
+                                                }
+                                                onClick={() =>
+                                                    serverAction(
+                                                        `detect-${index}`,
+                                                        server,
+                                                        'sources/detect',
+                                                    )
+                                                }
+                                            >
+                                                {busy === `detect-${index}`
+                                                    ? 'Detectando…'
+                                                    : 'Detectar perfiles'}
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={
+                                                    !connected ||
+                                                    busy !== null ||
+                                                    row.source_profile === ''
+                                                }
+                                                onClick={() =>
+                                                    serverAction(
+                                                        `check-${index}`,
+                                                        server,
+                                                        'sources/check',
+                                                        {
+                                                            source: row.source_profile,
+                                                        },
+                                                    )
+                                                }
+                                            >
+                                                {busy === `check-${index}`
+                                                    ? 'Comprobando…'
+                                                    : 'Comprobar perfil'}
+                                            </Button>
+                                            {!connected && (
+                                                <p className="text-muted-foreground text-sm">
+                                                    Pruebe primero la conexión
+                                                    de {server.name}.
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+                                </fieldset>
+                            );
+                        })}
+                        <div className="flex flex-wrap items-end gap-4">
+                            {editable &&
+                                form.data.sources.length < MAX_SOURCES && (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        onClick={() =>
+                                            form.setData('sources', [
+                                                ...form.data.sources,
+                                                {
+                                                    server_uuid:
+                                                        sources[0]?.uuid ?? '',
+                                                    source_profile: '',
+                                                    package_name: `origen-${form.data.sources.length + 1}`,
+                                                },
+                                            ])
+                                        }
+                                    >
+                                        Agregar origen
+                                    </Button>
+                                )}
+                            <div className="grid gap-2">
+                                <Label htmlFor="remote-workers">
+                                    Workers por origen
+                                </Label>
+                                <Input
+                                    id="remote-workers"
+                                    type="number"
+                                    min={1}
+                                    max={4}
+                                    className="w-24"
+                                    value={form.data.workers}
+                                    disabled={!editable}
+                                    onChange={(event) =>
+                                        form.setData(
+                                            'workers',
+                                            Number(event.target.value),
                                         )
                                     }
-                                >
-                                    {busy === 'deploy'
-                                        ? 'Desplegando…'
-                                        : server.collector_deployed
-                                          ? 'Verificar despliegue del Recolector'
-                                          : 'Desplegar Recolector 7.4.2'}
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    disabled={
-                                        !connected ||
-                                        busy !== null ||
-                                        form.data.source_profile === ''
-                                    }
-                                    onClick={() =>
-                                        serverAction('check', 'sources/check', {
-                                            source: form.data.source_profile,
-                                        })
-                                    }
-                                >
-                                    {busy === 'check'
-                                        ? 'Comprobando…'
-                                        : 'Comprobar perfil de origen'}
-                                </Button>
-                                {!connected && (
-                                    <p className="text-muted-foreground text-sm">
-                                        Pruebe primero la conexión del servidor.
-                                    </p>
-                                )}
+                                />
                             </div>
-                        )}
-                        <div className="md:col-span-2">
+                        </div>
+                        <div>
                             {Object.entries(errors).map(([key, error]) => (
                                 <InputError key={key} message={error} />
                             ))}
                         </div>
                         {editable && (
                             <Button
-                                className="md:col-span-2 md:justify-self-start"
                                 disabled={
                                     form.processing ||
-                                    form.data.server_uuid === '' ||
-                                    form.data.source_profile === ''
+                                    form.data.sources.some(
+                                        (row) =>
+                                            row.server_uuid === '' ||
+                                            row.source_profile === '' ||
+                                            row.package_name === '',
+                                    )
                                 }
                             >
                                 Guardar recolección remota
@@ -317,7 +481,7 @@ function gib(bytes: number | null): string {
 function ProfileDetails({ profile }: { profile: RemoteSourceProfile }) {
     const error = profile.check_error ?? profile.profile_error;
     return (
-        <div className="text-muted-foreground space-y-1 text-sm md:col-span-2">
+        <div className="text-muted-foreground space-y-1 text-sm">
             {profile.valid === false && (
                 <p className="text-destructive">
                     Perfil inválido:{' '}

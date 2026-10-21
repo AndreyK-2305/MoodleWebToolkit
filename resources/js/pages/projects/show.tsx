@@ -453,7 +453,10 @@ function InstancesStep({
     const sourceCount = form.data.instances.filter(
         (instance) => instance.role === 'SOURCE',
     ).length;
-    const canAddSource = project.type === 'CONSOLIDATE' || sourceCount === 0;
+    // Collecting from several sources is a remote collection; at most eight of them.
+    const canAddSource =
+        project.type === 'CONSOLIDATE' ||
+        (project.type === 'COLLECT' && sourceCount < 8);
 
     const updateInstance = <K extends keyof InstanceDraft>(
         index: number,

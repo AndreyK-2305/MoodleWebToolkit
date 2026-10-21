@@ -2,6 +2,7 @@
 
 namespace App\Domain\Projects;
 
+use App\Domain\Remote\RemoteCollectionConfiguration;
 use App\Enums\MoodleInstanceRole;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
@@ -531,8 +532,9 @@ class ProjectWizard
         $destinations = collect($instances)->where('role', MoodleInstanceRole::DESTINATION->value);
         $messages = [];
 
-        if ($type === ProjectType::COLLECT && ($sources->count() > 1 || $destinations->isNotEmpty())) {
-            $messages['instances'] = 'Recolectar admite como máximo una instancia origen y no admite destino.';
+        // A remote collection exports from several source servers in one Execution.
+        if ($type === ProjectType::COLLECT && ($sources->count() > RemoteCollectionConfiguration::MAX_SOURCES || $destinations->isNotEmpty())) {
+            $messages['instances'] = 'Recolectar admite hasta '.RemoteCollectionConfiguration::MAX_SOURCES.' instancias origen y no admite destino.';
         }
 
         if ($type === ProjectType::CONSOLIDATE && $destinations->count() > 1) {

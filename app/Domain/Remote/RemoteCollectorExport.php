@@ -38,15 +38,7 @@ class RemoteCollectorExport
 
     public function start(Execution $execution, Server $server, string $source, string $package, string $workers, ?User $actor): RemoteOperation
     {
-        $this->connections->assertEnabled();
-        $distribution = ToolDistribution::query()->where('key', self::DISTRIBUTION_KEY)->where('verification_state', 'VERIFIED')->first();
-        $deployed = $server->metadata['remote_tools'][self::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
-        if ($distribution === null || ! is_string($deployed) || ! hash_equals($distribution->distribution_sha256, $deployed)) {
-            throw new ToolOperationBlocked('El Recolector verificado del catálogo no está desplegado en el servidor.');
-        }
-        if (($server->metadata['remote_sources'][$source]['ready'] ?? false) !== true) {
-            throw new ToolOperationBlocked('El perfil de origen no superó la comprobación en el servidor.');
-        }
+        $distribution = $this->assertLaunchable($server, $source);
 
         return $this->operations->launch($execution, $server, 'collector-'.$package, self::COMMAND, [
             'distribution' => $distribution->distribution_sha256,
@@ -54,6 +46,22 @@ class RemoteCollectorExport
             'package' => $package,
             'workers' => $workers,
         ], $actor);
+    }
+
+    /** The checks of a launch, usable before launching several sources so none starts alone. */
+    public function assertLaunchable(Server $server, string $source): ToolDistribution
+    {
+        $this->connections->assertEnabled();
+        $distribution = ToolDistribution::query()->where('key', self::DISTRIBUTION_KEY)->where('verification_state', 'VERIFIED')->first();
+        $deployed = $server->metadata['remote_tools'][self::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
+        if ($distribution === null || ! is_string($deployed) || ! hash_equals($distribution->distribution_sha256, $deployed)) {
+            throw new ToolOperationBlocked('El Recolector verificado del catálogo no está desplegado en '.$server->name.'.');
+        }
+        if (($server->metadata['remote_sources'][$source]['ready'] ?? false) !== true) {
+            throw new ToolOperationBlocked('El perfil '.$source.' no superó la comprobación en '.$server->name.'.');
+        }
+
+        return $distribution;
     }
 
     /**
