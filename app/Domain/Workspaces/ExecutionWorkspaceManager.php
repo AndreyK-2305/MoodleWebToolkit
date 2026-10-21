@@ -8,12 +8,9 @@ use App\Models\Artifact;
 use App\Models\Execution;
 use App\Models\ExecutionCapacityApproval;
 use App\Models\ExecutionWorkspace;
-use FilesystemIterator;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use RecursiveDirectoryIterator;
-use RecursiveIteratorIterator;
 use RuntimeException;
 
 class ExecutionWorkspaceManager
@@ -383,18 +380,39 @@ class ExecutionWorkspaceManager
             return 0;
         }
 
+        // A running tool creates and removes files while it is measured. An
+        // entry that disappears mid-walk no longer uses space and is skipped;
+        // one that still exists but cannot be read keeps failing closed.
         $total = 0;
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::SELF_FIRST,
-        );
-
-        foreach ($iterator as $entry) {
-            if ($entry->isLink()) {
-                throw new RuntimeException('Se detectó un enlace simbólico dentro del workspace.');
+        $pending = [$root];
+        while ($pending !== []) {
+            $directory = array_pop($pending);
+            $entries = @scandir($directory);
+            if ($entries === false) {
+                clearstatcache(true, $directory);
+                if (@lstat($directory) === false) {
+                    continue;
+                }
+                throw new RuntimeException('No se pudo medir un directorio del workspace.');
             }
-            if ($entry->isFile()) {
-                $total += $entry->getSize();
+            foreach ($entries as $name) {
+                if ($name === '.' || $name === '..') {
+                    continue;
+                }
+                $path = $directory.DIRECTORY_SEPARATOR.$name;
+                $stat = @lstat($path);
+                if ($stat === false) {
+                    continue;
+                }
+                $type = $stat['mode'] & 0170000;
+                if ($type === 0120000) {
+                    throw new RuntimeException('Se detectó un enlace simbólico dentro del workspace.');
+                }
+                if ($type === 0040000) {
+                    $pending[] = $path;
+                } elseif ($type === 0100000) {
+                    $total += $stat['size'];
+                }
             }
         }
 
