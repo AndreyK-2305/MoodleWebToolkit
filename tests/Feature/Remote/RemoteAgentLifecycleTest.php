@@ -142,6 +142,60 @@ class RemoteAgentLifecycleTest extends TestCase
         $this->agent()->call($this->target(), 'launch', [$uuid, 'diagnostic.sleep', 'seconds=1;id']);
     }
 
+    public function test_cleanup_frees_only_heavy_outputs_of_a_finished_operation(): void
+    {
+        app(RemoteAgentInstaller::class)->install($this->target());
+        $finished = $this->collectorOperation('pkg');
+        $dir = $this->root.'/state/ops/'.$finished;
+
+        $cleanup = $this->agent()->call($this->target(), 'cleanup', [$finished]);
+        $this->assertTrue($cleanup->ok, (string) $cleanup->errorCode);
+        $this->assertFalse($cleanup->data['already_clean']);
+        $this->assertGreaterThanOrEqual(6_000_000, $cleanup->data['cleanup']['freed_bytes']);
+        foreach (['work/tmp', 'work/output/pkg.zip', 'work/output/.moodle-collector-work-pkg'] as $removed) {
+            $this->assertFileDoesNotExist($dir.'/'.$removed);
+        }
+        foreach (['launch.json', 'exit.json', 'stdout.log', 'cleanup.json', 'work/output/pkg.zip.sha256', 'work/output/pkg.status.json'] as $kept) {
+            $this->assertFileExists($dir.'/'.$kept);
+        }
+        $again = $this->agent()->call($this->target(), 'cleanup', [$finished]);
+        $this->assertTrue($again->data['already_clean']);
+
+        // A running operation and a link to the outside are never touched.
+        $running = $this->launch('diagnostic.sleep', ['seconds=30']);
+        $this->waitForStatus($running, fn (array $data): bool => $data['process_alive'] === true);
+        $this->assertSame('operation_active', $this->agent()->call($this->target(), 'cleanup', [$running])->errorCode);
+        $linked = $this->collectorOperation('pkg');
+        $outside = $this->root.'/outside';
+        mkdir($outside);
+        file_put_contents($outside.'/keep', 'keep');
+        unlink($this->root.'/state/ops/'.$linked.'/work/output/pkg.zip');
+        symlink($outside.'/keep', $this->root.'/state/ops/'.$linked.'/work/output/pkg.zip');
+        $this->assertSame('cleanup_unsafe_path', $this->agent()->call($this->target(), 'cleanup', [$linked])->errorCode);
+        $this->assertFileExists($outside.'/keep');
+        $this->assertDirectoryExists($this->root.'/state/ops/'.$linked.'/work/tmp');
+    }
+
+    /** A finished collector.742 operation as the agent leaves it on disk. */
+    private function collectorOperation(string $package): string
+    {
+        $uuid = Str::uuid()->toString();
+        $dir = $this->root.'/state/ops/'.$uuid;
+        mkdir($dir.'/work/output/.moodle-collector-work-'.$package.'/backups', 0700, true);
+        mkdir($dir.'/work/tmp', 0700, true);
+        file_put_contents($dir.'/launch.json', json_encode(['operation_uuid' => $uuid, 'command_key' => 'collector.742',
+            'launcher' => 'nohup', 'parameters' => ['package' => $package, 'source' => 'lab-src']]));
+        file_put_contents($dir.'/exit.json', '{"exit_code":0,"cancel_requested":false}');
+        file_put_contents($dir.'/stdout.log', "fin\n");
+        file_put_contents($dir.'/work/output/'.$package.'.zip', str_repeat("\0", 3_000_000));
+        file_put_contents($dir.'/work/output/'.$package.'.zip.sha256', str_repeat('a', 64).'  '.$package.".zip\n");
+        file_put_contents($dir.'/work/output/'.$package.'.status.json', '{}');
+        file_put_contents($dir.'/work/output/.moodle-collector-work-'.$package.'/backups/c1.mbz', str_repeat("\0", 2_000_000));
+        file_put_contents($dir.'/work/tmp/t', str_repeat("\0", 1_000_000));
+
+        return $uuid;
+    }
+
     /** @param list<string> $parameters */
     private function launch(string $key, array $parameters): string
     {

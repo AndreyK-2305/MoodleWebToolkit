@@ -7,6 +7,7 @@ use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Domain\Remote\RemoteAgentOperations;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteSourceCleanup;
 use App\Domain\Remote\RemoteSourcePackagePublisher;
 use App\Jobs\ReconcileRemoteAgentOperation;
 use App\Jobs\ReconcileRemoteOperation;
@@ -43,6 +44,14 @@ class ReconcileRemoteOperations extends Command
                         ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['RUNNING', 'CANCELLING', 'VERIFYING'])
                             ->whereHas('toolBinding', fn ($binding) => $binding->where('adapter_key', RemoteCollectionPreparation::ADAPTER_KEY)))
                         ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
+                })->orWhere(function ($cleanup): void {
+                    // After REVIEW or closing, the source disk is freed; the service applies the backoff.
+                    $cleanup->where('provider_key', RemoteAgentOperations::PROVIDER)->where('communication_state', 'TERMINATED')
+                        ->whereIn('command_key', [RemoteCollectorExport::COMMAND, RemoteSourcePackagePublisher::COMMAND])
+                        ->whereNull('evidence->cleanup')
+                        ->whereRaw("coalesce((evidence->'cleanup_pending'->>'manual')::boolean, false) = false")
+                        ->whereHas('execution', fn ($execution) => $execution->whereIn('status', RemoteSourceCleanup::STATUSES)
+                            ->whereHas('toolBinding', fn ($binding) => $binding->where('adapter_key', RemoteCollectionPreparation::ADAPTER_KEY)));
                 });
             })
             ->orderBy('id')

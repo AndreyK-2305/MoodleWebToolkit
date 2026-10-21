@@ -130,7 +130,9 @@ class RemoteServerConnectionsTest extends DomainTestCase
         $this->transport->queue($this->agentOk('version', ['agent_sha256' => $this->sha(), 'launcher' => 'systemd']));
         $installed = app(InstallRemoteAgent::class)->handle($server, null);
         $this->assertTrue($installed['installed']);
-        $this->assertStringContainsString(base64_encode((string) file_get_contents(app(RemoteAgent::class)->distribution()['path'])), $this->transport->scripts[0]);
+        // The agent travels compressed; what the server writes must be the verified file, byte for byte.
+        $this->assertSame(1, preg_match("/printf %s '([A-Za-z0-9+\/=]+)' \| base64 -d \| gzip -dc/", $this->transport->scripts[0], $payload));
+        $this->assertSame((string) file_get_contents(app(RemoteAgent::class)->distribution()['path']), gzdecode((string) base64_decode($payload[1], true)));
 
         $this->transport->queue(new TransportResult(TransportResult::COMPLETED, 2, $this->document(false, 'version', ['code' => 'agent_install_hash_mismatch']), ''));
         $rejected = app(InstallRemoteAgent::class)->handle($server, null);

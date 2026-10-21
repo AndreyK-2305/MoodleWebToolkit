@@ -67,6 +67,10 @@ type ExecutionData = {
         producer_version: string;
         server?: string | null;
         source_profile?: string | null;
+        source_cleanup?: {
+            state: 'CLEANED' | 'PENDING' | 'MANUAL';
+            freed_bytes: number | null;
+        } | null;
         report?: {
             stage: string | null;
             completed_courses: number | null;
@@ -1473,6 +1477,16 @@ function CollectorReview({
                     <p className="text-sm">
                         Servidor {execution.collector?.server ?? '—'} · perfil{' '}
                         {execution.collector?.source_profile ?? '—'}
+                    </p>
+                )}
+                {remote && execution.collector?.source_cleanup && (
+                    <p className="text-sm">
+                        {execution.collector.source_cleanup.state === 'CLEANED'
+                            ? `Espacio liberado en el servidor de origen: ${((execution.collector.source_cleanup.freed_bytes ?? 0) / 1048576).toFixed(1)} MiB; se conservan la evidencia y los registros.`
+                            : execution.collector.source_cleanup.state ===
+                                'MANUAL'
+                              ? 'No se pudo liberar el espacio en el servidor de origen tras varios intentos; requiere revisión.'
+                              : 'Liberando el espacio de la exportación en el servidor de origen…'}
                     </p>
                 )}
                 {remote && report && (

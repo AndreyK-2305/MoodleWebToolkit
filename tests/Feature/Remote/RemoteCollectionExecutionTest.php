@@ -309,17 +309,62 @@ class RemoteCollectionExecutionTest extends DomainTestCase
         $this->assertSame($deployed, $this->server->fresh()->metadata['remote_tools'], 'Un despliegue fallido no altera la evidencia previa.');
     }
 
+    public function test_source_disk_is_freed_once_the_package_is_verified_in_s3(): void
+    {
+        $execution = $this->reviewedExecution(cleanup: true);
+
+        $this->assertSame(['cleanup', 'cleanup'], array_slice($this->transport->subcommands(), -2));
+        foreach ($execution->remoteOperations()->get() as $operation) {
+            $this->assertArrayHasKey('cleanup', $operation->evidence);
+        }
+        $event = $execution->events()->where('type', 'collector.source_cleaned')->sole();
+        $this->assertSame(3_002_048, $event->payload['freed_bytes']);
+        $this->getJson(route('projects.executions.events', [$this->project, $execution]))
+            ->assertJsonPath('execution.collector.source_cleanup.state', 'CLEANED')
+            ->assertJsonPath('execution.collector.source_cleanup.freed_bytes', 3_002_048);
+
+        // Nothing is cleaned twice.
+        $this->artisan('executions:reconcile-remote-operations')->assertSuccessful();
+        $this->assertSame(1, $execution->events()->where('type', 'collector.source_cleaned')->count());
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_unreachable_source_is_cleaned_later_with_backoff_without_blocking_review(): void
+    {
+        $execution = $this->reviewedExecution();
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->status);
+        $export = $execution->remoteOperations()->where('command_key', RemoteCollectorExport::COMMAND)->sole();
+        $this->assertSame(1, $export->evidence['cleanup_pending']['attempts']);
+        $this->getJson(route('projects.executions.events', [$this->project, $execution]))
+            ->assertJsonPath('execution.collector.source_cleanup.state', 'PENDING');
+
+        // Before the backoff elapses the scheduler does not call the server.
+        $calls = count($this->transport->subcommands());
+        $this->artisan('executions:reconcile-remote-operations')->assertSuccessful();
+        $this->assertCount($calls, $this->transport->subcommands());
+
+        $this->travel(2)->minutes();
+        $this->queueCleanup(3_000_000);
+        $this->queueCleanup(0);
+        $this->artisan('executions:reconcile-remote-operations')->assertSuccessful();
+        $this->assertSame(3_000_000, $export->fresh()->evidence['cleanup']['freed_bytes']);
+        $this->assertArrayNotHasKey('cleanup_pending', $export->fresh()->evidence);
+        $this->assertSame(1, $execution->events()->where('type', 'collector.source_cleaned')->count());
+    }
+
     public function test_export_that_fails_closes_the_execution_without_publishing(): void
     {
         $execution = $this->startExecution();
         $export = $execution->remoteOperations()->sole();
         $this->queueStatus(RemoteCollectorExport::COMMAND, alive: false, exit: ['exit_code' => 3, 'cancel_requested' => false, 'finished_at' => '2026-10-20T12:00:00Z']);
         $this->queueReport(['state' => 'error', 'stage' => 'export', 'exit_code' => 3, 'source_id' => 'origen-lab'], ['stage' => 'courses']);
+        $this->queueCleanup(1_500_000);
         dispatch_sync(new ReconcileRemoteAgentOperation($export->id));
 
         $execution->refresh();
         $this->assertSame(ExecutionStatus::FAILED, $execution->status);
         $this->assertSame(1, $execution->events()->where('type', 'collector.failed')->count());
+        $this->assertSame(1_500_000, $export->fresh()->evidence['cleanup']['freed_bytes']);
         $this->assertSame(0, $execution->remoteOperations()->where('command_key', RemoteSourcePackagePublisher::COMMAND)->count());
         $this->assertSame(0, SourcePackage::query()->count());
     }
@@ -364,7 +409,7 @@ class RemoteCollectionExecutionTest extends DomainTestCase
         $this->assertSame(0, $execution->verifications()->count());
     }
 
-    private function reviewedExecution(): Execution
+    private function reviewedExecution(bool $cleanup = false): Execution
     {
         $execution = $this->startExecution();
         $export = $execution->remoteOperations()->sole();
@@ -378,6 +423,10 @@ class RemoteCollectionExecutionTest extends DomainTestCase
         $this->queueStatus(RemoteSourcePackagePublisher::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-20T12:05:00Z']);
         $this->queueUploadReport($upload);
         $this->queueS3Package();
+        if ($cleanup) {
+            $this->queueCleanup(3_000_000);
+            $this->queueCleanup(2048);
+        }
         dispatch_sync(new ReconcileRemoteAgentOperation($upload->id));
         $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
 
@@ -406,6 +455,12 @@ class RemoteCollectionExecutionTest extends DomainTestCase
     private function input(): array
     {
         return ['server_uuid' => $this->server->uuid, 'source_profile' => 'synthetic-lab', 'workers' => 2, 'package_name' => 'origen-lab'];
+    }
+
+    private function queueCleanup(int $freed): void
+    {
+        $this->transport->okWith('cleanup', fn (string $script): array => ['operation_uuid' => QueuedRemoteTransport::operationUuid($script),
+            'already_clean' => false, 'cleanup' => ['cleaned_at' => '2026-10-21T12:00:00Z', 'freed_bytes' => $freed, 'command_key' => 'collector.742']]);
     }
 
     private function queueLaunch(string $command): void
