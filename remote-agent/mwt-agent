@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.5.0"
+readonly AGENT_VERSION="1.6.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -18,6 +18,10 @@ readonly STAGING_DIR="${STATE_DIR}/staging"
 readonly TOOLS_DIR="${MWT_AGENT_TOOLS_DIR:-/opt/mwt-agent/tools}"
 # Source profiles are written by the server's administrator, never by the platform.
 readonly SOURCES_DIR="${MWT_AGENT_SOURCES_DIR:-/etc/mwt-agent/sources}"
+# Destination profiles too: each names the Consolidator runtime the administrator prepared.
+readonly DESTINATIONS_DIR="${MWT_AGENT_DESTINATIONS_DIR:-/etc/mwt-agent/destinations}"
+readonly CONSOLIDATOR_COMPOSE_PROJECT="moodle-consolidation-production"
+readonly HTTPS_URL_RE='^https://[A-Za-z0-9._:-]+(/[A-Za-z0-9._~/-]*)?$'
 readonly COLLECTOR_TOOL_KEY="moodle-recolector-7.4.2-linux-tree"
 readonly TOOL_KEY_RE='^[a-z0-9][a-z0-9.-]{2,80}$'
 readonly SHA_RE='^[0-9a-f]{64}$'
@@ -191,6 +195,32 @@ source_exec() {
     else
         SRC_EXEC=()
     fi
+}
+
+# Sets DST_* from an administrator-owned destination profile; fails closed on anything else.
+load_destination() {
+    local id=$1 file line key value
+    [[ $id =~ $SOURCE_RE ]] || fail invalid_destination
+    file="$DESTINATIONS_DIR/$id.conf"
+    [[ -f $file && ! -L $file ]] || fail destination_not_found
+    if [[ $(id -u) == 0 ]]; then
+        [[ $(stat -c %u "$file") == 0 ]] || fail destination_profile_unsafe
+    fi
+    (((8#$(stat -c '%a' "$file") & 8#022) == 0)) || fail destination_profile_unsafe
+    DST_ID=$id DST_RUNTIME_DIR='' DST_PUBLIC_URL='' DST_TOOL_TREE=''
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -z $line || $line == \#* ]] && continue
+        [[ $line =~ ^([A-Z_]{2,32})=(.*)$ ]] || fail destination_profile_invalid
+        key=${BASH_REMATCH[1]}
+        value=${BASH_REMATCH[2]}
+        case $key in
+            RUNTIME_DIR) safe_path "$value" || fail destination_profile_invalid; DST_RUNTIME_DIR=$value ;;
+            PUBLIC_URL) [[ $value =~ $HTTPS_URL_RE ]] || fail destination_profile_invalid; DST_PUBLIC_URL=$value ;;
+            TOOL_TREE) [[ $value =~ $SHA_RE ]] || fail destination_profile_invalid; DST_TOOL_TREE=$value ;;
+            *) fail destination_profile_invalid ;;
+        esac
+    done <"$file"
+    [[ -n $DST_RUNTIME_DIR && -n $DST_PUBLIC_URL && -n $DST_TOOL_TREE ]] || fail destination_profile_invalid
 }
 
 # --- Registered operations -------------------------------------------------
@@ -578,6 +608,75 @@ cmd_source_list() {
     respond_ok source-list "{\"sources_dir_exists\":$(bool "$([[ -d $SOURCES_DIR ]] && echo 1 || echo 0)"),\"sources\":[$entries]}"
 }
 
+cmd_destination_list() {
+    (($# == 0)) || fail invalid_arguments
+    local file id out entries='' sep='' count=0 code
+    if [[ -d $DESTINATIONS_DIR && ! -L $DESTINATIONS_DIR ]]; then
+        while IFS= read -r -d '' file; do
+            ((count < 20)) || break
+            id=$(basename "$file" .conf)
+            [[ $id =~ $SOURCE_RE ]] || continue
+            out=$(load_destination "$id"; printf 'MWT_OK %s' "$DST_PUBLIC_URL") || true
+            if [[ $out =~ ^MWT_OK\ (https://[A-Za-z0-9._:~/-]+)$ ]]; then
+                entries+="$sep{\"id\":\"$id\",\"valid\":true,\"public_url\":$(json_escape "${BASH_REMATCH[1]}"),\"error_code\":null}"
+            else
+                code=$(sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p' <<<"$out")
+                entries+="$sep{\"id\":\"$id\",\"valid\":false,\"public_url\":null,\"error_code\":$(json_or_null "${code:-destination_profile_invalid}")}"
+            fi
+            sep=','
+            count=$((count + 1))
+        done < <(find "$DESTINATIONS_DIR" -maxdepth 1 -type f -name '*.conf' -print0 | LC_ALL=C sort -z)
+    fi
+    respond_ok destination-list "{\"destinations_dir_exists\":$(bool "$([[ -d $DESTINATIONS_DIR ]] && echo 1 || echo 0)"),\"destinations\":[$entries]}"
+}
+
+# Checks that a destination profile can run the Consolidator. Reports closed
+# facts only: the runtime's .env holds the site's secrets and none of its
+# values leave the server, not even to compare them here beyond the URL.
+cmd_destination_check() {
+    (($# == 1)) || fail invalid_arguments
+    local runtime env env_present=0 env_protected=0 env_url='' env_complete=0 tool_present=0 engine_intact=0
+    local docker_version='' compose_version='' flock_present=0 cpus='' mem_kb='' free='' target_running=0 written=0 required
+    load_destination "$1"
+    runtime=$DST_RUNTIME_DIR
+    [[ -d $runtime && ! -L $runtime ]] || fail destination_runtime_missing
+    if [[ $(id -u) == 0 ]]; then
+        [[ $(stat -c %u "$runtime") == 0 ]] || fail destination_profile_unsafe
+    fi
+    env="$runtime/.env"
+    if [[ -f $env && ! -L $env ]]; then
+        env_present=1
+        (((8#$(stat -c '%a' "$env") & 8#077) == 0)) && env_protected=1
+        env_url=$(sed -n 's/^MOODLE_PUBLIC_URL=\(.*\)$/\1/p' "$env" | head -n 1)
+        env_complete=1
+        grep -Eq '(^|=)CHANGE_ME($|[[:space:]])' "$env" && env_complete=0
+        for required in MOODLE_PUBLIC_URL MOODLE_INTERNAL_HEALTH_URL MOODLE_ADMIN_USER MOODLE_ADMIN_PASSWORD MOODLE_DB_PASSWORD MARIADB_ROOT_PASSWORD MOODLE_MANAGED_CONFIG_DIR; do
+            grep -Eq "^${required}=.+" "$env" || env_complete=0
+        done
+    fi
+    compgen -G "$TOOLS_DIR/moodle-consolidador-*/$DST_TOOL_TREE" >/dev/null && tool_present=1
+    [[ -f $runtime/FILES.sha256 ]] && (cd "$runtime" && sha256sum --quiet --check FILES.sha256 >/dev/null 2>&1) && engine_intact=1
+    if command -v docker >/dev/null 2>&1; then
+        docker_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)
+        compose_version=$(docker compose version --short 2>/dev/null || true)
+        if [[ -n $docker_version && -n $compose_version ]]; then
+            docker compose --project-name "$CONSOLIDATOR_COMPOSE_PROJECT" ps --status running --services 2>/dev/null | grep -qx moodle-target && target_running=1
+        fi
+    fi
+    command -v flock >/dev/null 2>&1 && flock_present=1
+    cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '')
+    [[ -r /proc/meminfo ]] && mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+    free=$(df -PB1 "$runtime" 2>/dev/null | awk 'NR==2 {print $4}') || free=''
+    [[ -f $runtime/reports/destination-write.lock.json ]] && written=1
+    respond_ok destination-check "$(printf '{"destination":"%s","public_url":%s,"env_present":%s,"env_protected":%s,"env_matches_url":%s,"env_complete":%s,"tool_tree":"%s","tool_present":%s,"engine_intact":%s,"docker_version":%s,"compose_version":%s,"flock":%s,"cpus":%s,"memory_bytes":%s,"runtime_free_bytes":%s,"target_running":%s,"destination_written":%s}' \
+        "$DST_ID" "$(json_escape "$DST_PUBLIC_URL")" "$(bool "$env_present")" "$(bool "$env_protected")" \
+        "$(bool "$([[ -n $env_url && $env_url == "$DST_PUBLIC_URL" ]] && echo 1 || echo 0)")" "$(bool "$env_complete")" \
+        "$DST_TOOL_TREE" "$(bool "$tool_present")" "$(bool "$engine_intact")" "$(json_or_null "$docker_version")" \
+        "$(json_or_null "$compose_version")" "$(bool "$flock_present")" "$(int_or_null "$cpus")" \
+        "$(if [[ $mem_kb =~ ^[0-9]+$ ]]; then printf '%s' $((mem_kb * 1024)); else printf 'null'; fi)" \
+        "$(int_or_null "$free")" "$(bool "$target_running")" "$(bool "$written")")"
+}
+
 # Sets PKG_* for a finished collector.742 operation whose ZIP matches its sidecar.
 collector_package() {
     local launch exit_file
@@ -757,6 +856,8 @@ case $COMMAND in
     tool-commit) cmd_tool_commit "$@" ;;
     source-check) cmd_source_check "$@" ;;
     source-list) cmd_source_list "$@" ;;
+    destination-list) cmd_destination_list "$@" ;;
+    destination-check) cmd_destination_check "$@" ;;
     collector-report) cmd_collector_report "$@" ;;
     upload-report) cmd_upload_report "$@" ;;
     cleanup) cmd_cleanup "$@" ;;

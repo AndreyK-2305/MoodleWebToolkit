@@ -17,7 +17,7 @@ class RemoteAgent
 {
     public const SCHEMA = 'mwt-agent.v1';
 
-    private const SUBCOMMANDS = ['version', 'probe', 'launch', 'status', 'tail', 'cancel', 'tool-status', 'tool-commit', 'source-check', 'collector-report', 'upload-report', 'cleanup', 'source-list'];
+    private const SUBCOMMANDS = ['version', 'probe', 'launch', 'status', 'tail', 'cancel', 'tool-status', 'tool-commit', 'source-check', 'collector-report', 'upload-report', 'cleanup', 'source-list', 'destination-list', 'destination-check'];
 
     private const ARGUMENT = '/^[A-Za-z0-9._:=-]{1,160}$/D';
 
@@ -62,6 +62,7 @@ class RemoteAgent
             'export MWT_AGENT_STATE_DIR='.escapeshellarg((string) config('toolkit.remote.agent_state_dir')),
             'export MWT_AGENT_TOOLS_DIR='.escapeshellarg((string) config('toolkit.remote.agent_tools_dir')),
             'export MWT_AGENT_SOURCES_DIR='.escapeshellarg((string) config('toolkit.remote.agent_sources_dir')),
+            'export MWT_AGENT_DESTINATIONS_DIR='.escapeshellarg((string) config('toolkit.remote.agent_destinations_dir')),
             'agent='.escapeshellarg($agent),
             'if [ ! -x "$agent" ]; then printf \'%s\n\' '.escapeshellarg($missing).'; exit 127; fi',
             'exec bash "$agent" '.implode(' ', array_map('escapeshellarg', [$subcommand, ...$arguments])),

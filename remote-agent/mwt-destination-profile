@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Creates a destination profile for mwt-agent. Run by the server's administrator
+# as root, on the server, after the platform deployed the Consolidator: the
+# platform never writes profiles nor sees the site's secrets.
+#
+#   sudo bash mwt-destination-profile <id> --public-url https://campus.example.edu \
+#        --admin-email admin@example.edu [--admin-user admin] [--http-port 8090] \
+#        [--runtime-dir /srv/mwt-destinations/<id>] [--tree <sha256>]
+#   sudo bash mwt-destination-profile <id> --public-url https://... --runtime-dir <existing> --force
+#
+# A new runtime is a private copy of the deployed Consolidator with its .env
+# written here instead of by CONFIGURAR.sh, which needs an interactive terminal.
+# Domain, DNS and the TLS proxy in front of 127.0.0.1:<http-port> are the
+# administrator's; the URL must already be the site's final HTTPS address.
+# With --force an existing runtime and its .env are kept; only the profile is
+# rewritten, and its URL must match the one the .env declares.
+set -euo pipefail
+umask 077
+
+readonly DESTINATIONS_DIR="${MWT_AGENT_DESTINATIONS_DIR:-/etc/mwt-agent/destinations}"
+readonly TOOLS_DIR="${MWT_AGENT_TOOLS_DIR:-/opt/mwt-agent/tools}"
+readonly ID_RE='^[a-z0-9][a-z0-9-]{1,62}$'
+readonly PATH_RE='^/[A-Za-z0-9._/-]{1,255}$'
+readonly HTTPS_URL_RE='^https://[A-Za-z0-9._:-]+(/[A-Za-z0-9._~/-]*)?$'
+
+die() { printf 'error: %s\n' "$1" >&2; exit 2; }
+safe_path() { [[ $1 =~ $PATH_RE && $1 != *..* ]]; }
+random_hex() { od -An -N 24 -tx1 /dev/urandom | tr -d ' \n'; }
+
+[[ $(id -u) == 0 ]] || die 'ejecute este script como root (sudo)'
+(($# >= 1)) || die 'uso: mwt-destination-profile <id> --public-url https://... --admin-email ... [opciones]'
+id=$1
+shift
+[[ $id =~ $ID_RE ]] || die 'el identificador admite minúsculas, dígitos y guiones (2 a 63 caracteres)'
+
+public_url='' admin_email='' admin_user='admin' http_port=8090 runtime='' tree='' force=0
+while (($# > 0)); do
+    case $1 in
+        --public-url) public_url=${2:-}; shift 2 ;;
+        --admin-email) admin_email=${2:-}; shift 2 ;;
+        --admin-user) admin_user=${2:-}; shift 2 ;;
+        --http-port) http_port=${2:-}; shift 2 ;;
+        --runtime-dir) runtime=${2:-}; shift 2 ;;
+        --tree) tree=${2:-}; shift 2 ;;
+        --force) force=1; shift ;;
+        *) die "opción desconocida: $1" ;;
+    esac
+done
+
+public_url=${public_url%/}
+[[ $public_url =~ $HTTPS_URL_RE ]] || die '--public-url debe ser la URL HTTPS definitiva del sitio, sin parámetros'
+runtime=${runtime:-/srv/mwt-destinations/$id}
+safe_path "$runtime" || die '--runtime-dir debe ser una ruta absoluta sin ".." ni caracteres especiales'
+profile="$DESTINATIONS_DIR/$id.conf"
+[[ ! -e $profile || $force == 1 ]] || die "ya existe $profile (use --force para reemplazarlo)"
+
+if [[ -e $runtime ]]; then
+    # An existing runtime keeps its .env, checkpoints and results untouched.
+    [[ $force == 1 ]] || die "ya existe $runtime (use --force para conservarlo y solo reescribir el perfil)"
+    [[ -d $runtime && ! -L $runtime && -f $runtime/.env && -f $runtime/FILES.sha256 ]] || die "$runtime no es un runtime del Consolidador"
+    [[ $(sed -n 's/^MOODLE_PUBLIC_URL=\(.*\)$/\1/p' "$runtime/.env" | head -n 1) == "$public_url" ]] ||
+        die "la URL no coincide con MOODLE_PUBLIC_URL de $runtime/.env"
+    [[ -n $tree ]] || tree=$(sed -n 's/^TOOL_TREE=\(.*\)$/\1/p' "$profile" 2>/dev/null | head -n 1)
+    [[ $tree =~ ^[0-9a-f]{64}$ ]] || die 'indique con --tree el árbol del que se copió este runtime'
+else
+    [[ $admin_email =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || die '--admin-email no tiene un formato válido'
+    [[ $admin_user =~ ^[a-z][a-z0-9._-]{2,31}$ ]] || die '--admin-user admite minúsculas, números, punto, guion o guion bajo'
+    [[ $http_port =~ ^[0-9]{2,5}$ ]] && ((http_port >= 1 && http_port <= 65535)) || die '--http-port debe estar entre 1 y 65535'
+    # The Consolidator trees the platform deployed and verified by hash.
+    mapfile -t trees < <(find "$TOOLS_DIR" -mindepth 2 -maxdepth 2 -type d -path "$TOOLS_DIR/moodle-consolidador-*/*" -printf '%f\n' 2>/dev/null | grep -E '^[0-9a-f]{64}$' | sort -u)
+    if [[ -n $tree ]]; then
+        printf '%s\n' "${trees[@]}" | grep -qx "$tree" || die "no existe un Consolidador desplegado con el árbol $tree"
+    else
+        ((${#trees[@]} == 1)) || die "hay ${#trees[@]} árboles del Consolidador desplegados; indique uno con --tree"
+        tree=${trees[0]}
+    fi
+    source_tree=$(find "$TOOLS_DIR" -mindepth 2 -maxdepth 2 -type d -path "$TOOLS_DIR/moodle-consolidador-*/$tree" | head -n 1)
+    [[ -f $source_tree/moodle-consolidation.sh ]] || die "el árbol $tree no contiene el Consolidador"
+
+    install -d -o root -g root -m 0755 "$(dirname "$runtime")"
+    tmp="$runtime.incoming-$$"
+    rm -rf -- "$tmp"
+    cp -a "$source_tree" "$tmp"
+    chown -R root:root "$tmp"
+    chmod 0755 "$tmp"
+    chmod 0755 "$tmp"/*.sh
+    managed="$runtime-managed-config"
+    install -d -o root -g root -m 0700 "$managed"
+    admin_password="Mdl9@$(random_hex)"
+    # The same variables CONFIGURAR.sh writes for an HTTPS site; notifications start disabled.
+    {
+        printf 'MOODLE_PUBLIC_URL=%s\n' "$public_url"
+        printf 'MOODLE_INTERNAL_HEALTH_URL=http://127.0.0.1:%s\n' "$http_port"
+        printf 'MOODLE_BIND_ADDRESS=127.0.0.1\n'
+        printf 'MOODLE_HTTP_PORT=%s\n' "$http_port"
+        printf 'MOODLE_SITE_NAME="Moodle consolidado UFPS"\n'
+        printf 'MOODLE_SITE_SHORTNAME=CONSOLIDADO\n'
+        printf 'MOODLE_ADMIN_USER=%s\n' "$admin_user"
+        printf 'MOODLE_ADMIN_PASSWORD=%s\n' "$admin_password"
+        printf 'MOODLE_ADMIN_EMAIL=%s\n' "$admin_email"
+        printf 'MOODLE_DB_NAME=moodle_target\n'
+        printf 'MOODLE_DB_USER=moodle_target\n'
+        printf 'MOODLE_DB_PASSWORD=%s\n' "$(random_hex)"
+        printf 'MARIADB_ROOT_PASSWORD=%s\n' "$(random_hex)"
+        printf 'MOODLE_TARGET_IMAGE=moodle-consolidation-target:5.2.1-v8.0.0\n'
+        printf 'MOODLE_REVERSE_PROXY=1\n'
+        printf 'MOODLE_SSL_PROXY=1\n'
+        printf 'MOODLE_MANAGED_CONFIG_DIR=%s\n' "$managed"
+        printf 'CONSOLIDATION_AUTO_DELAY_SECONDS=0\n'
+        printf 'CONSOLIDATION_EMAIL_ENABLED=0\n'
+        printf 'CONSOLIDATION_EMAIL_TO=\n'
+        printf 'CONSOLIDATION_EMAIL_FROM=\n'
+        printf 'CONSOLIDATION_EMAIL_FROM_NAME="Consolidador Moodle"\n'
+        printf 'CONSOLIDATION_SMTP_HOST=\n'
+        printf 'CONSOLIDATION_SMTP_PORT=587\n'
+        printf 'CONSOLIDATION_SMTP_USE_TLS=1\n'
+        printf 'CONSOLIDATION_SMTP_USERNAME_BASE64=\n'
+        printf 'CONSOLIDATION_SMTP_PASSWORD_BASE64=\n'
+        printf 'CONSOLIDATION_PROGRESS_EMAIL_ENABLED=0\n'
+        printf 'CONSOLIDATION_PROGRESS_EMAIL_INTERVAL_MINUTES=15\n'
+    } >"$tmp/.env"
+    chmod 0600 "$tmp/.env"
+    mv "$tmp" "$runtime"
+    printf 'Runtime del Consolidador creado en %s\n' "$runtime"
+    printf 'Clave del administrador de Moodle (%s): %s\n' "$admin_user" "$admin_password"
+    printf 'Guárdela ahora en el gestor institucional de credenciales; también queda en %s/.env (0600).\n' "$runtime"
+fi
+
+install -d -o root -g root -m 0755 "$(dirname "$DESTINATIONS_DIR")"
+install -d -o root -g root -m 0700 "$DESTINATIONS_DIR"
+tmp=$(mktemp "$DESTINATIONS_DIR/.profile.XXXXXX")
+{
+    printf '# Perfil de destino para mwt-agent; creado %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'RUNTIME_DIR=%s\nPUBLIC_URL=%s\nTOOL_TREE=%s\n' "$runtime" "$public_url" "$tree"
+} >"$tmp"
+chown root:root "$tmp"
+chmod 0600 "$tmp"
+mv -f "$tmp" "$profile"
+printf 'Perfil %s creado en %s\n' "$id" "$profile"
+
+# Same check the platform runs, when the agent is already installed.
+agent=$(find /opt/mwt-agent -maxdepth 2 -name mwt-agent -type f 2>/dev/null | sort -V | tail -n 1 || true)
+if [[ -n $agent ]]; then
+    printf 'Comprobación del agente: '
+    MWT_AGENT_DESTINATIONS_DIR="$DESTINATIONS_DIR" MWT_AGENT_TOOLS_DIR="$TOOLS_DIR" bash "$agent" destination-check "$id" || true
+fi
+printf 'Siguiente paso: en la plataforma, "Detectar perfiles de destino" y luego "Comprobar perfil de destino".\n'

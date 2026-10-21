@@ -47,6 +47,23 @@ export type RemoteSourceProfile = {
     dataroot_free_bytes: number | null;
     state_free_bytes: number | null;
 };
+export type RemoteDestinationProfile = {
+    id: string;
+    ready: boolean;
+    checked_at: string | null;
+    check_error: string | null;
+    blockers: string[];
+    warnings: string[];
+    detected: boolean;
+    valid: boolean | null;
+    profile_error: string | null;
+    public_url: string | null;
+    docker_version: string | null;
+    memory_bytes: number | null;
+    runtime_free_bytes: number | null;
+    target_running: boolean;
+    destination_written: boolean;
+};
 export type RemoteServer = {
     uuid: string;
     name: string;
@@ -56,6 +73,14 @@ export type RemoteServer = {
     collector_deployed: boolean;
     sources: RemoteSourceProfile[];
     sources_detected_at: string | null;
+    consolidator: {
+        deployed: boolean;
+        deployment_state: 'QUEUED' | 'RUNNING' | 'DEPLOYED' | 'FAILED' | null;
+        deployment_error: string | null;
+        updated_at: string | null;
+    };
+    destinations: RemoteDestinationProfile[];
+    destinations_detected_at: string | null;
     evidence: {
         checked_at: string | null;
         status: string | null;
@@ -405,11 +430,245 @@ function ServerConnection({
                 </div>
             )}
 
+            {server.role === 'DESTINATION' &&
+                connection?.status === 'VALID' && (
+                    <DestinationRuntime
+                        projectUuid={projectUuid}
+                        server={server}
+                        editable={editable}
+                    />
+                )}
             {server.evidence && <Evidence evidence={server.evidence} />}
             {server.operations.length > 0 && (
                 <Operations operations={server.operations} />
             )}
         </section>
+    );
+}
+
+const deploymentLabels: Record<
+    NonNullable<RemoteServer['consolidator']['deployment_state']>,
+    string
+> = {
+    QUEUED: 'Despliegue en cola',
+    RUNNING: 'Desplegando',
+    DEPLOYED: 'Desplegado y verificado',
+    FAILED: 'Despliegue fallido',
+};
+const destinationCodes: Record<string, string> = {
+    env_missing: 'falta el .env del runtime',
+    env_unprotected: 'el .env no está protegido (0600)',
+    env_incomplete: 'el .env está incompleto',
+    env_url_mismatch: 'la URL del .env difiere de la del perfil',
+    tool_missing: 'el árbol del perfil no está desplegado',
+    tool_tree_mismatch: 'el perfil usa otro árbol que el desplegado',
+    flock_missing: 'falta flock',
+    public_url_not_https: 'la URL pública no es HTTPS',
+    engine_modified: 'el motor del runtime fue modificado',
+    docker_unavailable: 'Docker no responde',
+    compose_v2_missing: 'falta Docker Compose v2',
+    low_memory: 'menos de 4 GiB de memoria',
+    low_disk: 'menos de 20 GiB libres',
+    destination_written: 'el destino ya recibió escrituras',
+};
+
+/** The Consolidator on a destination server: deployment and the administrator's profiles. */
+function DestinationRuntime({
+    projectUuid,
+    server,
+    editable,
+}: {
+    projectUuid: string;
+    server: RemoteServer;
+    editable: boolean;
+}) {
+    const actions = useForm({});
+    const check = useForm({ destination: '' });
+    const base = `/projects/${projectUuid}/servers/${server.uuid}`;
+    const state = server.consolidator.deployment_state;
+    const busy = state === 'QUEUED' || state === 'RUNNING';
+    const gib = (value: number | null) =>
+        value === null ? '—' : `${(value / 1073741824).toFixed(1)} GiB`;
+
+    return (
+        <div
+            aria-label={`Consolidador en ${server.name}`}
+            className="space-y-3 rounded-md border border-dashed p-3"
+        >
+            <div className="flex flex-wrap items-center gap-2">
+                <h4 className="text-sm font-medium">Consolidador V8</h4>
+                <Badge
+                    variant={
+                        state === 'FAILED'
+                            ? 'destructive'
+                            : server.consolidator.deployed
+                              ? 'default'
+                              : 'secondary'
+                    }
+                >
+                    {state
+                        ? deploymentLabels[state]
+                        : server.consolidator.deployed
+                          ? 'Desplegado y verificado'
+                          : 'Sin desplegar'}
+                </Badge>
+                {state === 'FAILED' && server.consolidator.deployment_error && (
+                    <span className="text-muted-foreground text-xs">
+                        {server.consolidator.deployment_error}
+                    </span>
+                )}
+            </div>
+            <p className="text-muted-foreground text-xs">
+                El administrador del servidor crea el perfil con{' '}
+                <code>mwt-destination-profile</code> después del despliegue: el
+                dominio, el TLS y las claves del sitio quedan en el servidor.
+            </p>
+            {editable && (
+                <div className="flex flex-wrap gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        disabled={actions.processing || busy}
+                        onClick={() =>
+                            actions.post(`${base}/consolidator/deploy`, {
+                                preserveScroll: true,
+                            })
+                        }
+                    >
+                        <Download /> Desplegar Consolidador
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        disabled={actions.processing}
+                        onClick={() =>
+                            actions.post(`${base}/destinations/detect`, {
+                                preserveScroll: true,
+                            })
+                        }
+                    >
+                        Detectar perfiles de destino
+                    </Button>
+                </div>
+            )}
+            {server.destinations.length === 0 ? (
+                <p className="text-muted-foreground text-xs">
+                    {server.destinations_detected_at
+                        ? 'El servidor no tiene perfiles de destino.'
+                        : 'Aún no se han detectado perfiles de destino.'}
+                </p>
+            ) : (
+                <ul className="grid gap-2">
+                    {server.destinations.map((destination) => (
+                        <li
+                            key={destination.id}
+                            className="border-border space-y-1 rounded-md border px-3 py-2 text-sm"
+                        >
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-mono text-xs">
+                                    {destination.id}
+                                </span>
+                                <Badge
+                                    variant={
+                                        destination.ready
+                                            ? 'default'
+                                            : destination.checked_at
+                                              ? 'destructive'
+                                              : 'secondary'
+                                    }
+                                >
+                                    {destination.ready
+                                        ? 'Listo'
+                                        : destination.checked_at
+                                          ? 'No listo'
+                                          : 'Sin comprobar'}
+                                </Badge>
+                                {destination.public_url && (
+                                    <span className="text-muted-foreground text-xs">
+                                        {destination.public_url}
+                                    </span>
+                                )}
+                                {editable && (
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        className="ml-auto"
+                                        disabled={check.processing}
+                                        onClick={() => {
+                                            check.transform(() => ({
+                                                destination: destination.id,
+                                            }));
+                                            check.post(
+                                                `${base}/destinations/check`,
+                                                { preserveScroll: true },
+                                            );
+                                        }}
+                                    >
+                                        Comprobar perfil
+                                    </Button>
+                                )}
+                            </div>
+                            {destination.profile_error && (
+                                <p className="text-xs text-red-600">
+                                    Perfil inválido: {destination.profile_error}
+                                </p>
+                            )}
+                            {destination.check_error && (
+                                <p className="text-xs text-red-600">
+                                    Error de la comprobación:{' '}
+                                    {destination.check_error}
+                                </p>
+                            )}
+                            {[...destination.blockers, ...destination.warnings]
+                                .length > 0 && (
+                                <ul className="text-xs">
+                                    {destination.blockers.map((code) => (
+                                        <li key={code} className="text-red-600">
+                                            {destinationCodes[code] ?? code}
+                                        </li>
+                                    ))}
+                                    {destination.warnings.map((code) => (
+                                        <li
+                                            key={code}
+                                            className="text-amber-600"
+                                        >
+                                            {destinationCodes[code] ?? code}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                            {destination.checked_at && (
+                                <dl className="text-muted-foreground grid gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+                                    <Fact
+                                        label="Docker"
+                                        value={destination.docker_version}
+                                    />
+                                    <Fact
+                                        label="Memoria"
+                                        value={gib(destination.memory_bytes)}
+                                    />
+                                    <Fact
+                                        label="Libre"
+                                        value={gib(
+                                            destination.runtime_free_bytes,
+                                        )}
+                                    />
+                                    <Fact
+                                        label="Moodle destino"
+                                        value={
+                                            destination.target_running
+                                                ? 'en ejecución'
+                                                : 'detenido'
+                                        }
+                                    />
+                                </dl>
+                            )}
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
     );
 }
 
