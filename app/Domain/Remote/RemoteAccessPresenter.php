@@ -40,6 +40,8 @@ class RemoteAccessPresenter
                 'host' => $server->host,
                 'connection' => $this->connection($server->connections->firstWhere('name', RemoteServerConnections::PRIMARY)),
                 'evidence' => $this->evidence($server),
+                'collector_deployed' => is_string($server->metadata['remote_tools'][RemoteCollectorExport::DISTRIBUTION_KEY]['tree_sha256'] ?? null),
+                'sources' => $this->sources($server),
                 'operations' => ($operations->get($server->uuid) ?? collect())->take(5)->map(fn (RemoteOperation $operation): array => [
                     'uuid' => $operation->operation_uuid,
                     'command_key' => $operation->command_key,
@@ -51,8 +53,42 @@ class RemoteAccessPresenter
                     'started_at' => $operation->started_at?->toIso8601String(),
                     'terminated_at' => $operation->terminated_at?->toIso8601String(),
                     'last_observed_at' => $operation->last_observed_at?->toIso8601String(),
+                    'collector' => $this->collector($operation),
                 ])->values()->all(),
             ])->all()),
+        ];
+    }
+
+    /** @return list<array{id: string, ready: bool, checked_at: string|null}> */
+    private function sources(Server $server): array
+    {
+        $sources = [];
+        foreach (is_array($server->metadata['remote_sources'] ?? null) ? $server->metadata['remote_sources'] : [] as $id => $source) {
+            if (is_string($id) && is_array($source)) {
+                $sources[] = ['id' => $id, 'ready' => ($source['ready'] ?? false) === true,
+                    'checked_at' => is_string($source['checked_at'] ?? null) ? $source['checked_at'] : null];
+            }
+        }
+
+        return $sources;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function collector(RemoteOperation $operation): ?array
+    {
+        $report = $operation->evidence['collector'] ?? null;
+        if (! is_array($report)) {
+            return null;
+        }
+
+        return [
+            'stage' => $report['progress']['stage'] ?? $report['status']['stage'] ?? null,
+            'completed_courses' => $report['progress']['completed_courses'] ?? null,
+            'total_courses' => $report['progress']['total_courses'] ?? null,
+            'failed_courses' => $report['progress']['failed_courses'] ?? null,
+            'percent' => $report['percent'] ?? null,
+            'package_ready' => ($report['package_ready'] ?? false) === true,
+            'package_size' => $report['package_size'] ?? null,
         ];
     }
 

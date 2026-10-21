@@ -6,6 +6,8 @@ use App\Domain\Academic\AcademicPreview;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
 use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemotePackageObjects;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Execution;
 use App\Models\SourcePackage;
@@ -476,15 +478,21 @@ class GenerateFinalArtifacts
 
     private function isCollector(Execution $execution): bool
     {
-        return $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY;
+        return $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY
+            || RemoteCollectionPreparation::selected($execution->toolBinding);
     }
 
     /** @return array<string, mixed> */
     private function collectorReport(Execution $execution): array
     {
-        $package = SourcePackage::query()->where('producer_execution_id', $execution->id)->sole();
+        $package = SourcePackage::query()->with('artifact')->where('producer_execution_id', $execution->id)->sole();
+        $remote = RemoteCollectionPreparation::selected($execution->toolBinding);
+        // The package stays where it was published; retention is the administrator's decision.
+        $storage = $remote && $package->artifact !== null ? ['provider' => 's3', ...app(RemotePackageObjects::class)->location($package->artifact),
+            'retention' => 'ADMINISTRATOR', 'note' => 'El paquete queda publicado en este bucket a disposición del administrador; la plataforma no lo borra ni lo expira.'] : null;
 
-        return ['mode' => 'LABORATORY', 'adapter' => CollectorExecutionPreparation::ADAPTER_KEY,
+        return ['mode' => $remote ? 'REMOTE' : 'LABORATORY', 'adapter' => $remote ? RemoteCollectionPreparation::ADAPTER_KEY : CollectorExecutionPreparation::ADAPTER_KEY,
+            'storage' => $storage,
             'source_package' => ['uuid' => $package->uuid, 'name' => $package->name, 'producer_version' => $package->producer_tool_version,
                 'schema_version' => $package->schema_version, 'sha256' => $package->sha256, 'size_bytes' => $package->size_bytes,
                 'manifest_sha256' => $package->manifest_sha256, 'validation_state' => $package->validation_state,

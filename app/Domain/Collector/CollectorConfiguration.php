@@ -36,8 +36,17 @@ final class CollectorConfiguration
     /** @param array<string, mixed> $input */
     public function save(Project $project, User $actor, array $input): Project
     {
-        $options = $this->normalize($input);
+        return $this->persist($project, $actor, $this->normalize($input));
+    }
 
+    /**
+     * Versions already normalized options as an immutable revision. Shared by
+     * every collector mode; each mode normalizes and validates its own input.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public function persist(Project $project, User $actor, array $options): Project
+    {
         return DB::transaction(function () use ($project, $actor, $options): Project {
             $locked = Project::query()->lockForUpdate()->findOrFail((int) $project->getKey());
             if (! $actor->can('update', $locked) || (! $actor->isAdmin() && ! ProjectAssignment::query()
@@ -45,7 +54,7 @@ final class CollectorConfiguration
                 throw new AuthorizationException;
             }
             if ($locked->type !== ProjectType::COLLECT || ! in_array($locked->status, [ProjectStatus::DRAFT, ProjectStatus::CONFIGURING, ProjectStatus::READY], true)) {
-                throw ValidationException::withMessages(['project' => 'El proyecto no permite configurar COLLECT LAB en su estado actual.']);
+                throw ValidationException::withMessages(['project' => 'El proyecto no permite configurar la recolección en su estado actual.']);
             }
             $configuration = ProjectConfiguration::query()->where('project_id', $locked->getKey())->lockForUpdate()->firstOrFail();
             $settings = $configuration->settings ?? [];
@@ -60,13 +69,13 @@ final class CollectorConfiguration
             $fingerprint = $this->hash($options);
             CollectorConfigurationRevision::query()->create([
                 'project_id' => $locked->getKey(), 'configuration_version' => $configuration->version,
-                'schema_version' => self::SCHEMA, 'snapshot' => $options, 'fingerprint' => $fingerprint,
+                'schema_version' => $options['schema_version'], 'snapshot' => $options, 'fingerprint' => $fingerprint,
                 'created_by' => $actor->getKey(), 'created_at' => now()->utc(),
             ]);
             AuditLog::query()->create([
                 'actor_id' => $actor->getKey(), 'project_id' => $locked->getKey(), 'action' => 'COLLECTOR_CONFIGURATION_VERSIONED',
                 'auditable_type' => $locked->getMorphClass(), 'auditable_id' => $locked->getKey(),
-                'payload' => ['configuration_version' => $configuration->version, 'fingerprint' => $fingerprint, 'mode' => 'LABORATORY'],
+                'payload' => ['configuration_version' => $configuration->version, 'fingerprint' => $fingerprint, 'mode' => $options['mode']],
             ]);
 
             return $locked->load('configuration');
@@ -85,13 +94,19 @@ final class CollectorConfiguration
         if (! hash_equals($this->hash($normalized), $this->hash($options))) {
             throw new RuntimeException('El perfil o esquema COLLECT LAB cambió; se requiere una nueva revisión.');
         }
+        $this->assertRevision($configuration, $options);
+
+        return $normalized;
+    }
+
+    /** @param array<string, mixed> $options */
+    public function assertRevision(ProjectConfiguration $configuration, array $options): void
+    {
         $revision = CollectorConfigurationRevision::query()->where('project_id', $configuration->project_id)
             ->where('configuration_version', $configuration->version)->first();
         if ($revision === null || ! hash_equals($this->hash($revision->snapshot), $this->hash($options)) || ! hash_equals($revision->fingerprint, $this->hash($options))) {
             throw new RuntimeException('La configuración no coincide con su revisión inmutable.');
         }
-
-        return $normalized;
     }
 
     /** @param array<string, mixed> $input

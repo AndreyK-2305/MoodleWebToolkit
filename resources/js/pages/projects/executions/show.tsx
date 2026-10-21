@@ -63,8 +63,17 @@ type ExecutionData = {
     resumed_from_execution_uuid: string | null;
     retried_from_execution_uuid: string | null;
     collector: {
-        mode: 'LABORATORY';
+        mode: 'LABORATORY' | 'REMOTE';
         producer_version: string;
+        server?: string | null;
+        source_profile?: string | null;
+        report?: {
+            stage: string | null;
+            completed_courses: number | null;
+            total_courses: number | null;
+            failed_courses: number | null;
+            package_ready: boolean;
+        } | null;
         resume_supported: boolean;
         configuration_version: number;
         can_fresh_export: boolean;
@@ -179,6 +188,7 @@ type ReviewData = {
     verifications: VerificationData[];
     artifacts: Array<{
         id: number;
+        location?: string | null;
         type: string;
         filename: string;
         mime_type: string | null;
@@ -456,7 +466,11 @@ function ExecutionTracker({
                         </h1>
                         <Badge variant="secondary">{execution.status}</Badge>
                         {execution.collector && (
-                            <Badge>LABORATORY · Recolector 7.4.2</Badge>
+                            <Badge>
+                                {execution.collector.mode === 'REMOTE'
+                                    ? 'Servidor de origen · Recolector 7.4.2'
+                                    : 'LABORATORY · Recolector 7.4.2'}
+                            </Badge>
                         )}
                         <Badge variant={live ? 'default' : 'outline'}>
                             <Radio className="size-3" />
@@ -1187,6 +1201,11 @@ function ArtifactDownloadLink({
                 <span className="text-muted-foreground mt-1 block font-mono text-xs break-all">
                     {artifact.size} bytes · {artifact.sha256}
                 </span>
+                {artifact.location && (
+                    <span className="text-muted-foreground mt-1 block font-mono text-xs break-all">
+                        {artifact.location}
+                    </span>
+                )}
             </span>
             <Badge variant="outline">{artifact.type}</Badge>
         </a>
@@ -1260,7 +1279,10 @@ function ExecutionActions({
                             disabled={disabled || freshForm.processing}
                             onClick={() => setFreshOpen(true)}
                         >
-                            <RotateCcw /> Nueva exportación LAB
+                            <RotateCcw />{' '}
+                            {execution.collector?.mode === 'REMOTE'
+                                ? 'Nueva exportación'
+                                : 'Nueva exportación LAB'}
                         </Button>
                     )}
                     {cancellable && (
@@ -1363,7 +1385,9 @@ function ExecutionActions({
                     <DialogContent>
                         <DialogHeader>
                             <DialogTitle>
-                                Nueva exportación de laboratorio
+                                {execution.collector?.mode === 'REMOTE'
+                                    ? 'Nueva exportación desde el servidor de origen'
+                                    : 'Nueva exportación de laboratorio'}
                             </DialogTitle>
                             <DialogDescription>
                                 El Recolector requiere otro intento desde cero.
@@ -1382,7 +1406,9 @@ function ExecutionActions({
                                     )
                                 }
                             />
-                            Acepto una nueva exportación sobre Moodle sintético
+                            {execution.collector?.mode === 'REMOTE'
+                                ? 'Acepto una nueva exportación completa sobre el Moodle de origen'
+                                : 'Acepto una nueva exportación sobre Moodle sintético'}
                         </label>
                         <Button
                             disabled={
@@ -1427,16 +1453,55 @@ function CollectorReview({
     review: ReviewData;
 }) {
     const operation = execution.collector?.operation;
+    const remote = execution.collector?.mode === 'REMOTE';
+    const report = execution.collector?.report;
     return (
         <Card>
             <CardHeader>
-                <CardTitle>Recolector real · Laboratorio</CardTitle>
+                <CardTitle>
+                    {remote
+                        ? 'Recolector en el servidor de origen'
+                        : 'Recolector real · Laboratorio'}
+                </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
                 <p className="text-muted-foreground text-sm">
                     El proceso continúa aunque cierre esta pantalla. El
                     seguimiento recupera los eventos persistidos al volver.
                 </p>
+                {remote && (
+                    <p className="text-sm">
+                        Servidor {execution.collector?.server ?? '—'} · perfil{' '}
+                        {execution.collector?.source_profile ?? '—'}
+                    </p>
+                )}
+                {remote && report && (
+                    <p className="text-sm">
+                        Etapa {report.stage ?? 'sin determinar'} · cursos{' '}
+                        {report.completed_courses ?? '—'} de{' '}
+                        {report.total_courses ?? '—'}
+                        {report.failed_courses
+                            ? ` · ${report.failed_courses} con error`
+                            : ''}
+                        {report.package_ready ? ' · paquete listo' : ''}
+                    </p>
+                )}
+                {remote && execution.status === 'REVIEW' && (
+                    <p className="text-sm">
+                        El paquete se validó en el origen y la plataforma lo
+                        verificó en el almacenamiento. Al finalizar se vuelve a
+                        comprobar en S3 y se generan los informes de cierre.
+                    </p>
+                )}
+                {remote && (
+                    <p className="text-muted-foreground text-sm">
+                        El paquete queda publicado en el bucket de la
+                        plataforma, a disposición del administrador: la
+                        herramienta no lo borra ni lo expira. Solo un
+                        administrador puede descargarlo, mediante un enlace
+                        firmado que vence en 15 minutos.
+                    </p>
+                )}
                 {execution.retried_from_execution_uuid && (
                     <p className="text-sm">
                         Nueva exportación desde{' '}
@@ -1455,17 +1520,17 @@ function CollectorReview({
                         <TriangleAlert />
                         <AlertTitle>Reconciliación pendiente</AlertTitle>
                         <AlertDescription>
-                            La evidencia o limpieza requiere revisión autorizada
-                            en el laboratorio. El estado disponible no acredita
-                            éxito ni permite volver a lanzar la operación.
+                            {remote
+                                ? 'La evidencia de la operación remota requiere revisión autorizada. El estado disponible no acredita éxito ni permite volver a lanzarla.'
+                                : 'La evidencia o limpieza requiere revisión autorizada en el laboratorio. El estado disponible no acredita éxito ni permite volver a lanzar la operación.'}
                         </AlertDescription>
                     </Alert>
                 )}
                 {['FAILED', 'CANCELLED'].includes(execution.status) && (
                     <p className="text-sm">
-                        No existe un checkpoint seguro para este paquete. Puede
-                        solicitar una nueva exportación conservando la evidencia
-                        anterior.
+                        {remote
+                            ? 'No existe un checkpoint seguro para este paquete. Puede iniciar una nueva ejecución desde el proyecto; la evidencia anterior se conserva.'
+                            : 'No existe un checkpoint seguro para este paquete. Puede solicitar una nueva exportación conservando la evidencia anterior.'}
                     </p>
                 )}
                 {review.source_packages.map((source) => (

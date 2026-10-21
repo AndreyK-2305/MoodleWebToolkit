@@ -211,7 +211,7 @@ class ProjectWizard
             $this->audit($actor, $locked, 'PROJECT_PREFLIGHT_COMPLETED', [
                 'configuration_version' => $configuration->version,
                 'results' => collect($checks)->countBy('result')->all(),
-                'simulated' => ($settings['options']['mode'] ?? null) !== 'LABORATORY',
+                'simulated' => ! in_array($settings['options']['mode'] ?? null, ['LABORATORY', 'REMOTE'], true),
             ]);
 
             return $checks;

@@ -5,6 +5,9 @@ namespace App\Console\Commands;
 use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Domain\Remote\RemoteAgentOperations;
+use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteSourcePackagePublisher;
 use App\Jobs\ReconcileRemoteAgentOperation;
 use App\Jobs\ReconcileRemoteOperation;
 use App\Models\RemoteOperation;
@@ -17,7 +20,7 @@ class ReconcileRemoteOperations extends Command
 
     protected $description = 'Reconcilia procesos registrados sin volver a lanzar operaciones existentes';
 
-    public function handle(RemoteOperationCoordinator $operations, RemoteAgentOperations $remote): int
+    public function handle(RemoteOperationCoordinator $operations): int
     {
         $limit = min(1000, max(1, (int) $this->option('limit')));
         $failed = 0;
@@ -32,16 +35,25 @@ class ReconcileRemoteOperations extends Command
                         ->where('manual_intervention_required', false)
                         ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['QUEUED', 'RUNNING', 'CANCELLING', 'VERIFYING']))
                         ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
+                })->orWhere(function ($remote): void {
+                    // A remote collection keeps moving after its export or upload terminates.
+                    $remote->where('provider_key', RemoteAgentOperations::PROVIDER)->where('communication_state', 'TERMINATED')
+                        ->whereIn('command_key', [RemoteCollectorExport::COMMAND, RemoteSourcePackagePublisher::COMMAND])
+                        ->where('manual_intervention_required', false)
+                        ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['RUNNING', 'CANCELLING', 'VERIFYING'])
+                            ->whereHas('toolBinding', fn ($binding) => $binding->where('adapter_key', RemoteCollectionPreparation::ADAPTER_KEY)))
+                        ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
                 });
             })
             ->orderBy('id')
             ->limit($limit)
             ->get()
-            ->each(function (RemoteOperation $operation) use ($operations, $remote, &$failed): void {
+            ->each(function (RemoteOperation $operation) use ($operations, &$failed): void {
                 try {
                     // Remote operations are observed through their agent, never by the local process inspector.
                     if ($operation->provider_key === RemoteAgentOperations::PROVIDER && config('queue.default') === 'sync') {
-                        $remote->reconcile($operation);
+                        // Same job synchronously, so Collector exports also refresh their report.
+                        dispatch_sync(new ReconcileRemoteAgentOperation((int) $operation->getKey()));
                     } elseif ($operation->provider_key === RemoteAgentOperations::PROVIDER) {
                         dispatch((new ReconcileRemoteAgentOperation((int) $operation->getKey()))
                             ->onConnection('redis-tool-runs')->onQueue('tool-runs'));

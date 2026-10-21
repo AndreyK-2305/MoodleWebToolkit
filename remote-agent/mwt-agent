@@ -10,10 +10,19 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.0.0"
+readonly AGENT_VERSION="1.3.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
+readonly STAGING_DIR="${STATE_DIR}/staging"
+readonly TOOLS_DIR="${MWT_AGENT_TOOLS_DIR:-/opt/mwt-agent/tools}"
+# Source profiles are written by the server's administrator, never by the platform.
+readonly SOURCES_DIR="${MWT_AGENT_SOURCES_DIR:-/etc/mwt-agent/sources}"
+readonly COLLECTOR_TOOL_KEY="moodle-recolector-7.4.2-linux-tree"
+readonly TOOL_KEY_RE='^[a-z0-9][a-z0-9.-]{2,80}$'
+readonly SHA_RE='^[0-9a-f]{64}$'
+readonly SOURCE_RE='^[a-z0-9][a-z0-9-]{1,62}$'
+readonly PATH_RE='^/[A-Za-z0-9._/-]{1,255}$'
 readonly MAX_TAIL_BYTES=16384
 readonly HEARTBEAT_SECONDS=10
 readonly SELF_PATH=$(readlink -f "${BASH_SOURCE[0]}")
@@ -110,6 +119,80 @@ require_operation() {
     OP_DIR="$OPS_DIR/$1"
 }
 
+# Canonical tree hash, identical to the platform's ToolDistributionVerifier:
+# sha256 of "path\0sha256" rows sorted bytewise and joined by "\n".
+tree_hash() {
+    (
+        cd "$1"
+        first=1
+        find . -type f -printf '%P\0' | LC_ALL=C sort -z | while IFS= read -r -d '' file; do
+            if ((first)); then first=0; else printf '\n'; fi
+            printf '%s\0%s' "$file" "$(sha256sum -- "$file" | cut -c1-64)"
+        done
+    ) | sha256sum | cut -c1-64
+}
+
+# Anything that is neither a regular file nor a directory: links, sockets, devices.
+unsafe_entries() {
+    find "$1" ! -type f ! -type d | wc -l
+}
+
+safe_path() {
+    [[ $1 =~ $PATH_RE && $1 != *..* ]]
+}
+
+# Sets SRC_* from an administrator-owned profile; fails closed on anything else.
+load_source() {
+    local id=$1 file line key value
+    [[ $id =~ $SOURCE_RE ]] || fail invalid_source
+    file="$SOURCES_DIR/$id.conf"
+    [[ -f $file && ! -L $file ]] || fail source_not_found
+    if [[ $(id -u) == 0 ]]; then
+        [[ $(stat -c %u "$file") == 0 ]] || fail source_profile_unsafe
+    fi
+    # Neither group nor others may write the profile.
+    (((8#$(stat -c '%a' "$file") & 8#022) == 0)) || fail source_profile_unsafe
+    SRC_ID=$id SRC_MOODLE_CONFIG='' SRC_RUNTIME='' SRC_RUN_AS='' SRC_COMPOSE_DIR='' SRC_COMPOSE_SERVICE='' SRC_COMPOSE_PROFILE=''
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -z $line || $line == \#* ]] && continue
+        [[ $line =~ ^([A-Z_]{2,32})=(.*)$ ]] || fail source_profile_invalid
+        key=${BASH_REMATCH[1]}
+        value=${BASH_REMATCH[2]}
+        case $key in
+            MOODLE_CONFIG) safe_path "$value" || fail source_profile_invalid; SRC_MOODLE_CONFIG=$value ;;
+            RUNTIME) [[ $value == native || $value == compose ]] || fail source_profile_invalid; SRC_RUNTIME=$value ;;
+            RUN_AS) [[ $value =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail source_profile_invalid; SRC_RUN_AS=$value ;;
+            COMPOSE_DIR) safe_path "$value" || fail source_profile_invalid; SRC_COMPOSE_DIR=$value ;;
+            COMPOSE_SERVICE) [[ $value =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || fail source_profile_invalid; SRC_COMPOSE_SERVICE=$value ;;
+            COMPOSE_PROFILE) [[ $value =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || fail source_profile_invalid; SRC_COMPOSE_PROFILE=$value ;;
+            *) fail source_profile_invalid ;;
+        esac
+    done <"$file"
+    [[ -n $SRC_MOODLE_CONFIG && -n $SRC_RUNTIME && -n $SRC_RUN_AS ]] || fail source_profile_invalid
+    if [[ $SRC_RUNTIME == compose ]]; then
+        [[ -n $SRC_COMPOSE_DIR && -n $SRC_COMPOSE_SERVICE && -f $SRC_COMPOSE_DIR/compose.yaml ]] || fail source_profile_invalid
+    fi
+}
+
+# Sets SRC_EXEC: the prefix that runs a command inside the source's PHP runtime,
+# with the given host directories mounted at the same path (":ro" suffix allowed).
+source_exec() {
+    local mount
+    if [[ $SRC_RUNTIME == compose ]]; then
+        SRC_EXEC=(docker compose --project-directory "$SRC_COMPOSE_DIR" -f "$SRC_COMPOSE_DIR/compose.yaml")
+        [[ -n $SRC_COMPOSE_PROFILE ]] && SRC_EXEC+=(--profile "$SRC_COMPOSE_PROFILE")
+        SRC_EXEC+=(run --rm --no-deps -T)
+        for mount in "$@"; do
+            SRC_EXEC+=(-v "${mount%:ro}:$mount")
+        done
+        SRC_EXEC+=("$SRC_COMPOSE_SERVICE")
+    elif [[ $(id -u) == 0 ]]; then
+        SRC_EXEC=(runuser -u "$SRC_RUN_AS" --)
+    else
+        SRC_EXEC=()
+    fi
+}
+
 # --- Registered operations -------------------------------------------------
 
 # Sets REGISTERED_ARGV to the validated argv of a registered operation.
@@ -125,6 +208,15 @@ registered_argv() {
         [[ -z ${params[$name]+set} ]] || fail duplicate_parameter
         params[$name]=$value
     done
+    # Recorded in launch.json: every value already matched the closed pattern above.
+    local sep=''
+    REGISTERED_PARAMS_JSON='{'
+    while IFS= read -r name; do
+        [[ -n $name ]] || continue
+        REGISTERED_PARAMS_JSON+="$sep\"$name\":\"${params[$name]}\""
+        sep=','
+    done < <(printf '%s\n' "${!params[@]}" | LC_ALL=C sort)
+    REGISTERED_PARAMS_JSON+='}'
 
     case $key in
         diagnostic.sleep)
@@ -141,6 +233,34 @@ registered_argv() {
             [[ ${#params[@]} == 1 && ${params[count]:-} =~ ^[1-9][0-9]{0,3}$ ]] || fail invalid_parameter
             # shellcheck disable=SC2016
             REGISTERED_ARGV=(bash -c 'for ((i = 1; i <= $1; i++)); do printf "linea %d\n" "$i"; done; printf "fin\n" >&2' diagnostic-lines "${params[count]}")
+            ;;
+        collector.742)
+            [[ ${#params[@]} == 4 && ${params[distribution]:-} =~ $SHA_RE && ${params[source]:-} =~ $SOURCE_RE
+                && ${params[package]:-} =~ ^[a-z][a-z0-9_-]{0,63}$ && ${params[workers]:-} =~ ^(auto|[1-4])$ ]] || fail invalid_parameter
+            local tool="$TOOLS_DIR/$COLLECTOR_TOOL_KEY/${params[distribution]}" work="$OP_DIR/work"
+            [[ -f $tool/EXPORTAR-ORIGEN.sh ]] || fail tool_not_installed
+            # Re-verified on every launch: a modified tree never runs.
+            (($(unsafe_entries "$tool") == 0)) && [[ $(tree_hash "$tool") == "${params[distribution]}" ]] || fail tool_hash_mismatch
+            load_source "${params[source]}"
+            source_exec "$tool:ro" "$work"
+            # The wrapper runs as root under systemd: it opens only traversal to the
+            # operation directory and gives the work area to the source's runtime user.
+            # shellcheck disable=SC2016
+            REGISTERED_ARGV=(bash -c 'chmod 0711 "$1" && install -d -o "$2" -g "$2" -m 0700 "$3" "$3/output" "$3/tmp" && shift 3 && exec "$@"'
+                collector-prepare "$OP_DIR" "$SRC_RUN_AS" "$work" "${SRC_EXEC[@]}"
+                bash "$tool/EXPORTAR-ORIGEN.sh" "--workers=${params[workers]}" "--output-dir=$work/output" "--temp-dir=$work/tmp"
+                "${params[package]}.zip" "$SRC_MOODLE_CONFIG")
+            ;;
+        package.upload)
+            [[ ${#params[@]} == 4 && ${params[collector]:-} =~ $UUID_RE && ${params[project]:-} =~ $UUID_RE
+                && ${params[bucket]:-} =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && ${params[region]:-} =~ ^[a-z]{2}(-gov)?-[a-z]+-[1-9]$ ]] || fail invalid_parameter
+            command -v aws >/dev/null 2>&1 || fail aws_cli_unavailable
+            # Fails closed here, before any process exists, if the export is not a sealed success.
+            # collector_package points OP_DIR at the export; keep this operation's own directory.
+            local upload_dir=$OP_DIR
+            collector_package "${params[collector]}"
+            OP_DIR=$upload_dir
+            REGISTERED_ARGV=(bash "$SELF_PATH" __package-upload "${params[collector]}" "${params[project]}" "${params[bucket]}" "${params[region]}" "$upload_dir")
             ;;
         *)
             fail unregistered_command
@@ -206,7 +326,8 @@ cmd_launch() {
     mode=$(launcher_mode)
     [[ $mode != unavailable ]] || fail launcher_unavailable
     mkdir -p "$OPS_DIR"
-    chmod 700 "$STATE_DIR" "$OPS_DIR"
+    # Traversal only (no listing): a source runtime user must reach its own work area.
+    chmod 711 "$STATE_DIR" "$OPS_DIR"
 
     # Idempotent: a repeated launch of the same operation reports the first one.
     if ! mkdir "$dir" 2>/dev/null; then
@@ -221,9 +342,9 @@ cmd_launch() {
     printf '%s\0' "${REGISTERED_ARGV[@]}" >"$argv_file"
     unit="mwt-op-${uuid}"
     local launch
-    launch=$(printf '{"operation_uuid":"%s","command_key":%s,"launcher":"%s","unit":%s,"agent_version":"%s","agent_sha256":"%s","argv_sha256":"%s","launched_at":"%s"}' \
+    launch=$(printf '{"operation_uuid":"%s","command_key":%s,"launcher":"%s","unit":%s,"agent_version":"%s","agent_sha256":"%s","argv_sha256":"%s","launched_at":"%s","parameters":%s}' \
         "$uuid" "$(json_escape "$key")" "$mode" "$(if [[ $mode == systemd ]]; then json_escape "$unit"; else printf 'null'; fi)" \
-        "$AGENT_VERSION" "$(self_sha256)" "$(file_sha256 "$argv_file")" "$(now_utc)")
+        "$AGENT_VERSION" "$(self_sha256)" "$(file_sha256 "$argv_file")" "$(now_utc)" "$REGISTERED_PARAMS_JSON")
     write_atomic "$dir/launch.json" "$launch"
 
     if [[ $mode == systemd ]]; then
@@ -351,6 +472,186 @@ cmd_cancel() {
     respond_ok cancel "{\"operation_uuid\":\"$uuid\",\"signalled\":true,\"already_finished\":false}"
 }
 
+cmd_tool_status() {
+    (($# == 2)) || fail invalid_arguments
+    local key=$1 sha=$2 dir present=0 actual='' files=0 unsafe=0
+    [[ $key =~ $TOOL_KEY_RE && $sha =~ $SHA_RE ]] || fail invalid_arguments
+    dir="$TOOLS_DIR/$key/$sha"
+    if [[ -d $dir && ! -L $dir ]]; then
+        present=1
+        unsafe=$(unsafe_entries "$dir")
+        files=$(find "$dir" -type f | wc -l)
+        actual=$(tree_hash "$dir")
+    fi
+    respond_ok tool-status "$(printf '{"key":"%s","expected_sha256":"%s","present":%s,"tree_sha256":%s,"matches":%s,"file_count":%s,"unsafe_entries":%s}'         "$key" "$sha" "$(bool "$present")" "$(json_or_null "$actual")" "$(bool "$([[ $actual == "$sha" ]] && echo 1 || echo 0)")" "$files" "$unsafe")"
+}
+
+# Installs a tool tree staged by the platform: verifies the bundle hash, rejects
+# unsafe archive members and moves it into place only if the canonical tree hash
+# equals the catalog value.
+cmd_tool_commit() {
+    (($# == 4)) || fail invalid_arguments
+    local key=$1 sha=$2 staging_id=$3 bundle_sha=$4 staging target tmp
+    [[ $key =~ $TOOL_KEY_RE && $sha =~ $SHA_RE && $staging_id =~ $UUID_RE && $bundle_sha =~ $SHA_RE ]] || fail invalid_arguments
+    staging="$STAGING_DIR/$staging_id"
+    target="$TOOLS_DIR/$key/$sha"
+    [[ -d $staging && ! -L $staging ]] || fail staging_not_found
+    if [[ -d $target && $(unsafe_entries "$target") == 0 && $(tree_hash "$target") == "$sha" ]]; then
+        rm -rf -- "$staging"
+        respond_ok tool-commit "{\"key\":\"$key\",\"tree_sha256\":\"$sha\",\"installed\":false,\"already_present\":true}"
+    fi
+    find "$staging" -maxdepth 1 -name 'part-*' -type f -print0 | LC_ALL=C sort -z | xargs -0 cat | base64 -d >"$staging/bundle.tgz" 2>/dev/null || fail bundle_invalid
+    [[ $(sha256sum "$staging/bundle.tgz" | cut -c1-64) == "$bundle_sha" ]] || fail bundle_hash_mismatch
+    tar -tzf "$staging/bundle.tgz" >"$staging/members" 2>/dev/null || fail bundle_invalid
+    if grep -qE '(^/|(^|/)\.\.(/|$))' "$staging/members"; then fail unsafe_entries; fi
+    tmp="$TOOLS_DIR/$key/.incoming-$staging_id"
+    rm -rf -- "$tmp"
+    mkdir -p "$tmp"
+    tar -xzf "$staging/bundle.tgz" --no-same-owner -C "$tmp" 2>/dev/null || { rm -rf -- "$tmp"; fail bundle_invalid; }
+    (($(unsafe_entries "$tmp") == 0)) || { rm -rf -- "$tmp"; fail unsafe_entries; }
+    [[ $(tree_hash "$tmp") == "$sha" ]] || { rm -rf -- "$tmp"; fail tree_hash_mismatch; }
+    chmod -R u=rwX,go=rX "$tmp"
+    chmod 0755 "$TOOLS_DIR" "$TOOLS_DIR/$key"
+    rm -rf -- "$target"
+    mv "$tmp" "$target"
+    rm -rf -- "$staging"
+    respond_ok tool-commit "$(printf '{"key":"%s","tree_sha256":"%s","installed":true,"already_present":false,"file_count":%s}'         "$key" "$sha" "$(find "$target" -type f | wc -l)")"
+}
+
+# Checks that a source profile can run the Collector: config.php readable by the
+# runtime user and PHP with the extensions it needs. Prints no paths or content.
+cmd_source_check() {
+    (($# == 1)) || fail invalid_arguments
+    local report php_version='' zip=0 dom=0 readable=0
+    load_source "$1"
+    source_exec
+    # shellcheck disable=SC2016
+    report=$("${SRC_EXEC[@]}" php -r 'echo PHP_VERSION, " ", (int) class_exists("ZipArchive"), " ", (int) class_exists("DOMDocument"), " ", (int) is_readable($argv[1]);' "$SRC_MOODLE_CONFIG" 2>/dev/null) || fail source_runtime_unavailable
+    if [[ $report =~ ^([0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.-]*)\ ([01])\ ([01])\ ([01])$ ]]; then
+        php_version=${BASH_REMATCH[1]} zip=${BASH_REMATCH[2]} dom=${BASH_REMATCH[3]} readable=${BASH_REMATCH[4]}
+    else
+        fail source_runtime_unavailable
+    fi
+    respond_ok source-check "$(printf '{"source":"%s","runtime":"%s","run_as":"%s","php_version":"%s","zip":%s,"dom":%s,"config_readable":%s}'         "$SRC_ID" "$SRC_RUNTIME" "$SRC_RUN_AS" "$php_version" "$(bool "$zip")" "$(bool "$dom")" "$(bool "$readable")")"
+}
+
+# Sets PKG_* for a finished collector.742 operation whose ZIP matches its sidecar.
+collector_package() {
+    local launch exit_file
+    require_operation "$1"
+    PKG_OP_DIR=$OP_DIR
+    launch="$PKG_OP_DIR/launch.json"
+    exit_file="$PKG_OP_DIR/exit.json"
+    [[ -f $launch ]] || fail collector_operation_not_found
+    [[ $(sed -n 's/.*"command_key":"\([^"]*\)".*/\1/p' "$launch") == collector.742 ]] || fail not_a_collector_operation
+    [[ -f $exit_file ]] && grep -q '"exit_code":0,' "$exit_file" || fail collector_not_succeeded
+    PKG_NAME=$(sed -n 's/.*"package":"\([a-z][a-z0-9_-]*\)".*/\1/p' "$launch")
+    PKG_SOURCE=$(sed -n 's/.*"source":"\([a-z0-9][a-z0-9-]*\)".*/\1/p' "$launch")
+    PKG_TOOL_SHA=$(sed -n 's/.*"distribution":"\([0-9a-f]\{64\}\)".*/\1/p' "$launch")
+    [[ -n $PKG_NAME && -n $PKG_SOURCE && -n $PKG_TOOL_SHA ]] || fail launch_evidence_invalid
+    PKG_OUTPUT="$PKG_OP_DIR/work/output"
+    PKG_ZIP="$PKG_OUTPUT/$PKG_NAME.zip"
+    PKG_SIDECAR="$PKG_ZIP.sha256"
+    [[ -f $PKG_ZIP && ! -L $PKG_ZIP && -f $PKG_SIDECAR && ! -L $PKG_SIDECAR ]] || fail package_not_found
+    PKG_SHA=$(head -n 1 "$PKG_SIDECAR" | cut -c1-64)
+    [[ $PKG_SHA =~ $SHA_RE && $(head -n 1 "$PKG_SIDECAR") == "$PKG_SHA  $PKG_NAME.zip" ]] || fail sidecar_invalid
+}
+
+# Internal step of package.upload, run by systemd. Re-verifies the package, audits
+# it with the deployed validator in the source runtime, extracts the manifest and
+# uploads the four objects with the instance's own credentials.
+cmd_package_upload_internal() {
+    local collector=$1 project=$2 bucket=$3 region=$4 op_dir=$5 tool audit actual size prefix
+    [[ $collector =~ $UUID_RE && $project =~ $UUID_RE && $bucket =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && $op_dir == "$OPS_DIR/"* ]] || exit 40
+    collector_package "$collector" >/dev/null
+    actual=$(sha256sum "$PKG_ZIP" | cut -c1-64)
+    [[ $actual == "$PKG_SHA" ]] || { echo "PACKAGE_HASH_MISMATCH" >&2; exit 41; }
+    size=$(stat -c %s "$PKG_ZIP")
+    tool="$TOOLS_DIR/$COLLECTOR_TOOL_KEY/$PKG_TOOL_SHA"
+    [[ $(tree_hash "$tool") == "$PKG_TOOL_SHA" ]] || { echo "TOOL_HASH_MISMATCH" >&2; exit 42; }
+    load_source "$PKG_SOURCE" >/dev/null
+    audit="$op_dir/work/audit"
+    chmod 0711 "$op_dir"
+    install -d -o "$SRC_RUN_AS" -g "$SRC_RUN_AS" -m 0700 "$op_dir/work" "$audit"
+    source_exec "$tool:ro" "$PKG_OUTPUT:ro" "$audit"
+    "${SRC_EXEC[@]}" php "$tool/scripts/validate-package.php" "--zip=$PKG_ZIP" "--sidecar=$PKG_SIDECAR" "--report=$audit/validation.json" \
+        || { echo "PACKAGE_VALIDATION_FAILED" >&2; exit 43; }
+    grep -Eq '"result": ?"ok"' "$audit/validation.json" || { echo "PACKAGE_VALIDATION_FAILED" >&2; exit 43; }
+    # shellcheck disable=SC2016
+    "${SRC_EXEC[@]}" php -r '$zip = new ZipArchive; if ($zip->open($argv[1], ZipArchive::RDONLY) !== true) exit(2);
+        $manifest = $zip->getFromName("manifest.json", 1048577); if (!is_string($manifest) || strlen($manifest) > 1048576) exit(3);
+        exit(file_put_contents($argv[2], $manifest) === strlen($manifest) ? 0 : 4);' "$PKG_ZIP" "$audit/manifest.json" \
+        || { echo "MANIFEST_UNAVAILABLE" >&2; exit 44; }
+    prefix="mwt/$project/$PKG_SOURCE/$PKG_SHA"
+    aws s3 cp "$PKG_ZIP" "s3://$bucket/$prefix.zip" --region "$region" --only-show-errors --sse AES256 \
+        --checksum-algorithm SHA256 --metadata "mwt-sha256=$PKG_SHA,mwt-source=$PKG_SOURCE,mwt-project=$project" \
+        || { echo "UPLOAD_FAILED" >&2; exit 45; }
+    local object source_file
+    for object in zip.sha256 manifest.json validation.json; do
+        case $object in
+            zip.sha256) source_file=$PKG_SIDECAR ;;
+            manifest.json) source_file=$audit/manifest.json ;;
+            validation.json) source_file=$audit/validation.json ;;
+        esac
+        aws s3 cp "$source_file" "s3://$bucket/$prefix.$object" --region "$region" --only-show-errors --sse AES256 \
+            --checksum-algorithm SHA256 --metadata "mwt-sha256=$(sha256sum "$source_file" | cut -c1-64)" \
+            || { echo "UPLOAD_FAILED" >&2; exit 45; }
+    done
+    write_atomic "$op_dir/work/result.json" "$(printf '{"bucket":"%s","region":"%s","prefix":"%s","package":"%s","source":"%s","sha256":"%s","size":%s,"manifest_sha256":"%s","validation_sha256":"%s","uploaded_at":"%s"}' \
+        "$bucket" "$region" "$prefix" "$PKG_NAME" "$PKG_SOURCE" "$PKG_SHA" "$size" \
+        "$(sha256sum "$audit/manifest.json" | cut -c1-64)" "$(sha256sum "$audit/validation.json" | cut -c1-64)" "$(now_utc)")"
+    echo "UPLOAD_OK"
+}
+
+cmd_upload_report() {
+    (($# == 1)) || fail invalid_arguments
+    require_operation "$1"
+    [[ -f $OP_DIR/launch.json ]] || fail operation_not_found 4
+    [[ $(sed -n 's/.*"command_key":"\([^"]*\)".*/\1/p' "$OP_DIR/launch.json") == package.upload ]] || fail not_an_upload_operation
+    respond_ok upload-report "{\"operation_uuid\":\"$1\",\"result_base64\":$(encode_document "$OP_DIR/work/result.json")}"
+}
+
+# Bounded base64 of a structured document, "too_large" or null when absent.
+encode_document() {
+    if [[ -f $1 && ! -L $1 ]]; then
+        if (($(stat -c %s "$1") > 16384)); then printf '"too_large"'; else printf '"%s"' "$(base64 -w0 <"$1")"; fi
+    else
+        printf 'null'
+    fi
+}
+
+# Structured Collector state for one collector.742 operation: the raw status and
+# progress documents plus the output listing and the SHA-256 sidecar line. The
+# platform keeps only whitelisted fields; console text is never interpreted.
+cmd_collector_report() {
+    (($# == 1)) || fail invalid_arguments
+    local dir package output sidecar_line='' outputs='' sep='' name size count=0
+    require_operation "$1"
+    dir=$OP_DIR
+    [[ -f $dir/launch.json ]] || fail operation_not_found 4
+    [[ $(sed -n 's/.*"command_key":"\([^"]*\)".*/\1/p' "$dir/launch.json") == collector.742 ]] || fail not_a_collector_operation
+    package=$(sed -n 's/.*"package":"\([a-z][a-z0-9_-]*\)".*/\1/p' "$dir/launch.json")
+    [[ -n $package ]] || fail launch_evidence_invalid
+    output="$dir/work/output"
+    if [[ -d $output && ! -L $output ]]; then
+        while IFS=$'\t' read -r name size; do
+            [[ $name =~ ^[A-Za-z0-9._-]{1,128}$ && $size =~ ^[0-9]+$ ]] || continue
+            ((count < 50)) || break
+            outputs+="$sep{\"name\":\"$name\",\"size\":$size}"
+            sep=','
+            count=$((count + 1))
+        done < <(find "$output" -maxdepth 1 -type f -printf '%f\t%s\n' | LC_ALL=C sort)
+        if [[ -f $output/$package.zip.sha256 && ! -L $output/$package.zip.sha256 ]] && (($(stat -c %s "$output/$package.zip.sha256") <= 256)); then
+            sidecar_line=$(head -n 1 "$output/$package.zip.sha256")
+            [[ $sidecar_line =~ ^[0-9a-f]{64}\ \ [a-z][a-z0-9_-]*\.zip$ ]] || sidecar_line=''
+        fi
+    fi
+    respond_ok collector-report "$(printf '{"operation_uuid":"%s","package":"%s","status_base64":%s,"progress_base64":%s,"outputs":[%s],"sidecar":%s,"observed_at":"%s"}' \
+        "$1" "$package" "$(encode_document "$output/$package.status.json")" \
+        "$(encode_document "$output/.moodle-collector-work-$package/export-progress.json")" \
+        "$outputs" "$(json_or_null "$sidecar_line")" "$(now_utc)")"
+}
+
 COMMAND=${1:-}
 shift || true
 case $COMMAND in
@@ -360,6 +661,12 @@ case $COMMAND in
     status) cmd_status "$@" ;;
     tail) cmd_tail "$@" ;;
     cancel) cmd_cancel "$@" ;;
+    tool-status) cmd_tool_status "$@" ;;
+    tool-commit) cmd_tool_commit "$@" ;;
+    source-check) cmd_source_check "$@" ;;
+    collector-report) cmd_collector_report "$@" ;;
+    upload-report) cmd_upload_report "$@" ;;
+    __package-upload) (($# == 5)) || exit 40; cmd_package_upload_internal "$@" ;;
     __run) (($# == 1)) || exit 3; cmd_run "$1" ;;
     *) fail unknown_subcommand ;;
 esac

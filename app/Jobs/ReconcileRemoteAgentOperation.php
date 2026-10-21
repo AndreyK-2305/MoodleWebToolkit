@@ -3,6 +3,10 @@
 namespace App\Jobs;
 
 use App\Domain\Remote\RemoteAgentOperations;
+use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemoteCollectionWorkflow;
+use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteSourcePackagePublisher;
 use App\Models\RemoteOperation;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -31,10 +35,28 @@ final class ReconcileRemoteAgentOperation implements ShouldBeUnique, ShouldQueue
         return 'remote-agent-operation:'.$this->operationId;
     }
 
-    public function handle(RemoteAgentOperations $operations): void
+    public function handle(RemoteAgentOperations $operations, RemoteCollectorExport $collector, RemoteSourcePackagePublisher $publisher,
+        RemoteCollectionWorkflow $workflow): void
     {
         $operation = RemoteOperation::query()->where('provider_key', RemoteAgentOperations::PROVIDER)->find($this->operationId);
-        if ($operation !== null) {
+        if ($operation === null) {
+            return;
+        }
+        // An operation of a remote collection also moves its Execution forward in the same pass.
+        if (RemoteCollectionPreparation::selected($operation->execution->toolBinding)
+            && in_array($operation->command_key, [RemoteCollectorExport::COMMAND, RemoteSourcePackagePublisher::COMMAND], true)) {
+            $workflow->advance($operation);
+
+            return;
+        }
+        // A Collector export is reconciled together with its structured report, so the
+        // final report is captured in the same pass that observes the termination.
+        if ($operation->command_key === RemoteCollectorExport::COMMAND) {
+            $collector->observe($operation);
+        } elseif ($operation->command_key === RemoteSourcePackagePublisher::COMMAND) {
+            // Registers the SourcePackage in the same pass that observes a successful upload.
+            $publisher->observe($operation);
+        } else {
             $operations->reconcile($operation);
         }
     }

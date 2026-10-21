@@ -21,12 +21,12 @@ su estado. Perder la conexión significa "estado desconocido", nunca "falló".
 
 ## Cortes
 
-| Corte | Alcance                                                                                 | Estado          |
-| ----- | --------------------------------------------------------------------------------------- | --------------- |
-| B1    | Transportes SSM/SSH, agente remoto, instalación verificada, prueba de conexión          | Fusionado (#11) |
-| B2    | `RemoteOperation` con proveedor `remote-agent`: lanzar, observar, reconciliar, cancelar | Fusionado (#12) |
-| B3    | UI: conexión por servidor en el wizard, prueba de conexión, estado de operaciones       | PR B3           |
-| B4    | `SecretStore` en AWS (Secrets Manager / Parameter Store) y prueba en EC2 real           | Pendiente       |
+| Corte | Alcance                                                                                 | Estado                                       |
+| ----- | --------------------------------------------------------------------------------------- | -------------------------------------------- |
+| B1    | Transportes SSM/SSH, agente remoto, instalación verificada, prueba de conexión          | Fusionado (#11)                              |
+| B2    | `RemoteOperation` con proveedor `remote-agent`: lanzar, observar, reconciliar, cancelar | Fusionado (#12)                              |
+| B3    | UI: conexión por servidor en el wizard, prueba de conexión, estado de operaciones       | Fusionado (#13)                              |
+| B4    | `SecretStore` en AWS (Secrets Manager / Parameter Store) y prueba en EC2 real           | Prueba en EC2 hecha; `SecretStore` pendiente |
 
 ## B1: qué se implementó
 
@@ -154,6 +154,53 @@ php artisan remote:connection test <server_uuid>
 - Dominio con PostgreSQL: feature flag, evidencia y auditoría, agente ausente o
   desactualizado, servidor inaccesible, launcher no durable, reconfiguración.
 
+## Prueba en una EC2 real (2026-10-20)
+
+Primera prueba de extremo a extremo contra AWS. La plataforma corrió en el stack de
+desarrollo (`compose.yaml` sobre Podman) con `TOOL_REMOTE_AGENT_ENABLED=true`, usando
+los servicios reales (`RemoteServerConnections`, `InstallRemoteAgent`,
+`TestRemoteConnection`, `RemoteAgentOperations`) y el scheduler normal.
+
+**Entorno**
+
+- Instancia `t2.nano` (1 vCPU, 0,5 GiB), Ubuntu 26.04 LTS, kernel 7.0.0-1006-aws, SSM
+  Agent 3.3.4121.0, región `us-east-2`, rol de instancia `mwt-ssm-lab`
+  (`AmazonSSMManagedInstanceCore`).
+- Identidad del servidor web: perfil del AWS CLI montado como solo lectura en los
+  contenedores (`AWS_PROFILE`, `AWS_SHARED_CREDENTIALS_FILE`). Las llaves no se copiaron
+  al repositorio ni a `.env`.
+- Ningún puerto entrante fue necesario: todo el tráfico fue `SendCommand` y
+  `GetCommandInvocation` por la API de SSM.
+
+**Resultados**
+
+| Prueba                               | Resultado                                                                                                                                                                      |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Prueba de conexión antes de instalar | Transporte `SUCCESS` en 2,8 s; agente `ERROR: no instalado`. La plataforma no instala nada por su cuenta.                                                                      |
+| Instalación del agente               | Copiado por SSM, SHA-256 verificado en el servidor, 3 s.                                                                                                                       |
+| Prueba de conexión                   | `VALID` en 4,4 s: systemd 259 con root, Bash 5.3, 16,2 GiB libres.                                                                                                             |
+| Lanzamiento                          | `diagnostic.sleep` de 600 s como unidad `mwt-op-<uuid>`; la llamada SSM se cerró de inmediato. AWS confirmó por separado la unidad `active/running` y los archivos durables.   |
+| Caída de la plataforma               | App, workers, scheduler, Reverb y nginx detenidos 73 s. Al volver, la misma operación seguía `CONNECTED/RUNNING`, con heartbeat actualizado y sin relanzar.                    |
+| Pérdida de comunicación              | Una observación sin acceso a AWS dejó `UNREACHABLE/UNKNOWN` (no `FAILED`) y siguió programando consultas. Al restablecerse volvió a `CONNECTED/RUNNING` con los intentos en 0. |
+| Reconciliación automática            | Sin intervención manual, el scheduler volvió a observar la operación al minuto siguiente.                                                                                      |
+| Cancelación                          | Pedirla no la cerró. Cerró `CANCELLED` con exit 143 solo al ver `exit.json`; AWS confirmó la unidad `inactive` y `cancel_requested: true`.                                     |
+| Salida y éxito                       | `diagnostic.lines` cerró `SUCCEEDED` (exit 0) y la plataforma guardó sus 5 líneas de stdout y la de stderr.                                                                    |
+
+**Hallazgos de la puesta en marcha**
+
+- Si el rol se asocia a una instancia que ya está corriendo, el SSM Agent no se registra
+  hasta reiniciarla: reintenta durante mucho tiempo con la credencial que no tenía al
+  arrancar. Hay que asignar el rol al crear la instancia o reiniciarla después.
+- La prueba anterior (B3) mostró que el modo de reintentos `standard` del SDK bloqueaba la
+  petición durante minutos sin credenciales; con los reintentos por defecto falla cerrado en
+  unos 19 s (`cb9b7ee`).
+- El _security group_ de la instancia tenía el puerto 22 abierto a `0.0.0.0/0`. SSM no lo
+  necesita; se recomienda cerrarlo.
+
+**Pendiente de B4**: `SecretStore` en AWS (Secrets Manager o Parameter Store) para el
+transporte SSH, y una prueba del transporte SSH real. Desde el entorno de esta prueba no
+había salida TCP directa al puerto 22, así que solo se validó SSM.
+
 ## Límites conocidos de B1, B2 y B3
 
 - Las operaciones remotas todavía no gobiernan el estado de la `Execution`: eso llega con los
@@ -162,5 +209,4 @@ php artisan remote:connection test <server_uuid>
   existen tras confirmar el wizard. Las operaciones se verán cuando la etapa C las cree.
 - La conciliación de logs guarda líneas completas; un archivo truncado o rotado en el servidor no
   se detecta todavía.
-- No hay UI (B3) ni `SecretStore` en AWS (B4); SSH usa el `SecretProvider` LAB.
-- No se ha probado contra una EC2 real; requiere credenciales e instancia.
+- No hay `SecretStore` en AWS (B4); SSH usa el `SecretProvider` LAB y no se ha probado contra una EC2 real.

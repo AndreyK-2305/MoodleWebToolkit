@@ -15,6 +15,18 @@ class RemoteCommandRegistry
         'diagnostic.sleep' => ['parameters' => ['seconds' => '/^[1-9][0-9]{0,4}$/D'], 'cancellable' => true],
         'diagnostic.fail' => ['parameters' => ['code' => '/^[1-9][0-9]?$/D'], 'cancellable' => false],
         'diagnostic.lines' => ['parameters' => ['count' => '/^[1-9][0-9]{0,3}$/D'], 'cancellable' => true],
+        'collector.742' => ['parameters' => [
+            'distribution' => '/^[0-9a-f]{64}$/D',
+            'source' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
+            'package' => '/^[a-z][a-z0-9_-]{0,63}$/D',
+            'workers' => '/^(auto|[1-4])$/D',
+        ], 'cancellable' => true],
+        'package.upload' => ['parameters' => [
+            'collector' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
+            'project' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
+            'bucket' => '/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/D',
+            'region' => '/^[a-z]{2}(-gov)?-[a-z]+-[1-9]$/D',
+        ], 'cancellable' => true],
     ];
 
     /**

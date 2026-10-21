@@ -17,6 +17,8 @@ import InputError from '@/components/input-error';
 import CollectorConfigurationForm from '@/components/collector-configuration-form';
 import type { CollectorLab } from '@/components/collector-configuration-form';
 import RemoteAccessPanel from '@/components/remote-access-panel';
+import RemoteCollectionForm from '@/components/remote-collection-form';
+import type { RemoteCollectionOptions } from '@/components/remote-collection-form';
 import type { RemoteAccess } from '@/components/remote-access-panel';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -53,7 +55,7 @@ type Preflight = {
     checked_at: string;
     checks: PreflightCheck[];
 };
-type ProjectOptions = {
+type ProjectOptions = RemoteCollectionOptions & {
     simulation_scenario?: string | null;
     processing_scenario?: string | null;
     artifact_name?: string | null;
@@ -97,13 +99,15 @@ type Props = {
     remoteAccess?: RemoteAccess;
 };
 
-const steps = [
-    'Datos básicos',
-    'Instancias simuladas',
-    'Configuración',
-    'Preflight',
-    'Confirmación',
-];
+function wizardSteps(simulated: boolean, remoteMode: boolean): string[] {
+    return [
+        'Datos básicos',
+        simulated ? 'Instancias simuladas' : 'Instancias',
+        remoteMode ? 'Recolección remota' : 'Configuración',
+        'Preflight',
+        'Confirmación',
+    ];
+}
 
 function blankInstance(
     role: InstanceRole,
@@ -165,6 +169,10 @@ export default function ProjectShow({
     remoteAccess,
 }: Props) {
     const [activeStep, setActiveStep] = useState(project.current_step);
+    // With remote access the servers are real; REMOTE mode is configured in its own card.
+    const simulated = !remoteAccess?.enabled;
+    const remoteMode = project.options.mode === 'REMOTE';
+    const steps = wizardSteps(simulated, remoteMode);
 
     useEffect(() => {
         setActiveStep(project.current_step);
@@ -217,11 +225,21 @@ export default function ProjectShow({
                 </div>
 
                 {remoteAccess?.enabled ? (
-                    <RemoteAccessPanel
-                        projectUuid={project.uuid}
-                        access={remoteAccess}
-                        editable={project.can_edit}
-                    />
+                    <>
+                        <RemoteAccessPanel
+                            projectUuid={project.uuid}
+                            access={remoteAccess}
+                            editable={project.can_edit}
+                        />
+                        {project.type === 'COLLECT' && (
+                            <RemoteCollectionForm
+                                projectUuid={project.uuid}
+                                options={project.options}
+                                servers={remoteAccess.servers}
+                                editable={project.can_edit}
+                            />
+                        )}
+                    </>
                 ) : (
                     <Alert className="border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30">
                         <ShieldCheck className="text-amber-700 dark:text-amber-400" />
@@ -284,11 +302,18 @@ export default function ProjectShow({
                 {activeStep === 2 && (
                     <InstancesStep
                         project={project}
+                        simulated={simulated}
                         onBack={() => setActiveStep(1)}
                         onNext={() => setActiveStep(3)}
                     />
                 )}
-                {activeStep === 3 && (
+                {activeStep === 3 && remoteMode && (
+                    <RemoteOptionsStep
+                        onBack={() => setActiveStep(2)}
+                        onNext={() => setActiveStep(4)}
+                    />
+                )}
+                {activeStep === 3 && !remoteMode && (
                     <OptionsStep
                         project={project}
                         onBack={() => setActiveStep(2)}
@@ -298,6 +323,7 @@ export default function ProjectShow({
                 {activeStep === 4 && (
                     <PreflightStep
                         project={project}
+                        simulated={simulated && !remoteMode}
                         onBack={() => setActiveStep(3)}
                         onNext={() => setActiveStep(5)}
                     />
@@ -411,10 +437,12 @@ function BasicsStep({
 
 function InstancesStep({
     project,
+    simulated,
     onBack,
     onNext,
 }: {
     project: ProjectData;
+    simulated: boolean;
     onBack: () => void;
     onNext: () => void;
 }) {
@@ -443,7 +471,9 @@ function InstancesStep({
     return (
         <Card>
             <CardHeader>
-                <CardTitle>2. Instancias simuladas</CardTitle>
+                <CardTitle>
+                    {simulated ? '2. Instancias simuladas' : '2. Instancias'}
+                </CardTitle>
                 <p className="text-muted-foreground text-sm">
                     {project.type === 'COLLECT' &&
                         'Recolectar utiliza exactamente un origen y no requiere destino.'}
@@ -476,7 +506,11 @@ function InstancesStep({
                                             ? 'Instancia origen'
                                             : 'Instancia destino'}
                                     </h3>
-                                    <Badge variant="secondary">Simulada</Badge>
+                                    {simulated && (
+                                        <Badge variant="secondary">
+                                            Simulada
+                                        </Badge>
+                                    )}
                                 </div>
                                 {project.can_edit &&
                                     instance.role === 'SOURCE' && (
@@ -535,7 +569,7 @@ function InstancesStep({
                                 />
                                 <InstanceField
                                     id={`server-host-${index}`}
-                                    label="Host simulado"
+                                    label={simulated ? 'Host simulado' : 'Host'}
                                     value={instance.server_host}
                                     placeholder="moodle-origen.test"
                                     disabled={!project.can_edit}
@@ -566,7 +600,11 @@ function InstancesStep({
                                 />
                                 <InstanceField
                                     id={`base-url-${index}`}
-                                    label="URL simulada"
+                                    label={
+                                        simulated
+                                            ? 'URL simulada'
+                                            : 'URL de Moodle'
+                                    }
                                     value={instance.base_url}
                                     placeholder="https://moodle.test"
                                     disabled={!project.can_edit}
@@ -611,7 +649,9 @@ function InstancesStep({
                                                 )
                                             }
                                         />
-                                        Validación simulada aprobada
+                                        {simulated
+                                            ? 'Validación simulada aprobada'
+                                            : 'Instancia revisada por el administrador'}
                                     </label>
                                 </div>
                             </div>
@@ -691,6 +731,38 @@ function InstanceField({
             />
             <InputError message={error} />
         </div>
+    );
+}
+
+function RemoteOptionsStep({
+    onBack,
+    onNext,
+}: {
+    onBack: () => void;
+    onNext: () => void;
+}) {
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle>3. Recolección remota</CardTitle>
+                <p className="text-muted-foreground text-sm">
+                    La configuración de este proyecto se define en la tarjeta
+                    «Recolección desde el servidor de origen»: servidor, perfil,
+                    workers y nombre del paquete. No hay escenarios simulados
+                    que elegir.
+                </p>
+            </CardHeader>
+            <CardContent>
+                <div className="flex flex-wrap justify-between gap-3">
+                    <Button type="button" variant="outline" onClick={onBack}>
+                        <ArrowLeft /> Atrás
+                    </Button>
+                    <Button type="button" onClick={onNext}>
+                        Continuar al preflight
+                    </Button>
+                </div>
+            </CardContent>
+        </Card>
     );
 }
 
@@ -979,10 +1051,12 @@ function SelectField({
 
 function PreflightStep({
     project,
+    simulated,
     onBack,
     onNext,
 }: {
     project: ProjectData;
+    simulated: boolean;
     onBack: () => void;
     onNext: () => void;
 }) {
@@ -993,7 +1067,9 @@ function PreflightStep({
     return (
         <Card>
             <CardHeader>
-                <CardTitle>4. Preflight simulado</CardTitle>
+                <CardTitle>
+                    {simulated ? '4. Preflight simulado' : '4. Preflight'}
+                </CardTitle>
                 <p className="text-muted-foreground text-sm">
                     Cada comprobación informa un resultado estructurado. Los
                     errores bloquean y las advertencias requieren aceptación.
@@ -1016,8 +1092,9 @@ function PreflightStep({
                         <CircleDot />
                         <AlertTitle>Preflight pendiente</AlertTitle>
                         <AlertDescription>
-                            Guarde la configuración y ejecute las comprobaciones
-                            simuladas.
+                            {simulated
+                                ? 'Guarde la configuración y ejecute las comprobaciones simuladas.'
+                                : 'Guarde la configuración y ejecute las comprobaciones con la evidencia registrada de cada servidor.'}
                         </AlertDescription>
                     </Alert>
                 )}

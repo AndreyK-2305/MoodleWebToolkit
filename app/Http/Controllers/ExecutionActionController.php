@@ -31,7 +31,7 @@ class ExecutionActionController extends Controller
         }
 
         return $this->response($request, $project, $result->execution, $result->created,
-            $result->created ? 'Nueva exportación LAB en otro workspace; la evidencia anterior se conserva.' : 'El nuevo intento ya estaba registrado.', 201);
+            $result->created ? 'Nueva exportación desde cero; la evidencia del intento anterior se conserva.' : 'El nuevo intento ya estaba registrado.', 201);
     }
 
     public function cancel(

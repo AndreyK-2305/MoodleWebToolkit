@@ -4,6 +4,9 @@ namespace App\Domain\Tools;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Collector\CollectorRegisteredCommand;
+use App\Domain\Remote\RemoteAgentOperations;
+use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemotePackageObjects;
 use App\Enums\ArtifactCategory;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Artifact;
@@ -16,6 +19,11 @@ use Illuminate\Support\Str;
 
 class SourcePackageRegistry
 {
+    private const WEB_AUDIT = 'collector-web-audit.v1';
+
+    /** Audit produced on the source server and re-checked from S3 by the platform. */
+    private const REMOTE_AUDIT = 'collector-remote-audit.v1';
+
     private readonly SensitiveValueRedactor $redactor;
 
     public function __construct(SensitiveValueRedactor $redactor)
@@ -46,13 +54,18 @@ class SourcePackageRegistry
             ->whereKey($artifact->remote_operation_id)
             ->where('communication_state', 'TERMINATED')
             ->first();
-        $exitEvidence = $producerOperation?->evidence['exit_evidence'] ?? null;
-        if ($producerOperation === null || $producerOperation->terminated_at === null || $producerOperation->exit_code !== 0
-            || $producerOperation->functional_state->value !== 'SUCCEEDED' || is_array($exitEvidence) === false
-            || ($exitEvidence['operation_uuid'] ?? null) !== $producerOperation->operation_uuid
-            || ($exitEvidence['command_sha256'] ?? null) !== $producerOperation->command_sha256
-        ) {
-            throw new ToolOperationBlocked('El paquete fuente solo se registra después de confirmar la terminación de su operación productora.');
+        $remote = $producerOperation?->provider_key === RemoteAgentOperations::PROVIDER;
+        if ($remote) {
+            $this->assertRemoteProducer($producerOperation, $artifact);
+        } else {
+            $exitEvidence = $producerOperation?->evidence['exit_evidence'] ?? null;
+            if ($producerOperation === null || $producerOperation->terminated_at === null || $producerOperation->exit_code !== 0
+                || $producerOperation->functional_state->value !== 'SUCCEEDED' || is_array($exitEvidence) === false
+                || ($exitEvidence['operation_uuid'] ?? null) !== $producerOperation->operation_uuid
+                || ($exitEvidence['command_sha256'] ?? null) !== $producerOperation->command_sha256
+            ) {
+                throw new ToolOperationBlocked('El paquete fuente solo se registra después de confirmar la terminación de su operación productora.');
+            }
         }
         if (! in_array($producerToolVersion, ['7.4.1-linux', '7.4.2-linux'], true)
             || ! in_array($schemaVersion, ['1.0', 'recolector-source.v1'], true)) {
@@ -63,7 +76,7 @@ class SourcePackageRegistry
             $this->assertDurableCollectorAudit($artifact);
         }
         if ($schemaVersion === '1.0' && (! is_array($collectorAudit)
-            || ($collectorAudit['validation_schema'] ?? null) !== 'collector-web-audit.v1'
+            || ($collectorAudit['validation_schema'] ?? null) !== ($remote ? self::REMOTE_AUDIT : self::WEB_AUDIT)
             || ($collectorAudit['result'] ?? null) !== 'VALID'
             || ($collectorAudit['execution_uuid'] ?? null) !== $execution->uuid
             || ($collectorAudit['project_uuid'] ?? null) !== $execution->project->uuid
@@ -167,11 +180,20 @@ class SourcePackageRegistry
             throw new ToolOperationBlocked('La evidencia de auditoría del paquete fue sustituida.');
         }
 
-        $path = Storage::disk($artifact->disk)->path($artifact->path);
-        $hash = is_file($path) && is_link($path) === false ? hash_file('sha256', $path) : false;
-        $size = is_file($path) && is_link($path) === false ? filesize($path) : false;
-        if (is_string($hash) === false || hash_equals($package->sha256, $hash) === false || $size !== $package->size_bytes) {
-            throw new ToolOperationBlocked('El contenido del paquete fuente cambió desde su registro.');
+        if ($artifact->storage_mode === 'REFERENCE' && $artifact->disk === 's3') {
+            // Never downloaded: S3 reports size, the SHA-256 metadata and its own checksum.
+            $objects = app(RemotePackageObjects::class);
+            $location = $objects->location($artifact);
+            $objects->verifyPackage($location['region'], $location['bucket'], $location['key'], $package->sha256, (int) $package->size_bytes);
+            $hash = $package->sha256;
+            $size = (int) $package->size_bytes;
+        } else {
+            $path = Storage::disk($artifact->disk)->path($artifact->path);
+            $hash = is_file($path) && is_link($path) === false ? hash_file('sha256', $path) : false;
+            $size = is_file($path) && is_link($path) === false ? filesize($path) : false;
+            if (is_string($hash) === false || hash_equals($package->sha256, $hash) === false || $size !== $package->size_bytes) {
+                throw new ToolOperationBlocked('El contenido del paquete fuente cambió desde su registro.');
+            }
         }
 
         $package->forceFill([
@@ -207,7 +229,7 @@ class SourcePackageRegistry
         }
         if ($package->schema_version === '1.0') {
             $audit = $package->evidence['collector_audit'] ?? null;
-            if (! is_array($audit) || ($audit['validation_schema'] ?? null) !== 'collector-web-audit.v1'
+            if (! is_array($audit) || ! in_array($audit['validation_schema'] ?? null, [self::WEB_AUDIT, self::REMOTE_AUDIT], true)
                 || ($audit['result'] ?? null) !== 'VALID' || ($audit['producer_version'] ?? null) !== $package->producer_tool_version
                 || ($audit['package_sha256'] ?? null) !== $package->sha256 || ($audit['source_id'] ?? null) !== $package->source_id
                 || ($audit['manifest_sha256'] ?? null) !== $package->manifest_sha256
@@ -215,6 +237,20 @@ class SourcePackageRegistry
                 || ($package->producer_tool_version === '7.4.2-linux' && ($package->capabilities['theme_inventory'] ?? null) !== '1.0')) {
                 throw new ToolOperationBlocked('El contrato existente necesita auditoría verificable y capabilities compatibles.');
             }
+        }
+    }
+
+    /** A remote export is accepted only from the agent's exit evidence and its own ready report. */
+    private function assertRemoteProducer(RemoteOperation $operation, Artifact $artifact): void
+    {
+        $exit = $operation->evidence['exit'] ?? null;
+        $collector = $operation->evidence['collector'] ?? null;
+        if ($operation->command_key !== RemoteCollectorExport::COMMAND || $operation->terminated_at === null || $operation->exit_code !== 0
+            || $operation->functional_state->value !== 'SUCCEEDED' || ! is_array($exit) || ($exit['exit_code'] ?? null) !== 0
+            || ! is_array($collector) || ($collector['package_ready'] ?? null) !== true
+            || ($collector['package_sha256'] ?? null) !== $artifact->sha256 || ($collector['package_size'] ?? null) !== $artifact->size
+            || $artifact->storage_mode !== 'REFERENCE' || $artifact->disk !== 's3') {
+            throw new ToolOperationBlocked('El paquete remoto solo se registra tras una exportación terminada, lista y con el mismo SHA-256.');
         }
     }
 
