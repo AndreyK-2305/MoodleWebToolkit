@@ -172,6 +172,41 @@ class ExecutionWorkspaceManagerTest extends DomainTestCase
         $manager->writeOperationEvidence($execution, (string) Str::uuid(), 'exit.json', ['oversized' => str_repeat('x', 16384)]);
     }
 
+    public function test_measurement_tolerates_entries_a_running_tool_removes_mid_walk(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('La regresión concurrente requiere semántica POSIX de directorios.');
+        }
+        // A local filesystem keeps the walk fast enough to hit the race in every run.
+        $this->workspaceRoot = sys_get_temp_dir().'/workspace-race-'.Str::uuid();
+        config(['toolkit.workspaces.root' => $this->workspaceRoot]);
+        $execution = $this->execution($this->project());
+        $this->approveCapacity($execution, 268435456);
+        $manager = app(ExecutionWorkspaceManager::class);
+        $churn = $manager->resolve($execution, 'temporary', 'churn');
+        mkdir($churn, 0700);
+        // A separate process creates and removes subtrees like a tool does while it exports.
+        $script = '$r=$argv[1];for($i=0;;$i++){$d=$r."/d".($i%8);@mkdir($d);@mkdir("$d/n");'
+            .'for($j=0;$j<16;$j++){@file_put_contents("$d/n/f$j","x");}for($j=0;$j<16;$j++){@unlink("$d/n/f$j");}@rmdir("$d/n");@rmdir($d);}';
+        $process = proc_open([PHP_BINARY, '-r', $script, $churn], [], $pipes);
+        $this->assertIsResource($process);
+        try {
+            $deadline = microtime(true) + 3;
+            $walks = 0;
+            do {
+                $this->assertGreaterThanOrEqual(0, $manager->measure($execution));
+                $walks++;
+            } while (microtime(true) < $deadline);
+        } finally {
+            proc_terminate($process, SIGKILL);
+            proc_close($process);
+        }
+        $this->assertGreaterThan(0, $walks);
+        File::deleteDirectory($churn);
+        file_put_contents($manager->resolve($execution, 'output', 'kept.bin'), str_repeat('k', 40));
+        $this->assertSame(40, $manager->measure($execution));
+    }
+
     private function approveCapacity(Execution $execution, int $bytes): void
     {
         app(ApproveExecutionCapacity::class)->approve($execution, $bytes, 0, $execution->creator);
