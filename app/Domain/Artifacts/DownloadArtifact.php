@@ -6,8 +6,10 @@ use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
 use App\Domain\Artifacts\Streams\ArtifactReadStream;
 use App\Domain\Idempotency\IdempotencyRegistry;
+use App\Domain\Remote\RemotePackageObjects;
 use App\Exceptions\ArtifactIntegrityException;
 use App\Exceptions\IdempotencyKeyConflict;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\Artifact;
 use App\Models\ArtifactDownload;
 use App\Models\AuditLog;
@@ -21,7 +23,33 @@ class DownloadArtifact
         private readonly ArtifactStorage $storage,
         private readonly ArtifactStreamVerifier $verifier,
         private readonly IdempotencyRegistry $idempotency,
+        private readonly RemotePackageObjects $objects,
     ) {}
+
+    /**
+     * A source package held by reference in S3 is delivered as a short-lived
+     * signed link, only to administrators, after verifying the object again.
+     */
+    public function prepareReference(Artifact $artifact, User $actor, string $idempotencyKey): string
+    {
+        $artifact->loadMissing('execution.project');
+        if ($artifact->disk !== 's3' || $artifact->storage_mode !== 'REFERENCE') {
+            throw new ArtifactIntegrityException('El artefacto no es una referencia en almacenamiento externo.');
+        }
+        if (! $actor->isAdmin()) {
+            throw new ArtifactIntegrityException('Solo un administrador puede descargar el paquete fuente desde el almacenamiento.');
+        }
+        try {
+            $url = $this->objects->downloadUrl($artifact);
+        } catch (ToolOperationBlocked $exception) {
+            throw new ArtifactIntegrityException($exception->getMessage(), previous: $exception);
+        }
+        $payload = ['artifact_id' => $artifact->getKey(), 'execution_uuid' => $artifact->execution->uuid, 'sha256' => $artifact->sha256,
+            'delivery' => 'S3_PRESIGNED', 'expires_in_seconds' => RemotePackageObjects::DOWNLOAD_SECONDS];
+        $this->registerDownload($artifact, $actor, $idempotencyKey, hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR)), $payload);
+
+        return $url;
+    }
 
     public function prepare(Artifact $artifact, User $actor, string $idempotencyKey): ArtifactReadStream
     {

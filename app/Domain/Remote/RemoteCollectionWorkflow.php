@@ -4,6 +4,7 @@ namespace App\Domain\Remote;
 
 use App\Domain\Executions\ExecutionEventRecorder;
 use App\Domain\Executions\ExecutionLifecycle;
+use App\Domain\Tools\SourcePackageRegistry;
 use App\Enums\EventSeverity;
 use App\Enums\ExecutionStatus;
 use App\Enums\ExecutionStepStatus;
@@ -38,6 +39,7 @@ class RemoteCollectionWorkflow
         private readonly RemoteAgentOperations $operations,
         private readonly ExecutionLifecycle $lifecycle,
         private readonly ExecutionEventRecorder $events,
+        private readonly SourcePackageRegistry $packages,
     ) {}
 
     /** Launches the export once; a launch the platform rejects closes the Execution as failed. */
@@ -70,6 +72,30 @@ class RemoteCollectionWorkflow
             operation: $operation);
 
         return $operation;
+    }
+
+    /**
+     * The package can be confirmed only while both operations ended well and
+     * the object in S3 still matches what was reviewed.
+     */
+    public function assertFinalizable(Execution $execution): SourcePackage
+    {
+        $this->settings($execution);
+        $export = $this->export($execution);
+        $upload = $export === null ? null : $this->upload($execution, $export);
+        foreach ([$export, $upload] as $operation) {
+            if ($operation === null || $operation->communication_state !== RemoteCommunicationState::TERMINATED
+                || $operation->functional_state !== RemoteFunctionalState::SUCCEEDED || $operation->exit_code !== 0) {
+                throw new ToolOperationBlocked('La confirmación requiere la exportación y la publicación terminadas con éxito.');
+            }
+        }
+        $package = $this->packages->validate(SourcePackage::query()->where('producer_execution_id', $execution->id)->sole());
+        $fingerprint = hash('sha256', $execution->uuid.'|'.$package->uuid.'|'.$package->sha256.'|'.$package->manifest_sha256);
+        if ($package->validation_state !== 'VALID' || ! is_string($execution->review_fingerprint) || ! hash_equals($fingerprint, $execution->review_fingerprint)) {
+            throw new ToolOperationBlocked('La identidad del paquete cambió después de la revisión.');
+        }
+
+        return $package;
     }
 
     /** Requests cancellation of every active operation; the Execution closes once all of them terminate. */

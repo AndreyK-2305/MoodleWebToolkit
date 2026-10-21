@@ -17,8 +17,10 @@ use App\Enums\ServerRole;
 use App\Enums\UserRole;
 use App\Jobs\ReconcileRemoteAgentOperation;
 use App\Jobs\RunExecutionUnit;
+use App\Models\AuditLog;
 use App\Models\Execution;
 use App\Models\Project;
+use App\Models\ProjectAssignment;
 use App\Models\RemoteOperation;
 use App\Models\Server;
 use App\Models\SourcePackage;
@@ -29,8 +31,10 @@ use Aws\MockHandler;
 use Aws\Result;
 use Aws\S3\S3Client;
 use Database\Seeders\ToolCatalogSeeder;
+use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Psr7\Utils;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Tests\Feature\Domain\DomainTestCase;
 use Tests\Support\QueuedRemoteTransport;
 
@@ -45,6 +49,9 @@ class RemoteCollectionExecutionTest extends DomainTestCase
     private QueuedRemoteTransport $transport;
 
     private MockHandler $s3;
+
+    /** Once the package is registered, S3 keeps answering HeadObject for the verified object. */
+    private bool $objectStored = false;
 
     private User $admin;
 
@@ -166,15 +173,96 @@ class RemoteCollectionExecutionTest extends DomainTestCase
             $execution->events()->whereIn('type', ['collector.operation_registered', 'collector.progress', 'collector.export_completed',
                 'collector.publication_requested', 'collector.package_registered'])->orderBy('sequence')->pluck('type')->unique()->values()->all());
 
-        // Final confirmation of a remote package is a later stage; it is refused before any command exists.
-        $this->post(route('projects.executions.finalize', [$this->project, $execution]), [], ['Idempotency-Key' => 'finalize-remote'])
-            ->assertSessionHasErrors('execution');
-        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
-        $this->assertSame(0, $execution->commands()->where('command_type', ExecutionCommandType::FINALIZE)->count());
-
         // REVIEW is a resting state: the scheduler no longer touches the operations.
         $this->artisan('executions:reconcile-remote-operations')->assertSuccessful();
         $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_review_is_confirmed_with_reports_and_the_package_left_for_the_administrator(): void
+    {
+        $execution = $this->reviewedExecution();
+        $this->objectStored = true;
+
+        $this->post(route('projects.executions.finalize', [$this->project, $execution]), [], ['Idempotency-Key' => 'finalize-remote'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $execution->refresh();
+        $this->assertSame(ExecutionStatus::COMPLETED, $execution->status);
+        $this->assertSame(ProjectStatus::COMPLETED, $this->project->fresh()->status);
+        $this->assertSame(RemoteCollectionPreparation::ADAPTER_KEY, $execution->completion_summary['adapter']);
+        $this->assertSame(5, $execution->artifacts()->count(), 'La referencia S3 y los cuatro informes de cierre.');
+        $summary = $execution->artifacts()->where('type', 'FINAL_SUMMARY')->sole();
+        $report = Storage::disk($summary->disk)->get($summary->path);
+        $this->assertStringContainsString('ADMINISTRATOR', $report);
+        $this->assertStringContainsString(self::BUCKET, $report);
+        $this->assertSame('VALID', SourcePackage::query()->sole()->validation_state);
+    }
+
+    public function test_package_that_changed_in_s3_is_never_confirmed(): void
+    {
+        $execution = $this->reviewedExecution();
+        $this->s3->append(new Result(['ContentLength' => 4096, 'Metadata' => ['mwt-sha256' => str_repeat('0', 64)]]));
+
+        $this->post(route('projects.executions.finalize', [$this->project, $execution]), [], ['Idempotency-Key' => 'finalize-changed']);
+
+        $this->assertNotSame(ExecutionStatus::COMPLETED, $execution->fresh()->status);
+        $this->assertSame(0, $execution->artifacts()->where('type', 'FINAL_SUMMARY')->count());
+    }
+
+    public function test_only_an_administrator_gets_a_short_lived_link_to_the_package(): void
+    {
+        $execution = $this->reviewedExecution();
+        $this->objectStored = true;
+        $artifact = $execution->artifacts()->where('disk', 's3')->sole();
+        $url = route('projects.executions.artifacts.download', [$this->project, $execution, $artifact]).'?key='.Str::uuid();
+
+        $location = $this->get($url)->assertRedirect()->headers->get('Location');
+        $this->assertStringStartsWith('https://'.self::BUCKET.'.s3.us-east-2.amazonaws.com/mwt/', (string) $location);
+        $this->assertStringContainsString('X-Amz-Expires=900', (string) $location);
+        $this->assertSame('S3_PRESIGNED', AuditLog::query()->where('action', 'ARTIFACT_DOWNLOADED')->sole()->payload['delivery']);
+
+        $operator = $this->user(UserRole::OPERATOR);
+        ProjectAssignment::query()->create(['project_id' => $this->project->id, 'user_id' => $operator->id, 'assigned_by' => $this->admin->id]);
+        $this->actingAs($operator)->get(route('projects.executions.artifacts.download', [$this->project, $execution, $artifact]).'?key='.Str::uuid())
+            ->assertForbidden();
+        $this->assertSame(1, AuditLog::query()->where('action', 'ARTIFACT_DOWNLOADED')->count());
+    }
+
+    public function test_failed_attempt_is_exported_again_from_zero_keeping_its_evidence(): void
+    {
+        $failed = $this->startExecution();
+        $export = $failed->remoteOperations()->sole();
+        $this->queueStatus(RemoteCollectorExport::COMMAND, alive: false, exit: ['exit_code' => 3, 'cancel_requested' => false, 'finished_at' => '2026-10-20T12:00:00Z']);
+        $this->queueReport(['state' => 'error', 'stage' => 'export', 'exit_code' => 3, 'source_id' => 'origen-lab'], ['stage' => 'courses']);
+        dispatch_sync(new ReconcileRemoteAgentOperation($export->id));
+        $this->assertSame(ExecutionStatus::FAILED, $failed->fresh()->status);
+        $this->getJson(route('projects.executions.events', [$this->project, $failed]))->assertJsonPath('execution.collector.can_fresh_export', true);
+
+        $this->queueLaunch(RemoteCollectorExport::COMMAND);
+        $this->postJson(route('projects.executions.fresh-export', [$this->project, $failed]), ['configuration_version' => 2, 'accept_laboratory' => true],
+            ['Idempotency-Key' => 'remote-fresh-export'])->assertCreated();
+
+        $retry = Execution::query()->where('retried_from_execution_id', $failed->id)->sole();
+        $this->assertSame(2, $retry->attempt);
+        $this->assertSame(ExecutionStatus::RUNNING, $retry->status);
+        $this->assertSame(RemoteCollectionPreparation::ADAPTER_KEY, $retry->toolBinding->adapter_key);
+        $this->assertSame(1, $retry->remoteOperations()->where('command_key', RemoteCollectorExport::COMMAND)->count());
+        $this->assertSame(ExecutionStatus::FAILED, $failed->fresh()->status);
+        $this->assertSame(1, $failed->remoteOperations()->count());
+    }
+
+    public function test_collector_deployment_and_source_check_run_from_the_interface(): void
+    {
+        $this->transport->ok('source-check', ['source' => 'perfil-nuevo', 'runtime' => 'native', 'run_as' => 'www-data',
+            'php_version' => '8.3.20', 'zip' => true, 'dom' => true, 'config_readable' => true]);
+        $this->post(route('projects.servers.sources.check', [$this->project, $this->server]), ['source' => 'perfil-nuevo'])->assertRedirect();
+        $this->assertTrue($this->server->fresh()->metadata['remote_sources']['perfil-nuevo']['ready']);
+        $this->post(route('projects.servers.sources.check', [$this->project, $this->server]), ['source' => '../etc'])->assertSessionHasErrors('source');
+
+        $deployed = $this->server->fresh()->metadata['remote_tools'];
+        $this->transport->unreachable();
+        $this->post(route('projects.servers.collector.deploy', [$this->project, $this->server]))->assertRedirect();
+        $this->assertSame($deployed, $this->server->fresh()->metadata['remote_tools'], 'Un despliegue fallido no altera la evidencia previa.');
     }
 
     public function test_export_that_fails_closes_the_execution_without_publishing(): void
@@ -230,6 +318,26 @@ class RemoteCollectionExecutionTest extends DomainTestCase
         $this->post(route('projects.executions.validate', [$this->project, $execution]), [], ['Idempotency-Key' => 'validate-remote'])
             ->assertSessionHasErrors('verification');
         $this->assertSame(0, $execution->verifications()->count());
+    }
+
+    private function reviewedExecution(): Execution
+    {
+        $execution = $this->startExecution();
+        $export = $execution->remoteOperations()->sole();
+        $this->queueStatus(RemoteCollectorExport::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-20T12:00:00Z']);
+        $this->queueReport(['state' => 'success', 'stage' => 'completed', 'exit_code' => 0, 'source_id' => 'origen-lab'],
+            ['stage' => 'completed', 'total_courses' => 4, 'completed_courses' => 4, 'failed_courses' => 0],
+            [['name' => 'origen-lab.zip', 'size' => 4096]], "{$this->sha}  origen-lab.zip");
+        $this->queueLaunch(RemoteSourcePackagePublisher::COMMAND);
+        dispatch_sync(new ReconcileRemoteAgentOperation($export->id));
+        $upload = $execution->remoteOperations()->where('command_key', RemoteSourcePackagePublisher::COMMAND)->sole();
+        $this->queueStatus(RemoteSourcePackagePublisher::COMMAND, alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-20T12:05:00Z']);
+        $this->queueUploadReport($upload);
+        $this->queueS3Package();
+        dispatch_sync(new ReconcileRemoteAgentOperation($upload->id));
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+
+        return $execution->fresh();
     }
 
     private function startExecution(): Execution
@@ -334,7 +442,14 @@ class RemoteCollectionExecutionTest extends DomainTestCase
     {
         $this->s3 = new MockHandler;
         $client = new S3Client(['region' => 'us-east-2', 'version' => '2006-03-01', 'credentials' => ['key' => 'test', 'secret' => 'test'],
-            'handler' => fn (CommandInterface $command, $request) => ($this->s3)($command, $request)]);
+            'handler' => function (CommandInterface $command, $request) {
+                if ($this->objectStored && $command->getName() === 'HeadObject' && $this->s3->count() === 0) {
+                    return Create::promiseFor(new Result(['ContentLength' => 4096, 'Metadata' => ['mwt-sha256' => $this->sha],
+                        'ChecksumSHA256' => base64_encode((string) hex2bin($this->sha)), 'ChecksumType' => 'FULL_OBJECT']));
+                }
+
+                return ($this->s3)($command, $request);
+            }]);
         $this->app->instance(S3ClientFactory::class, new class($client) extends S3ClientFactory
         {
             public function __construct(private readonly S3Client $client) {}

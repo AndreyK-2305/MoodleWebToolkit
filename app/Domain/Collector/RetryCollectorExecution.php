@@ -5,6 +5,8 @@ namespace App\Domain\Collector;
 use App\Domain\Executions\DTOs\StartExecutionResult;
 use App\Domain\Executions\ExecutionCommandDispatcher;
 use App\Domain\Projects\ProjectExecutionManager;
+use App\Domain\Remote\RemoteCollectionPreflight;
+use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Tools\CollectorAdapter;
 use App\Enums\ExecutionStatus;
 use App\Enums\ProjectStatus;
@@ -19,12 +21,16 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
-/** An export from zero, preserving the failed attempt and its evidence. */
+/**
+ * An export from zero, preserving the failed attempt and its evidence. It
+ * serves both collector modes: the laboratory runner and a remote source.
+ */
 final class RetryCollectorExecution
 {
     public function __construct(private readonly CollectorPreflight $preflight,
         private readonly CollectorExecutionPreparation $preparation, private readonly ProjectExecutionManager $manager,
-        private readonly ExecutionCommandDispatcher $dispatcher) {}
+        private readonly ExecutionCommandDispatcher $dispatcher, private readonly RemoteCollectionPreflight $remotePreflight,
+        private readonly RemoteCollectionPreparation $remotePreparation) {}
 
     public function retry(Execution $previous, User $actor, string $key, int $configurationVersion, bool $acceptLaboratory): StartExecutionResult
     {
@@ -40,9 +46,11 @@ final class RetryCollectorExecution
                 ->where('project_id', $project->id)->where('user_id', $actor->id)->lockForUpdate()->exists()))) {
                 throw new AuthorizationException;
             }
-            if ($locked->toolBinding?->adapter_key !== CollectorExecutionPreparation::ADAPTER_KEY) {
-                throw ValidationException::withMessages(['execution' => 'El nuevo intento LAB requiere una ejecución del Recolector real.']);
+            $remote = RemoteCollectionPreparation::selected($locked->toolBinding);
+            if (! $remote && $locked->toolBinding?->adapter_key !== CollectorExecutionPreparation::ADAPTER_KEY) {
+                throw ValidationException::withMessages(['execution' => 'El nuevo intento requiere una ejecución del Recolector real.']);
             }
+            $adapterKey = $remote ? RemoteCollectionPreparation::ADAPTER_KEY : CollectorExecutionPreparation::ADAPTER_KEY;
             $existing = ExecutionCommand::query()->where('idempotency_scope', $scope)->where('idempotency_key', $key)->lockForUpdate()->first();
             if ($existing !== null) {
                 if (! hash_equals($existing->payload_hash, $hash)) {
@@ -51,33 +59,38 @@ final class RetryCollectorExecution
 
                 return new StartExecutionResult($existing->execution, false);
             }
-            if (! $acceptLaboratory || ! CollectorAdapter::httpEnabled()
+            if (! $acceptLaboratory || (! $remote && ! CollectorAdapter::httpEnabled())
                 || ! in_array($locked->status, [ExecutionStatus::FAILED, ExecutionStatus::CANCELLED], true)
                 || ! in_array($project->status, [ProjectStatus::FAILED, ProjectStatus::CANCELLED], true)
                 || (int) $project->executions()->max('attempt') !== $locked->attempt
                 || $locked->remoteOperations()->where('communication_state', '!=', 'TERMINATED')->exists()) {
-                throw ValidationException::withMessages(['execution' => 'Se requiere el último intento terminado y aceptar una nueva exportación LAB desde cero.']);
+                throw ValidationException::withMessages(['execution' => 'Se requiere el último intento terminado y aceptar una nueva exportación desde cero.']);
             }
             $configuration = $project->configuration()->lockForUpdate()->firstOrFail();
             if ($configuration->version !== $configurationVersion) {
                 throw ValidationException::withMessages(['configuration_version' => 'La configuración cambió; revise la versión del nuevo intento.']);
             }
-            $checks = $this->preflight->evaluate($project, $configuration);
+            $preflight = $remote ? $this->remotePreflight : $this->preflight;
+            $checks = $preflight->evaluate($project, $configuration);
             if (collect($checks)->contains(fn (array $check): bool => $check['result'] === 'ERROR')) {
                 throw ValidationException::withMessages(['preflight' => 'El preflight real vigente bloquea el nuevo intento.']);
             }
-            $fingerprint = $this->preflight->fingerprint($project, $configuration);
+            $fingerprint = $preflight->fingerprint($project, $configuration);
             $execution = $this->manager->queue($project, $actor);
             $execution->update(['retried_from_execution_id' => $locked->id, 'resume_checkpoint_id' => null]);
-            $this->preparation->prepare($execution, $configuration, $actor);
-            foreach ($this->preparation->plan() as $step) {
+            if ($remote) {
+                $this->remotePreparation->prepare($execution, $configuration, $actor);
+            } else {
+                $this->preparation->prepare($execution, $configuration, $actor);
+            }
+            foreach ($remote ? $this->remotePreparation->plan() : $this->preparation->plan() as $step) {
                 $execution->steps()->create(['step_key' => $step->key, 'attempt' => 1, 'name' => $step->name,
                     'position' => $step->position, 'status' => 'PENDING', 'progress' => null,
-                    'metadata' => ['adapter' => CollectorExecutionPreparation::ADAPTER_KEY]]);
+                    'metadata' => ['adapter' => $adapterKey]]);
             }
             $command = $execution->commands()->create(['step_key' => '__execution__', 'attempt' => 1, 'command_type' => 'START',
                 'idempotency_scope' => $scope, 'idempotency_key' => $key, 'payload_hash' => $hash,
-                'payload' => [...$payload, 'adapter' => CollectorExecutionPreparation::ADAPTER_KEY,
+                'payload' => [...$payload, 'adapter' => $adapterKey,
                     'configuration_hash' => $fingerprint, 'fresh_export' => true], 'created_by' => $actor->id]);
             AuditLog::query()->create(['actor_id' => $actor->id, 'project_id' => $project->id, 'execution_id' => $execution->id,
                 'action' => 'COLLECTOR_FRESH_EXPORT_APPROVED', 'payload' => [...$payload, 'configuration_hash' => $fingerprint,

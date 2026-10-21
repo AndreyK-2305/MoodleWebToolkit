@@ -8,6 +8,7 @@ use App\Models\Artifact;
 use App\Models\Execution;
 use App\Models\Project;
 use App\Models\User;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -20,12 +21,23 @@ class ArtifactController extends Controller
         Execution $execution,
         Artifact $artifact,
         DownloadArtifact $download,
-    ): StreamedResponse {
+    ): StreamedResponse|RedirectResponse {
         abort_unless($execution->project_id === $project->getKey() && $artifact->execution_id === $execution->getKey(), 404);
         Gate::authorize('view', $execution);
         $validated = $request->validate([
             'key' => ['required', 'string', 'min:8', 'max:120', 'regex:/^[A-Za-z0-9._:-]+$/'],
         ]);
+        if ($artifact->disk === 's3') {
+            try {
+                /** @var User $actor */
+                $actor = $request->user();
+                $url = $download->prepareReference($artifact, $actor, (string) $validated['key']);
+            } catch (ArtifactIntegrityException $exception) {
+                abort(str_contains($exception->getMessage(), 'administrador') ? 403 : 409, $exception->getMessage());
+            }
+
+            return redirect()->away($url);
+        }
 
         try {
             /** @var User $actor */

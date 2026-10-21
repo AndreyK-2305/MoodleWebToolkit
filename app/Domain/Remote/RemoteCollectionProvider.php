@@ -4,6 +4,7 @@ namespace App\Domain\Remote;
 
 use App\Domain\Executions\Contracts\ExecutionProvider;
 use App\Domain\Executions\ExecutionCommandLease;
+use App\Domain\Executions\ProcessExecutionFinalization;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -30,6 +31,11 @@ final class RemoteCollectionProvider implements ExecutionProvider
         }
         $claimed = $this->leases->claim($command->id);
         if ($claimed === null) {
+            return;
+        }
+        if ($claimed->command->command_type === ExecutionCommandType::FINALIZE) {
+            app(ProcessExecutionFinalization::class)->process($claimed->command->id, $claimed->owner);
+
             return;
         }
         $execution = $claimed->command->execution;
