@@ -18,6 +18,8 @@ import CollectorConfigurationForm from '@/components/collector-configuration-for
 import type { CollectorLab } from '@/components/collector-configuration-form';
 import RemoteAccessPanel from '@/components/remote-access-panel';
 import RemoteCollectionForm from '@/components/remote-collection-form';
+import RemoteConsolidationForm from '@/components/remote-consolidation-form';
+import type { RemoteConsolidationOptions } from '@/components/remote-consolidation-form';
 import type { RemoteCollectionOptions } from '@/components/remote-collection-form';
 import type { RemoteAccess } from '@/components/remote-access-panel';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -99,11 +101,15 @@ type Props = {
     remoteAccess?: RemoteAccess;
 };
 
-function wizardSteps(simulated: boolean, remoteMode: boolean): string[] {
+function wizardSteps(simulated: boolean, remoteMode: string | null): string[] {
     return [
         'Datos básicos',
         simulated ? 'Instancias simuladas' : 'Instancias',
-        remoteMode ? 'Recolección remota' : 'Configuración',
+        remoteMode === 'REMOTE'
+            ? 'Recolección remota'
+            : remoteMode === 'REMOTE_CONSOLIDATION'
+              ? 'Consolidación remota'
+              : 'Configuración',
         'Preflight',
         'Confirmación',
     ];
@@ -171,8 +177,9 @@ export default function ProjectShow({
     const [activeStep, setActiveStep] = useState(project.current_step);
     // With remote access the servers are real; REMOTE mode is configured in its own card.
     const simulated = !remoteAccess?.enabled;
-    const remoteMode = project.options.mode === 'REMOTE';
-    const steps = wizardSteps(simulated, remoteMode);
+    const mode = project.options.mode;
+    const remoteMode = mode === 'REMOTE' || mode === 'REMOTE_CONSOLIDATION';
+    const steps = wizardSteps(simulated, remoteMode ? (mode ?? null) : null);
 
     useEffect(() => {
         setActiveStep(project.current_step);
@@ -236,6 +243,17 @@ export default function ProjectShow({
                                 projectUuid={project.uuid}
                                 options={project.options}
                                 servers={remoteAccess.servers}
+                                editable={project.can_edit}
+                            />
+                        )}
+                        {project.type === 'CONSOLIDATE' && (
+                            <RemoteConsolidationForm
+                                projectUuid={project.uuid}
+                                options={
+                                    project.options as RemoteConsolidationOptions
+                                }
+                                servers={remoteAccess.servers}
+                                packages={remoteAccess.available_packages}
                                 editable={project.can_edit}
                             />
                         )}
@@ -309,6 +327,7 @@ export default function ProjectShow({
                 )}
                 {activeStep === 3 && remoteMode && (
                     <RemoteOptionsStep
+                        consolidation={mode === 'REMOTE_CONSOLIDATION'}
                         onBack={() => setActiveStep(2)}
                         onNext={() => setActiveStep(4)}
                     />
@@ -738,21 +757,28 @@ function InstanceField({
 }
 
 function RemoteOptionsStep({
+    consolidation,
     onBack,
     onNext,
 }: {
+    consolidation: boolean;
     onBack: () => void;
     onNext: () => void;
 }) {
     return (
         <Card>
             <CardHeader>
-                <CardTitle>3. Recolección remota</CardTitle>
+                <CardTitle>
+                    3.{' '}
+                    {consolidation
+                        ? 'Consolidación remota'
+                        : 'Recolección remota'}
+                </CardTitle>
                 <p className="text-muted-foreground text-sm">
-                    La configuración de este proyecto se define en la tarjeta
-                    «Recolección desde el servidor de origen»: servidor, perfil,
-                    workers y nombre del paquete. No hay escenarios simulados
-                    que elegir.
+                    {consolidation
+                        ? 'La configuración de este proyecto se define en la tarjeta «Consolidación en el servidor de destino»: destino, perfil, paquetes y workers.'
+                        : 'La configuración de este proyecto se define en la tarjeta «Recolección desde el servidor de origen»: servidor, perfil, workers y nombre del paquete.'}{' '}
+                    No hay escenarios simulados que elegir.
                 </p>
             </CardHeader>
             <CardContent>
