@@ -19,7 +19,7 @@ Estudio de `BaseLine/Consolidador/Consolidador-v8.0.0` (README, `moodle-consolid
 | Preparación           | `preparar` construye imágenes (Moodle 5.2.1, MariaDB, runtime pwsh) e inicia Moodle; necesita Internet y Docker Compose v2                                                                                                                                                                                                                                                        | Operación durable `consolidator.prepare`, fuera de cualquier petición HTTP (4C)                                                                                        |
 | Ejecución             | `ejecutar-automatico` corre el asistente en modo `-Automatic`, con `flock` en `reports/assistant-run.lock`. `iniciar-segundo-plano` usa `systemd-run --user` y exige linger                                                                                                                                                                                                       | El agente lanza `ejecutar-automatico` con su propio launcher (systemd del sistema o nohup), igual que el Recolector; así no depende de linger                          |
 | Estado                | `reports/assistant-state.json` (`schema_version` 1.0, `stage`, `status`, `message`, `review_paths`, `destination_write_recorded`), log de eventos TSV y `reports/fase-6-workers-status.json`                                                                                                                                                                                      | Nuevo subcomando del agente que devuelve esos documentos normalizados; la plataforma no lee rutas arbitrarias                                                          |
-| Etapas reales         | `01-importar-paquetes`, `02-oauth2`, `03b-oauth2-final`, `04-identidades`, `05-plan-usuarios`, `05b-readiness`, `06-aplicar-usuarios`, `07-verificar-usuarios`, `08-plan-piloto`, `09-aplicar-piloto`, `09b-themes-piloto`, `10-verificar-piloto`, `11-plan-lote`, `12-preparar-lote`, `13-aplicar-lote`, `13b-themes-lote`, `14-verificar-lote`, `15-cierre`, `16-paquete-sitio` | Los pasos de la Ejecución usan estos 19 identificadores tal cual (4E)                                                                                                  |
+| Etapas reales         | `01-importar-paquetes`, `02-oauth2`, `03-plugins`, `03b-oauth2-final`, `04-identidades`, `05-plan-usuarios`, `05b-readiness`, `06-aplicar-usuarios`, `07-verificar-usuarios`, `08-plan-piloto`, `09-aplicar-piloto`, `09b-themes-piloto`, `10-verificar-piloto`, `11-plan-lote`, `12-preparar-lote`, `13-aplicar-lote`, `13b-themes-lote`, `14-verificar-lote`, `15-cierre`, `16-paquete-sitio` | Los pasos de la Ejecución usan estos 20 identificadores tal cual (4E)                                                                                                  |
 | Salidas del asistente | Código 22 = `WAITING_USER_ACTION` (OAuth2 o plugins); 24 = traspaso a segundo plano (solo interactivo)                                                                                                                                                                                                                                                                            | 22 se traduce en una intervención de la Ejecución; al resolverla se relanza y el asistente reutiliza los checkpoints aprobados                                         |
 | OAuth2                | `config/oauth2.json` exige `required: true`. El validador rechaza URLs sin HTTPS, exige `wwwroot` igual a la URL pública y un servicio Google con `clientid`                                                                                                                                                                                                                      | **Incluso en laboratorio** el destino necesita un nombre DNS con TLS y un cliente OAuth de Google; el administrador lo configura en Moodle y la plataforma nunca lo ve |
 | Cancelación           | `DETENER.sh` detiene también Moodle, BD y cron                                                                                                                                                                                                                                                                                                                                    | Se presenta como «detener el runtime», no como cancelar (4M)                                                                                                           |
@@ -163,3 +163,62 @@ Se eligió la lectura con el rol de la instancia: el destino necesita `s3:GetObj
   S3 de los proyectos que el usuario puede ver), **Retirar** y el historial de transferencias.
 - **Agente 1.7.0.** Agrega `package.fetch` y los subcomandos `fetch-report`, `copias-list` y
   `copias-remove`.
+
+## E4: Ejecución CONSOLIDATE remota (diseño)
+
+Se divide en dos cortes:
+
+- **E4a.** Configuración, preflight y Ejecución hasta `REVIEW`, `WAITING_USER_ACTION`, `FAILED`
+  o `CANCELLED`, con los pasos reales y el progreso.
+- **E4b.** Intervenciones tipadas (E5) y cierre `REVIEW` → `COMPLETED` (E6).
+
+### Configuración (`consolidator-remote.v1`)
+
+Modo `REMOTE_CONSOLIDATION` de un proyecto CONSOLIDATE. Guarda solo identificadores:
+
+- el servidor `DESTINATION` del proyecto y su perfil;
+- de 2 a 32 `source_package` (uuid y SHA-256), que pueden venir de proyectos COLLECT visibles
+  para quien configura;
+- los `workers` (`auto` o de 1 a 4).
+
+Se versiona como revisión inmutable, con el mismo mecanismo que COLLECT. El binding no usa
+`execution_tool_binding_sources`, que exige paquetes locales del mismo proyecto: los paquetes y
+sus hashes quedan en el snapshot de configuración del binding.
+
+### Preflight
+
+Se evalúa con la evidencia que la plataforma ya tiene:
+
+| Check                       | Requiere                                                                                                                          |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `consolidator.distribution` | Árbol del Consolidador desplegado e igual al catálogo                                                                             |
+| `remote.destination`        | Perfil comprobado y listo                                                                                                         |
+| `destination.prepared`      | Última preparación `SUCCEEDED` o Moodle destino en ejecución                                                                      |
+| `destination.copias`        | El último listado de `copias/` contiene **exactamente** los paquetes elegidos: el Consolidador importa todos los ZIP de `copias/` |
+| `source.packages`           | Paquetes `VALID`, disponibles y no revocados                                                                                      |
+| `destination.unwritten`     | Sin escrituras previas, salvo que se reanude la misma Ejecución                                                                   |
+| `oauth.manual`              | Advertencia aceptada: la Ejecución se detendrá para configurar OAuth2 en Moodle                                                   |
+
+### Ejecución
+
+- **Operación del agente.** `consolidator.run` (`destination`, `distribution`, `workers`) re-verifica
+  el árbol y el perfil, y ejecuta `moodle-consolidation.sh ejecutar-automatico --workers=N` en una
+  unidad systemd del agente.
+- **Reporte.** `consolidator-report` devuelve, codificados y limitados en tamaño:
+    - `reports/assistant-state.json`;
+    - `reports/fase-6-workers-status.json`;
+    - el resumen de cierre;
+    - la presencia del candado de escritura.
+- **Pasos.** Los 20 identificadores reales: `01-importar-paquetes`, `02-oauth2`, `03-plugins`,
+  `03b-oauth2-final`, … `16-paquete-sitio`. Se suma `review`.
+- **Progreso.** Etapas completadas sobre 20 y, en `13-aplicar-lote`, cursos verificados sobre el
+  total, según el estado de los workers.
+- **Salida del asistente.**
+    - Código 0 con `16-paquete-sitio` completada: `VERIFYING` y luego `REVIEW`.
+    - Código 22 (`WAITING_USER_ACTION`): la Ejecución pasa a `WAITING_USER_ACTION` con la etapa y el
+      mensaje del asistente. **Continuar** lanza una nueva operación `consolidator.run` sobre la misma
+      Ejecución; el asistente reutiliza los checkpoints aprobados. Es el mecanismo de la
+      intervención de OAuth2 decidida para la etapa E.
+    - Código 20 u otro: `FAILED`, con la evidencia conservada.
+- **Cancelación.** Señala la unidad del agente, que detiene el asistente. No es `DETENER.sh`, que
+  detiene también Moodle y la base de datos.

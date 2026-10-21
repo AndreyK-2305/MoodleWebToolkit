@@ -31,7 +31,7 @@ class ToolCatalogTest extends DomainTestCase
         $this->assertSame('VERIFIED', $consolidador->distributions()->firstOrFail()->verification_state);
         $this->assertSame('VERIFIED', $integrador->distributions()->firstOrFail()->verification_state);
         $this->assertSame(ToolCompatibilityStatus::LABORATORY, $recolector->compatibilities()->firstOrFail()->status);
-        $this->assertSame(ToolCompatibilityStatus::BLOCKED, $consolidador->compatibilities()->firstOrFail()->status);
+        $this->assertSame(ToolCompatibilityStatus::LABORATORY, $consolidador->compatibilities()->firstOrFail()->status);
         $this->assertSame(ToolCompatibilityStatus::INCOMPATIBLE, $integrador->compatibilities()->firstOrFail()->status);
     }
 

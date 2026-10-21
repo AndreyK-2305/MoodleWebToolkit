@@ -7,6 +7,7 @@ use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Executions\DTOs\StartExecutionResult;
 use App\Domain\Idempotency\IdempotencyRegistry;
 use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -83,7 +84,8 @@ class RequestExecutionValidation
     private function assertDemonstration(Execution $execution): void
     {
         if ($execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY
-            || RemoteCollectionPreparation::selected($execution->toolBinding)) {
+            || RemoteCollectionPreparation::selected($execution->toolBinding)
+            || RemoteConsolidationPreparation::selected($execution->toolBinding)) {
             throw ValidationException::withMessages(['verification' => 'El paquete real utiliza su auditoría independiente; no admite validación académica simulada.']);
         }
     }

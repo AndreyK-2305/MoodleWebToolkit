@@ -2,6 +2,7 @@
 
 namespace App\Domain\Collector;
 
+use App\Domain\Remote\RemoteConsolidationConfiguration;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
 use App\Models\AuditLog;
@@ -53,8 +54,10 @@ final class CollectorConfiguration
                 ->where('project_id', $locked->getKey())->where('user_id', $actor->getKey())->lockForUpdate()->exists())) {
                 throw new AuthorizationException;
             }
-            if ($locked->type !== ProjectType::COLLECT || ! in_array($locked->status, [ProjectStatus::DRAFT, ProjectStatus::CONFIGURING, ProjectStatus::READY], true)) {
-                throw ValidationException::withMessages(['project' => 'El proyecto no permite configurar la recolección en su estado actual.']);
+            // The remote consolidation reuses the same immutable revisions for a CONSOLIDATE project.
+            $type = ($options['mode'] ?? null) === RemoteConsolidationConfiguration::MODE ? ProjectType::CONSOLIDATE : ProjectType::COLLECT;
+            if ($locked->type !== $type || ! in_array($locked->status, [ProjectStatus::DRAFT, ProjectStatus::CONFIGURING, ProjectStatus::READY], true)) {
+                throw ValidationException::withMessages(['project' => 'El proyecto no permite configurar esta herramienta en su estado actual.']);
             }
             $configuration = ProjectConfiguration::query()->where('project_id', $locked->getKey())->lockForUpdate()->firstOrFail();
             $settings = $configuration->settings ?? [];

@@ -6,6 +6,8 @@ use App\Domain\Remote\RemoteAgentOperations;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectionWorkflow;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteConsolidationPreparation;
+use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RemoteSourcePackagePublisher;
 use App\Models\RemoteOperation;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
@@ -46,6 +48,13 @@ final class ReconcileRemoteAgentOperation implements ShouldBeUnique, ShouldQueue
         if (RemoteCollectionPreparation::selected($operation->execution->toolBinding)
             && in_array($operation->command_key, [RemoteCollectorExport::COMMAND, RemoteSourcePackagePublisher::COMMAND], true)) {
             $workflow->advance($operation);
+
+            return;
+        }
+        // A consolidation run is observed with the Consolidator's own state documents.
+        if (RemoteConsolidationPreparation::selected($operation->execution->toolBinding)
+            && $operation->command_key === RemoteConsolidationWorkflow::COMMAND) {
+            app(RemoteConsolidationWorkflow::class)->advance($operation);
 
             return;
         }

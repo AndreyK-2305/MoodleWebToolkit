@@ -7,6 +7,8 @@ use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Domain\Remote\RemoteAgentOperations;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteConsolidationPreparation;
+use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RemoteSourceCleanup;
 use App\Domain\Remote\RemoteSourcePackagePublisher;
 use App\Jobs\ReconcileRemoteAgentOperation;
@@ -43,6 +45,14 @@ class ReconcileRemoteOperations extends Command
                         ->where('manual_intervention_required', false)
                         ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['RUNNING', 'CANCELLING', 'VERIFYING'])
                             ->whereHas('toolBinding', fn ($binding) => $binding->where('adapter_key', RemoteCollectionPreparation::ADAPTER_KEY)))
+                        ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
+                })->orWhere(function ($consolidation): void {
+                    // A consolidation run that ended still needs its final report read once.
+                    $consolidation->where('provider_key', RemoteAgentOperations::PROVIDER)->where('communication_state', 'TERMINATED')
+                        ->where('command_key', RemoteConsolidationWorkflow::COMMAND)->where('manual_intervention_required', false)
+                        ->whereRaw("coalesce((evidence->'consolidator'->>'final')::boolean, false) = false")
+                        ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['RUNNING', 'CANCELLING'])
+                            ->whereHas('toolBinding', fn ($binding) => $binding->where('adapter_key', RemoteConsolidationPreparation::ADAPTER_KEY)))
                         ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
                 })->orWhere(function ($cleanup): void {
                     // After REVIEW or closing, the source disk is freed; the service applies the backoff.
