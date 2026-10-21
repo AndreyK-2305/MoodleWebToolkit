@@ -5,6 +5,8 @@ namespace App\Domain\Executions;
 use App\Domain\Academic\AcademicPreview;
 use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemoteCollectorExport;
 use App\Models\AcademicProposal;
 use App\Models\Artifact;
 use App\Models\Checkpoint;
@@ -12,6 +14,8 @@ use App\Models\Conflict;
 use App\Models\Execution;
 use App\Models\ExecutionEvent;
 use App\Models\ExecutionStep;
+use App\Models\RemoteOperation;
+use App\Models\Server;
 use App\Models\SourcePackage;
 use App\Models\Verification;
 
@@ -24,14 +28,15 @@ class ExecutionPresenter
     {
         $execution->loadMissing(['steps', 'conflicts', 'checkpoints', 'resumedFromExecution']);
         $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY;
-        $operation = $real ? $execution->remoteOperations()->latest('id')->first() : null;
+        $remote = RemoteCollectionPreparation::selected($execution->toolBinding);
+        $operation = $real || $remote ? $execution->remoteOperations()->latest('id')->first() : null;
 
         return [
             'uuid' => $execution->uuid,
             'attempt' => $execution->attempt,
             'resumed_from_execution_uuid' => $execution->resumedFromExecution?->uuid,
             'retried_from_execution_uuid' => $execution->retried_from_execution_id === null ? null : Execution::query()->whereKey($execution->retried_from_execution_id)->value('uuid'),
-            'collector' => $real ? ['mode' => 'LABORATORY', 'producer_version' => '7.4.2-linux', 'resume_supported' => false,
+            'collector' => $remote ? $this->remoteCollector($execution, $operation) : ($real ? ['mode' => 'LABORATORY', 'producer_version' => '7.4.2-linux', 'resume_supported' => false,
                 'configuration_version' => $execution->project->configuration?->version,
                 'can_fresh_export' => in_array($execution->status->value, ['FAILED', 'CANCELLED'], true)
                     && (int) $execution->project->executions()->max('attempt') === $execution->attempt
@@ -40,7 +45,7 @@ class ExecutionPresenter
                     'communication_state' => $operation->communication_state->value, 'functional_state' => $operation->functional_state->value,
                     // Monotonic launch evidence: CONNECTED only lasts while the process runs.
                     'started_at' => $operation->started_at?->toIso8601String(),
-                    'manual_intervention_required' => $operation->manual_intervention_required]] : null,
+                    'manual_intervention_required' => $operation->manual_intervention_required]] : null),
             'status' => $execution->status->value,
             'progress' => $execution->progress,
             'started_at' => $execution->started_at?->toIso8601String(),
@@ -89,7 +94,8 @@ class ExecutionPresenter
     /** @return array<string, mixed> */
     public function review(Execution $execution): array
     {
-        $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY;
+        $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY
+            || RemoteCollectionPreparation::selected($execution->toolBinding);
         $execution->loadMissing([
             'academicSnapshot', 'academicProposals.proposer', 'verifications.requester',
             'artifacts', 'finalizer', 'resumedFromExecution',
@@ -163,5 +169,25 @@ class ExecutionPresenter
             'payload' => app(SensitiveValueRedactor::class)->redact($event->payload),
             'created_at' => $event->created_at->toIso8601String(),
         ];
+    }
+
+    /** @return array<string, mixed> */
+    private function remoteCollector(Execution $execution, ?RemoteOperation $operation): array
+    {
+        $settings = $execution->toolBinding->configuration_snapshot ?? [];
+        $export = $execution->remoteOperations()->where('command_key', RemoteCollectorExport::COMMAND)->orderBy('id')->first();
+        $report = $export?->evidence['collector'] ?? null;
+        $courses = is_array($report['progress'] ?? null) ? $report['progress'] : [];
+
+        return ['mode' => 'REMOTE', 'producer_version' => '7.4.2-linux', 'resume_supported' => false,
+            'configuration_version' => $execution->project->configuration?->version, 'can_fresh_export' => false,
+            'server' => Server::query()->where('project_id', $execution->project_id)->where('uuid', $settings['server_uuid'] ?? null)->value('name'),
+            'source_profile' => $settings['source_profile'] ?? null,
+            'report' => is_array($report) ? ['stage' => $courses['stage'] ?? $report['status']['stage'] ?? null,
+                'completed_courses' => $courses['completed_courses'] ?? null, 'total_courses' => $courses['total_courses'] ?? null,
+                'failed_courses' => $courses['failed_courses'] ?? null, 'package_ready' => ($report['package_ready'] ?? false) === true] : null,
+            'operation' => $operation === null ? null : ['uuid' => $operation->operation_uuid, 'command_key' => $operation->command_key,
+                'communication_state' => $operation->communication_state->value, 'functional_state' => $operation->functional_state->value,
+                'manual_intervention_required' => $operation->manual_intervention_required]];
     }
 }

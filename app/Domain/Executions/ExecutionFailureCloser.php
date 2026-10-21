@@ -3,6 +3,7 @@
 namespace App\Domain\Executions;
 
 use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\EventSeverity;
 use App\Enums\ExecutionCommandType;
@@ -50,7 +51,8 @@ class ExecutionFailureCloser
             }
 
             $execution = $command->execution;
-            if ($execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY
+            if (($execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY
+                || RemoteCollectionPreparation::selected($execution->toolBinding))
                 && ($command->command_type === ExecutionCommandType::CANCEL || $execution->remoteOperations()->exists())
                 && $command->command_type !== ExecutionCommandType::FINALIZE) {
                 $this->leases->releaseForRetry($command);

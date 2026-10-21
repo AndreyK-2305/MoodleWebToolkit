@@ -40,6 +40,8 @@ class RemoteAccessPresenter
                 'host' => $server->host,
                 'connection' => $this->connection($server->connections->firstWhere('name', RemoteServerConnections::PRIMARY)),
                 'evidence' => $this->evidence($server),
+                'collector_deployed' => is_string($server->metadata['remote_tools'][RemoteCollectorExport::DISTRIBUTION_KEY]['tree_sha256'] ?? null),
+                'sources' => $this->sources($server),
                 'operations' => ($operations->get($server->uuid) ?? collect())->take(5)->map(fn (RemoteOperation $operation): array => [
                     'uuid' => $operation->operation_uuid,
                     'command_key' => $operation->command_key,
@@ -55,6 +57,20 @@ class RemoteAccessPresenter
                 ])->values()->all(),
             ])->all()),
         ];
+    }
+
+    /** @return list<array{id: string, ready: bool, checked_at: string|null}> */
+    private function sources(Server $server): array
+    {
+        $sources = [];
+        foreach (is_array($server->metadata['remote_sources'] ?? null) ? $server->metadata['remote_sources'] : [] as $id => $source) {
+            if (is_string($id) && is_array($source)) {
+                $sources[] = ['id' => $id, 'ready' => ($source['ready'] ?? false) === true,
+                    'checked_at' => is_string($source['checked_at'] ?? null) ? $source['checked_at'] : null];
+            }
+        }
+
+        return $sources;
     }
 
     /** @return array<string, mixed>|null */

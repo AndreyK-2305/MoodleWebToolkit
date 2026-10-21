@@ -63,8 +63,17 @@ type ExecutionData = {
     resumed_from_execution_uuid: string | null;
     retried_from_execution_uuid: string | null;
     collector: {
-        mode: 'LABORATORY';
+        mode: 'LABORATORY' | 'REMOTE';
         producer_version: string;
+        server?: string | null;
+        source_profile?: string | null;
+        report?: {
+            stage: string | null;
+            completed_courses: number | null;
+            total_courses: number | null;
+            failed_courses: number | null;
+            package_ready: boolean;
+        } | null;
         resume_supported: boolean;
         configuration_version: number;
         can_fresh_export: boolean;
@@ -456,7 +465,11 @@ function ExecutionTracker({
                         </h1>
                         <Badge variant="secondary">{execution.status}</Badge>
                         {execution.collector && (
-                            <Badge>LABORATORY · Recolector 7.4.2</Badge>
+                            <Badge>
+                                {execution.collector.mode === 'REMOTE'
+                                    ? 'Servidor de origen · Recolector 7.4.2'
+                                    : 'LABORATORY · Recolector 7.4.2'}
+                            </Badge>
                         )}
                         <Badge variant={live ? 'default' : 'outline'}>
                             <Radio className="size-3" />
@@ -1331,7 +1344,8 @@ function ExecutionActions({
                             </Button>
                         )}
                     {execution.status === 'REVIEW' &&
-                        review.validation_current && (
+                        review.validation_current &&
+                        execution.collector?.mode !== 'REMOTE' && (
                             <Button
                                 disabled={disabled || finalizeForm.processing}
                                 onClick={() =>
@@ -1427,16 +1441,46 @@ function CollectorReview({
     review: ReviewData;
 }) {
     const operation = execution.collector?.operation;
+    const remote = execution.collector?.mode === 'REMOTE';
+    const report = execution.collector?.report;
     return (
         <Card>
             <CardHeader>
-                <CardTitle>Recolector real · Laboratorio</CardTitle>
+                <CardTitle>
+                    {remote
+                        ? 'Recolector en el servidor de origen'
+                        : 'Recolector real · Laboratorio'}
+                </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
                 <p className="text-muted-foreground text-sm">
                     El proceso continúa aunque cierre esta pantalla. El
                     seguimiento recupera los eventos persistidos al volver.
                 </p>
+                {remote && (
+                    <p className="text-sm">
+                        Servidor {execution.collector?.server ?? '—'} · perfil{' '}
+                        {execution.collector?.source_profile ?? '—'}
+                    </p>
+                )}
+                {remote && report && (
+                    <p className="text-sm">
+                        Etapa {report.stage ?? 'sin determinar'} · cursos{' '}
+                        {report.completed_courses ?? '—'} de{' '}
+                        {report.total_courses ?? '—'}
+                        {report.failed_courses
+                            ? ` · ${report.failed_courses} con error`
+                            : ''}
+                        {report.package_ready ? ' · paquete listo' : ''}
+                    </p>
+                )}
+                {remote && execution.status === 'REVIEW' && (
+                    <p className="text-sm">
+                        El paquete se validó en el origen y la plataforma lo
+                        verificó en el almacenamiento. La confirmación final de
+                        paquetes remotos llegará en una etapa posterior.
+                    </p>
+                )}
                 {execution.retried_from_execution_uuid && (
                     <p className="text-sm">
                         Nueva exportación desde{' '}
@@ -1455,17 +1499,17 @@ function CollectorReview({
                         <TriangleAlert />
                         <AlertTitle>Reconciliación pendiente</AlertTitle>
                         <AlertDescription>
-                            La evidencia o limpieza requiere revisión autorizada
-                            en el laboratorio. El estado disponible no acredita
-                            éxito ni permite volver a lanzar la operación.
+                            {remote
+                                ? 'La evidencia de la operación remota requiere revisión autorizada. El estado disponible no acredita éxito ni permite volver a lanzarla.'
+                                : 'La evidencia o limpieza requiere revisión autorizada en el laboratorio. El estado disponible no acredita éxito ni permite volver a lanzar la operación.'}
                         </AlertDescription>
                     </Alert>
                 )}
                 {['FAILED', 'CANCELLED'].includes(execution.status) && (
                     <p className="text-sm">
-                        No existe un checkpoint seguro para este paquete. Puede
-                        solicitar una nueva exportación conservando la evidencia
-                        anterior.
+                        {remote
+                            ? 'No existe un checkpoint seguro para este paquete. Puede iniciar una nueva ejecución desde el proyecto; la evidencia anterior se conserva.'
+                            : 'No existe un checkpoint seguro para este paquete. Puede solicitar una nueva exportación conservando la evidencia anterior.'}
                     </p>
                 )}
                 {review.source_packages.map((source) => (

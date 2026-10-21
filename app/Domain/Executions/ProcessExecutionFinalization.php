@@ -8,12 +8,14 @@ use App\Domain\Artifacts\GenerateFinalArtifacts;
 use App\Domain\Artifacts\ResumableSha256;
 use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Collector\CollectorWorkflow;
+use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
 use App\Enums\ExecutionStepStatus;
 use App\Exceptions\ArtifactIntegrityException;
 use App\Exceptions\ExecutionCommandLeaseLost;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\AuditLog;
 use App\Models\Execution;
 use App\Models\ExecutionCommand;
@@ -495,6 +497,9 @@ class ProcessExecutionFinalization
     {
         if ($execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY) {
             app(CollectorWorkflow::class)->assertFinalizable($execution);
+        }
+        if (RemoteCollectionPreparation::selected($execution->toolBinding)) {
+            throw new ToolOperationBlocked('La confirmación final de una recolección remota todavía no está disponible.');
         }
         if ($execution->review_fingerprint === null
             || $execution->validated_fingerprint === null

@@ -5,6 +5,9 @@ namespace App\Console\Commands;
 use App\Domain\Collector\CollectorRegisteredCommand;
 use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Domain\Remote\RemoteAgentOperations;
+use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteSourcePackagePublisher;
 use App\Jobs\ReconcileRemoteAgentOperation;
 use App\Jobs\ReconcileRemoteOperation;
 use App\Models\RemoteOperation;
@@ -31,6 +34,14 @@ class ReconcileRemoteOperations extends Command
                     $collector->where('command_key', CollectorRegisteredCommand::KEY)->where('communication_state', 'TERMINATED')
                         ->where('manual_intervention_required', false)
                         ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['QUEUED', 'RUNNING', 'CANCELLING', 'VERIFYING']))
+                        ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
+                })->orWhere(function ($remote): void {
+                    // A remote collection keeps moving after its export or upload terminates.
+                    $remote->where('provider_key', RemoteAgentOperations::PROVIDER)->where('communication_state', 'TERMINATED')
+                        ->whereIn('command_key', [RemoteCollectorExport::COMMAND, RemoteSourcePackagePublisher::COMMAND])
+                        ->where('manual_intervention_required', false)
+                        ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['RUNNING', 'CANCELLING', 'VERIFYING'])
+                            ->whereHas('toolBinding', fn ($binding) => $binding->where('adapter_key', RemoteCollectionPreparation::ADAPTER_KEY)))
                         ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
                 });
             })

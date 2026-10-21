@@ -17,6 +17,8 @@ import InputError from '@/components/input-error';
 import CollectorConfigurationForm from '@/components/collector-configuration-form';
 import type { CollectorLab } from '@/components/collector-configuration-form';
 import RemoteAccessPanel from '@/components/remote-access-panel';
+import RemoteCollectionForm from '@/components/remote-collection-form';
+import type { RemoteCollectionOptions } from '@/components/remote-collection-form';
 import type { RemoteAccess } from '@/components/remote-access-panel';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -53,7 +55,7 @@ type Preflight = {
     checked_at: string;
     checks: PreflightCheck[];
 };
-type ProjectOptions = {
+type ProjectOptions = RemoteCollectionOptions & {
     simulation_scenario?: string | null;
     processing_scenario?: string | null;
     artifact_name?: string | null;
@@ -217,11 +219,21 @@ export default function ProjectShow({
                 </div>
 
                 {remoteAccess?.enabled ? (
-                    <RemoteAccessPanel
-                        projectUuid={project.uuid}
-                        access={remoteAccess}
-                        editable={project.can_edit}
-                    />
+                    <>
+                        <RemoteAccessPanel
+                            projectUuid={project.uuid}
+                            access={remoteAccess}
+                            editable={project.can_edit}
+                        />
+                        {project.type === 'COLLECT' && (
+                            <RemoteCollectionForm
+                                projectUuid={project.uuid}
+                                options={project.options}
+                                servers={remoteAccess.servers}
+                                editable={project.can_edit}
+                            />
+                        )}
+                    </>
                 ) : (
                     <Alert className="border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30">
                         <ShieldCheck className="text-amber-700 dark:text-amber-400" />
