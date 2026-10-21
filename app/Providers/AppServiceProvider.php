@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Database\OffsetPostgresConnection;
 use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\LocalArtifactStorage;
@@ -14,6 +15,7 @@ use App\Domain\Realtime\ReverbExecutionEventTransport;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\FakeToolAdapter;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\ServiceProvider;
@@ -26,6 +28,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        // Dates keep their offset on the way to timestamptz columns; see OffsetPostgresGrammar.
+        Connection::resolverFor('pgsql', fn ($connection, string $database, string $prefix, array $config) => new OffsetPostgresConnection($connection, $database, $prefix, $config));
         $this->app->bind(SecretProvider::class, LabFileSecretProvider::class);
         $this->app->bind(ToolAdapter::class, FakeToolAdapter::class);
         $this->app->bind(ExecutionProvider::class, FakeExecutionProvider::class);
