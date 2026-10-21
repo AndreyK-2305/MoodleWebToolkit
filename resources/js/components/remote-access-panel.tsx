@@ -33,6 +33,20 @@ export type RemoteConnection = {
     host_key_type: string | null;
     host_key_fingerprint: string | null;
 };
+export type RemoteSourceProfile = {
+    id: string;
+    ready: boolean;
+    checked_at: string | null;
+    check_error: string | null;
+    detected: boolean;
+    valid: boolean | null;
+    profile_error: string | null;
+    runtime: string | null;
+    moodle_release: string | null;
+    php_version: string | null;
+    dataroot_free_bytes: number | null;
+    state_free_bytes: number | null;
+};
 export type RemoteServer = {
     uuid: string;
     name: string;
@@ -40,7 +54,8 @@ export type RemoteServer = {
     host: string | null;
     connection: RemoteConnection | null;
     collector_deployed: boolean;
-    sources: { id: string; ready: boolean; checked_at: string | null }[];
+    sources: RemoteSourceProfile[];
+    sources_detected_at: string | null;
     evidence: {
         checked_at: string | null;
         status: string | null;

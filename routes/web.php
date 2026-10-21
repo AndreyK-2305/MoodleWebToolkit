@@ -31,6 +31,7 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::post('projects/{project:uuid}/servers/{server:uuid}/connection/test', [RemoteConnectionController::class, 'test'])->middleware('action.confirmed')->name('projects.servers.connection.test');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/collector/deploy', [RemoteConnectionController::class, 'deployCollector'])->middleware('action.confirmed')->name('projects.servers.collector.deploy');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/sources/check', [RemoteConnectionController::class, 'checkSource'])->middleware('action.confirmed')->name('projects.servers.sources.check');
+    Route::post('projects/{project:uuid}/servers/{server:uuid}/sources/detect', [RemoteConnectionController::class, 'detectSources'])->middleware('action.confirmed')->name('projects.servers.sources.detect');
     Route::post('projects/{project:uuid}/executions', [ExecutionController::class, 'store'])->middleware('action.confirmed')->name('projects.executions.store');
     Route::get('projects/{project:uuid}/executions/{execution:uuid}', [ExecutionController::class, 'show'])->name('projects.executions.show');
     Route::get('projects/{project:uuid}/executions/{execution:uuid}/events', [ExecutionEventController::class, 'index'])->name('projects.executions.events');

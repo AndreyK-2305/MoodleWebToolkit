@@ -1,7 +1,10 @@
 import { router, useForm } from '@inertiajs/react';
 import { useState } from 'react';
 import InputError from '@/components/input-error';
-import type { RemoteServer } from '@/components/remote-access-panel';
+import type {
+    RemoteServer,
+    RemoteSourceProfile,
+} from '@/components/remote-access-panel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -50,10 +53,12 @@ export default function RemoteCollectionForm({
         (source) => source.id === form.data.source_profile,
     );
     const errors = form.errors as Record<string, string>;
-    const [busy, setBusy] = useState<'deploy' | 'check' | null>(null);
+    const [busy, setBusy] = useState<'deploy' | 'check' | 'detect' | null>(
+        null,
+    );
     const connected = server?.connection?.status === 'VALID';
     const serverAction = (
-        action: 'deploy' | 'check',
+        action: 'deploy' | 'check' | 'detect',
         path: string,
         data: Record<string, string> = {},
     ) =>
@@ -204,8 +209,32 @@ export default function RemoteCollectionForm({
                                 </Badge>
                             ))}
                         </div>
+                        {profile && <ProfileDetails profile={profile} />}
+                        {server &&
+                            server.sources_detected_at !== null &&
+                            server.sources.every(
+                                (source) => !source.detected,
+                            ) && (
+                                <p className="text-muted-foreground text-sm md:col-span-2">
+                                    El servidor no tiene perfiles de origen. El
+                                    administrador del servidor debe crearlos
+                                    (guía GUIA-PERFIL-ORIGEN.md).
+                                </p>
+                            )}
                         {editable && server && (
                             <div className="flex flex-wrap gap-2 md:col-span-2">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={!connected || busy !== null}
+                                    onClick={() =>
+                                        serverAction('detect', 'sources/detect')
+                                    }
+                                >
+                                    {busy === 'detect'
+                                        ? 'Detectando…'
+                                        : 'Detectar perfiles del servidor'}
+                                </Button>
                                 <Button
                                     type="button"
                                     variant="outline"
@@ -269,5 +298,51 @@ export default function RemoteCollectionForm({
                 )}
             </CardContent>
         </Card>
+    );
+}
+
+const PROFILE_ERRORS: Record<string, string> = {
+    source_profile_unsafe:
+        'el archivo no pertenece a root o lo pueden modificar otros usuarios',
+    source_profile_invalid: 'el archivo tiene claves o valores no admitidos',
+    source_not_found: 'el perfil no existe en el servidor',
+    source_runtime_unavailable:
+        'no se pudo ejecutar PHP en el runtime del perfil',
+};
+
+function gib(bytes: number | null): string {
+    return bytes === null ? '—' : `${(bytes / 1073741824).toFixed(1)} GiB`;
+}
+
+function ProfileDetails({ profile }: { profile: RemoteSourceProfile }) {
+    const error = profile.check_error ?? profile.profile_error;
+    return (
+        <div className="text-muted-foreground space-y-1 text-sm md:col-span-2">
+            {profile.valid === false && (
+                <p className="text-destructive">
+                    Perfil inválido:{' '}
+                    {PROFILE_ERRORS[profile.profile_error ?? ''] ??
+                        profile.profile_error}
+                    .
+                </p>
+            )}
+            {profile.checked_at ? (
+                <p>
+                    Moodle {profile.moodle_release ?? 'no detectado'} · PHP{' '}
+                    {profile.php_version ?? '—'} · runtime{' '}
+                    {profile.runtime ?? '—'} · moodledata libre{' '}
+                    {gib(profile.dataroot_free_bytes)} · espacio del agente{' '}
+                    {gib(profile.state_free_bytes)}
+                </p>
+            ) : (
+                <p>El perfil todavía no se ha comprobado.</p>
+            )}
+            {profile.checked_at && !profile.ready && error && (
+                <p className="text-destructive">
+                    Última comprobación fallida:{' '}
+                    {PROFILE_ERRORS[error] ?? error}.
+                </p>
+            )}
+        </div>
     );
 }

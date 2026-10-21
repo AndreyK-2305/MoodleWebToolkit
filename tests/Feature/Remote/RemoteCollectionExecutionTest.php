@@ -297,10 +297,31 @@ class RemoteCollectionExecutionTest extends DomainTestCase
 
     public function test_collector_deployment_and_source_check_run_from_the_interface(): void
     {
-        $this->transport->ok('source-check', ['source' => 'perfil-nuevo', 'runtime' => 'native', 'run_as' => 'www-data',
-            'php_version' => '8.3.20', 'zip' => true, 'dom' => true, 'config_readable' => true]);
+        $this->transport->ok('source-list', ['sources_dir_exists' => true, 'sources' => [
+            ['id' => 'perfil-nuevo', 'valid' => true, 'runtime' => 'native', 'run_as' => 'www-data', 'error_code' => null],
+            ['id' => 'abierto', 'valid' => false, 'runtime' => null, 'run_as' => null, 'error_code' => 'source_profile_unsafe'],
+            ['id' => '../fuera', 'valid' => true, 'runtime' => 'native', 'run_as' => 'root', 'error_code' => null],
+        ]]);
+        $this->post(route('projects.servers.sources.detect', [$this->project, $this->server]))->assertRedirect();
+        $this->assertSame(['perfil-nuevo', 'abierto'], array_column($this->server->fresh()->metadata['remote_sources_detected']['sources'], 'id'));
+
+        // Readiness needs Moodle to load its configuration and a writable moodledata.
+        $report = ['source' => 'perfil-nuevo', 'runtime' => 'native', 'run_as' => 'www-data', 'php_version' => '8.3.20', 'zip' => true,
+            'dom' => true, 'config_readable' => true, 'moodle_release' => null, 'moodle_version' => null, 'dataroot_free_bytes' => null,
+            'dataroot_writable' => false, 'state_free_bytes' => 9_000_000_000];
+        $this->transport->ok('source-check', $report);
+        $this->post(route('projects.servers.sources.check', [$this->project, $this->server]), ['source' => 'perfil-nuevo'])->assertRedirect();
+        $this->assertFalse($this->server->fresh()->metadata['remote_sources']['perfil-nuevo']['ready']);
+        $this->transport->ok('source-check', [...$report, 'moodle_release' => '4.5.10 (Build: 20250101)', 'moodle_version' => 2024100710,
+            'dataroot_free_bytes' => 50_000_000_000, 'dataroot_writable' => true, 'path' => '/var/www/no-debe-guardarse']);
         $this->post(route('projects.servers.sources.check', [$this->project, $this->server]), ['source' => 'perfil-nuevo'])->assertRedirect();
         $this->assertTrue($this->server->fresh()->metadata['remote_sources']['perfil-nuevo']['ready']);
+        $this->assertArrayNotHasKey('path', $this->server->fresh()->metadata['remote_sources']['perfil-nuevo']['report']);
+
+        $profiles = collect($this->get(route('projects.show', $this->project))->viewData('page')['props']['remoteAccess']['servers'][0]['sources'])->keyBy('id');
+        $this->assertSame('4.5.10 (Build: 20250101)', $profiles['perfil-nuevo']['moodle_release']);
+        $this->assertTrue($profiles['perfil-nuevo']['ready']);
+        $this->assertSame('source_profile_unsafe', $profiles['abierto']['profile_error']);
         $this->post(route('projects.servers.sources.check', [$this->project, $this->server]), ['source' => '../etc'])->assertSessionHasErrors('source');
 
         $deployed = $this->server->fresh()->metadata['remote_tools'];

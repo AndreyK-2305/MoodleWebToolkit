@@ -176,6 +176,30 @@ class RemoteAgentLifecycleTest extends TestCase
         $this->assertDirectoryExists($this->root.'/state/ops/'.$linked.'/work/tmp');
     }
 
+    public function test_source_list_reports_profiles_by_name_and_never_their_paths(): void
+    {
+        $sources = $this->root.'/sources';
+        mkdir($sources, 0700);
+        config(['toolkit.remote.agent_sources_dir' => $sources]);
+        file_put_contents($sources.'/pregrado.conf', "MOODLE_CONFIG=/var/www/secreto/config.php\nRUNTIME=native\nRUN_AS=www-data\n");
+        file_put_contents($sources.'/malo.conf', "MOODLE_CONFIG=/x/config.php\nRUNTIME=native\nRUN_AS=www-data\nOTRA=1\n");
+        file_put_contents($sources.'/abierto.conf', "MOODLE_CONFIG=/x/config.php\nRUNTIME=native\nRUN_AS=www-data\n");
+        chmod($sources.'/pregrado.conf', 0600);
+        chmod($sources.'/malo.conf', 0600);
+        chmod($sources.'/abierto.conf', 0666);
+        app(RemoteAgentInstaller::class)->install($this->target());
+
+        $list = $this->agent()->call($this->target(), 'source-list');
+
+        $this->assertTrue($list->ok, (string) $list->errorCode);
+        $this->assertSame([
+            ['id' => 'abierto', 'valid' => false, 'runtime' => null, 'run_as' => null, 'error_code' => 'source_profile_unsafe'],
+            ['id' => 'malo', 'valid' => false, 'runtime' => null, 'run_as' => null, 'error_code' => 'source_profile_invalid'],
+            ['id' => 'pregrado', 'valid' => true, 'runtime' => 'native', 'run_as' => 'www-data', 'error_code' => null],
+        ], $list->data['sources']);
+        $this->assertStringNotContainsString('/var/www/secreto', $list->transport->stdout);
+    }
+
     /** A finished collector.742 operation as the agent leaves it on disk. */
     private function collectorOperation(string $package): string
     {

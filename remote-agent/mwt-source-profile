@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Creates a source profile for mwt-agent. Run by the server's administrator as
+# root, on the server: the platform never writes profiles, it only names them.
+#
+#   sudo bash mwt-source-profile <id> --config /var/www/moodle/config.php [--run-as www-data]
+#   sudo bash mwt-source-profile <id> --config /var/www/html/config.php --runtime compose \
+#        --compose-dir /opt/moodle --compose-service php [--compose-profile tools] [--run-as www-data]
+#
+# The profile holds only paths and the runtime user. Database credentials stay
+# in Moodle's own config.php; the Collector reads them from there at runtime.
+set -euo pipefail
+umask 077
+
+readonly SOURCES_DIR="${MWT_AGENT_SOURCES_DIR:-/etc/mwt-agent/sources}"
+readonly SOURCE_RE='^[a-z0-9][a-z0-9-]{1,62}$'
+readonly PATH_RE='^/[A-Za-z0-9._/-]{1,255}$'
+
+die() { printf 'error: %s\n' "$1" >&2; exit 2; }
+safe_path() { [[ $1 =~ $PATH_RE && $1 != *..* ]]; }
+
+[[ $(id -u) == 0 ]] || die 'ejecute este script como root (sudo)'
+(($# >= 1)) || die 'uso: mwt-source-profile <id> --config <ruta de config.php> [opciones]'
+id=$1
+shift
+[[ $id =~ $SOURCE_RE ]] || die 'el identificador admite minúsculas, dígitos y guiones (2 a 63 caracteres)'
+
+config='' run_as='www-data' runtime='native' compose_dir='' compose_service='' compose_profile='' force=0
+while (($# > 0)); do
+    case $1 in
+        --config) config=${2:-}; shift 2 ;;
+        --run-as) run_as=${2:-}; shift 2 ;;
+        --runtime) runtime=${2:-}; shift 2 ;;
+        --compose-dir) compose_dir=${2:-}; shift 2 ;;
+        --compose-service) compose_service=${2:-}; shift 2 ;;
+        --compose-profile) compose_profile=${2:-}; shift 2 ;;
+        --force) force=1; shift ;;
+        *) die "opción desconocida: $1" ;;
+    esac
+done
+
+safe_path "$config" || die '--config debe ser una ruta absoluta sin ".." ni caracteres especiales'
+[[ $run_as =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && id "$run_as" >/dev/null 2>&1 || die "el usuario de ejecución '$run_as' no existe"
+[[ $runtime == native || $runtime == compose ]] || die '--runtime debe ser native o compose'
+if [[ $runtime == native ]]; then
+    [[ -f $config ]] || die "no existe $config"
+    runuser -u "$run_as" -- test -r "$config" || die "el usuario $run_as no puede leer $config"
+    command -v php >/dev/null 2>&1 || die 'no hay php en el servidor; use --runtime compose si Moodle corre en contenedores'
+else
+    safe_path "$compose_dir" && [[ -f $compose_dir/compose.yaml ]] || die '--compose-dir debe contener compose.yaml'
+    [[ $compose_service =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || die '--compose-service es obligatorio con --runtime compose'
+    [[ -z $compose_profile || $compose_profile =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || die '--compose-profile no es válido'
+fi
+
+file="$SOURCES_DIR/$id.conf"
+[[ ! -e $file || $force == 1 ]] || die "ya existe $file (use --force para reemplazarlo)"
+install -d -o root -g root -m 0755 "$(dirname "$SOURCES_DIR")"
+install -d -o root -g root -m 0700 "$SOURCES_DIR"
+tmp=$(mktemp "$SOURCES_DIR/.profile.XXXXXX")
+{
+    printf '# Perfil de origen para mwt-agent; creado %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'MOODLE_CONFIG=%s\nRUNTIME=%s\nRUN_AS=%s\n' "$config" "$runtime" "$run_as"
+    if [[ $runtime == compose ]]; then
+        printf 'COMPOSE_DIR=%s\nCOMPOSE_SERVICE=%s\n' "$compose_dir" "$compose_service"
+        [[ -n $compose_profile ]] && printf 'COMPOSE_PROFILE=%s\n' "$compose_profile"
+    fi
+} >"$tmp"
+chown root:root "$tmp"
+chmod 0600 "$tmp"
+mv -f "$tmp" "$file"
+printf 'Perfil %s creado en %s\n' "$id" "$file"
+
+# Same check the platform runs, when the agent is already installed.
+agent=$(find /opt/mwt-agent -maxdepth 2 -name mwt-agent -type f 2>/dev/null | sort -V | tail -n 1 || true)
+if [[ -n $agent ]]; then
+    printf 'Comprobación del agente: '
+    MWT_AGENT_SOURCES_DIR="$SOURCES_DIR" bash "$agent" source-check "$id" || true
+fi
+printf 'Siguiente paso: en la plataforma, "Detectar perfiles del servidor" y luego "Comprobar perfil de origen".\n'

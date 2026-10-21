@@ -29,7 +29,9 @@ class CheckRemoteSource
         try {
             $response = $this->agent->call($this->connections->target($server), 'source-check', [$source], 120);
             if ($response->ok) {
-                $report = $response->data;
+                // Closed fields only: the agent never returns paths, and nothing else is kept.
+                $report = array_intersect_key($response->data, array_flip(['source', 'runtime', 'run_as', 'php_version', 'zip', 'dom',
+                    'config_readable', 'moodle_release', 'moodle_version', 'dataroot_free_bytes', 'dataroot_writable', 'state_free_bytes']));
             } else {
                 $errorCode = $response->errorCode;
             }
@@ -37,7 +39,9 @@ class CheckRemoteSource
             $errorCode = $exception->errorCode;
         }
         $ready = $report !== null && ($report['zip'] ?? false) === true && ($report['dom'] ?? false) === true
-            && ($report['config_readable'] ?? false) === true && preg_match('/^8\.[1-3]\./', (string) ($report['php_version'] ?? '')) === 1;
+            && ($report['config_readable'] ?? false) === true && preg_match('/^8\.[1-3]\./', (string) ($report['php_version'] ?? '')) === 1
+            // Moodle must load its configuration and be able to write its backups to moodledata.
+            && is_string($report['moodle_release'] ?? null) && ($report['dataroot_writable'] ?? false) === true;
 
         DB::transaction(function () use ($server, $source, $actor, $report, $errorCode, $ready): void {
             $locked = Server::query()->whereKey($server->getKey())->lockForUpdate()->firstOrFail();
