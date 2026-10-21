@@ -43,6 +43,8 @@ class ExecutionPresenter
                     && ! $execution->remoteOperations()->where('communication_state', '!=', 'TERMINATED')->exists(),
                 'operation' => $operation === null ? null : ['uuid' => $operation->operation_uuid,
                     'communication_state' => $operation->communication_state->value, 'functional_state' => $operation->functional_state->value,
+                    // Monotonic launch evidence: CONNECTED only lasts while the process runs.
+                    'started_at' => $operation->started_at?->toIso8601String(),
                     'manual_intervention_required' => $operation->manual_intervention_required]] : null),
             'status' => $execution->status->value,
             'progress' => $execution->progress,
