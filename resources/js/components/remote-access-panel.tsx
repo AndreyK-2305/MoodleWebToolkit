@@ -1,4 +1,4 @@
-import { useForm } from "@inertiajs/react";
+import { useForm } from '@inertiajs/react';
 import {
     AlertCircle,
     CheckCircle2,
@@ -6,22 +6,22 @@ import {
     PlugZap,
     Server,
     TriangleAlert,
-} from "lucide-react";
-import InputError from "@/components/input-error";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
+} from 'lucide-react';
+import InputError from '@/components/input-error';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 
-type ConnectionType = "aws-ssm" | "ssh";
-type CheckResult = "SUCCESS" | "WARNING" | "ERROR";
+type ConnectionType = 'aws-ssm' | 'ssh';
+type CheckResult = 'SUCCESS' | 'WARNING' | 'ERROR';
 
 export type RemoteConnection = {
     type: ConnectionType;
-    status: "UNTESTED" | "VALID" | "INVALID";
+    status: 'UNTESTED' | 'VALID' | 'INVALID';
     instance_id: string | null;
     region: string | null;
     host: string | null;
@@ -67,7 +67,7 @@ export type RemoteDestinationProfile = {
 export type RemoteServer = {
     uuid: string;
     name: string;
-    role: "SOURCE" | "DESTINATION" | "AUXILIARY";
+    role: 'SOURCE' | 'DESTINATION' | 'AUXILIARY';
     host: string | null;
     connection: RemoteConnection | null;
     collector_deployed: boolean;
@@ -75,7 +75,7 @@ export type RemoteServer = {
     sources_detected_at: string | null;
     consolidator: {
         deployed: boolean;
-        deployment_state: "QUEUED" | "RUNNING" | "DEPLOYED" | "FAILED" | null;
+        deployment_state: 'QUEUED' | 'RUNNING' | 'DEPLOYED' | 'FAILED' | null;
         deployment_error: string | null;
         updated_at: string | null;
     };
@@ -116,15 +116,15 @@ export type RemoteAccess = {
     servers: RemoteServer[];
 };
 
-const roleLabels: Record<RemoteServer["role"], string> = {
-    SOURCE: "Origen",
-    DESTINATION: "Destino",
-    AUXILIARY: "Auxiliar",
+const roleLabels: Record<RemoteServer['role'], string> = {
+    SOURCE: 'Origen',
+    DESTINATION: 'Destino',
+    AUXILIARY: 'Auxiliar',
 };
-const statusLabels: Record<RemoteConnection["status"], string> = {
-    UNTESTED: "Sin probar",
-    VALID: "Verificada",
-    INVALID: "Con errores",
+const statusLabels: Record<RemoteConnection['status'], string> = {
+    UNTESTED: 'Sin probar',
+    VALID: 'Verificada',
+    INVALID: 'Con errores',
 };
 
 export default function RemoteAccessPanel({
@@ -185,24 +185,24 @@ function ServerConnection({
     const connection = server.connection;
     const base = `/projects/${projectUuid}/servers/${server.uuid}/connection`;
     const form = useForm({
-        type: (connection?.type ?? "aws-ssm") as ConnectionType,
-        instance_id: connection?.instance_id ?? "",
-        region: connection?.region ?? "us-east-1",
-        host: connection?.host ?? server.host ?? "",
+        type: (connection?.type ?? 'aws-ssm') as ConnectionType,
+        instance_id: connection?.instance_id ?? '',
+        region: connection?.region ?? 'us-east-1',
+        host: connection?.host ?? server.host ?? '',
         port: connection?.port ?? 22,
-        user: connection?.user ?? "ubuntu",
-        host_key: "",
-        secret_reference: "",
-        secret_version: connection?.secret_version ?? "1",
+        user: connection?.user ?? 'ubuntu',
+        host_key: '',
+        secret_reference: '',
+        secret_version: connection?.secret_version ?? '1',
         use_sudo: connection?.use_sudo ?? true,
     });
     const actions = useForm({});
     const errors = form.errors as Record<string, string>;
-    const ssh = form.data.type === "ssh";
+    const ssh = form.data.type === 'ssh';
 
     const save = () => {
         form.transform((data) =>
-            data.type === "aws-ssm"
+            data.type === 'aws-ssm'
                 ? {
                       type: data.type,
                       instance_id: data.instance_id,
@@ -235,16 +235,16 @@ function ServerConnection({
                 </div>
                 <Badge
                     variant={
-                        connection?.status === "INVALID"
-                            ? "destructive"
-                            : connection?.status === "VALID"
-                              ? "default"
-                              : "secondary"
+                        connection?.status === 'INVALID'
+                            ? 'destructive'
+                            : connection?.status === 'VALID'
+                              ? 'default'
+                              : 'secondary'
                     }
                 >
                     {connection
                         ? statusLabels[connection.status]
-                        : "Sin configurar"}
+                        : 'Sin configurar'}
                 </Badge>
             </div>
 
@@ -264,7 +264,7 @@ function ServerConnection({
                         disabled={!editable}
                         onChange={(event) =>
                             form.setData(
-                                "type",
+                                'type',
                                 event.target.value as ConnectionType,
                             )
                         }
@@ -283,7 +283,7 @@ function ServerConnection({
                             value={form.data.host}
                             error={errors.host}
                             disabled={!editable}
-                            onChange={(value) => form.setData("host", value)}
+                            onChange={(value) => form.setData('host', value)}
                         />
                         <Field
                             id={`port-${server.uuid}`}
@@ -293,7 +293,7 @@ function ServerConnection({
                             error={errors.port}
                             disabled={!editable}
                             onChange={(value) =>
-                                form.setData("port", Number(value))
+                                form.setData('port', Number(value))
                             }
                         />
                         <Field
@@ -302,7 +302,7 @@ function ServerConnection({
                             value={form.data.user}
                             error={errors.user}
                             disabled={!editable}
-                            onChange={(value) => form.setData("user", value)}
+                            onChange={(value) => form.setData('user', value)}
                         />
                         <div className="grid gap-2 md:col-span-2">
                             <Label htmlFor={`host-key-${server.uuid}`}>
@@ -313,12 +313,12 @@ function ServerConnection({
                                 placeholder={
                                     connection?.host_key_fingerprint
                                         ? `Fijada: ${connection.host_key_type} ${connection.host_key_fingerprint}`
-                                        : "ssh-ed25519 AAAA… (salida de ssh-keyscan)"
+                                        : 'ssh-ed25519 AAAA… (salida de ssh-keyscan)'
                                 }
                                 value={form.data.host_key}
                                 disabled={!editable}
                                 onChange={(event) =>
-                                    form.setData("host_key", event.target.value)
+                                    form.setData('host_key', event.target.value)
                                 }
                             />
                             <InputError message={errors.host_key} />
@@ -328,14 +328,14 @@ function ServerConnection({
                             label="Referencia de la llave privada"
                             placeholder={
                                 connection?.has_secret_reference
-                                    ? "Referencia guardada; escríbala para cambiarla"
-                                    : "origen-ssh-key"
+                                    ? 'Referencia guardada; escríbala para cambiarla'
+                                    : 'origen-ssh-key'
                             }
                             value={form.data.secret_reference}
                             error={errors.secret_reference}
                             disabled={!editable}
                             onChange={(value) =>
-                                form.setData("secret_reference", value)
+                                form.setData('secret_reference', value)
                             }
                         />
                         <Field
@@ -345,7 +345,7 @@ function ServerConnection({
                             error={errors.secret_version}
                             disabled={!editable}
                             onChange={(value) =>
-                                form.setData("secret_version", value)
+                                form.setData('secret_version', value)
                             }
                         />
                         <div className="flex items-center gap-2">
@@ -354,7 +354,7 @@ function ServerConnection({
                                 checked={form.data.use_sudo}
                                 disabled={!editable}
                                 onCheckedChange={(checked) =>
-                                    form.setData("use_sudo", checked === true)
+                                    form.setData('use_sudo', checked === true)
                                 }
                             />
                             <Label htmlFor={`sudo-${server.uuid}`}>
@@ -372,7 +372,7 @@ function ServerConnection({
                             error={errors.instance_id}
                             disabled={!editable}
                             onChange={(value) =>
-                                form.setData("instance_id", value)
+                                form.setData('instance_id', value)
                             }
                         />
                         <Field
@@ -381,7 +381,7 @@ function ServerConnection({
                             value={form.data.region}
                             error={errors.region}
                             disabled={!editable}
-                            onChange={(value) => form.setData("region", value)}
+                            onChange={(value) => form.setData('region', value)}
                         />
                     </>
                 )}
@@ -430,8 +430,8 @@ function ServerConnection({
                 </div>
             )}
 
-            {server.role === "DESTINATION" &&
-                connection?.status === "VALID" && (
+            {server.role === 'DESTINATION' &&
+                connection?.status === 'VALID' && (
                     <DestinationRuntime
                         projectUuid={projectUuid}
                         server={server}
@@ -447,29 +447,29 @@ function ServerConnection({
 }
 
 const deploymentLabels: Record<
-    NonNullable<RemoteServer["consolidator"]["deployment_state"]>,
+    NonNullable<RemoteServer['consolidator']['deployment_state']>,
     string
 > = {
-    QUEUED: "Despliegue en cola",
-    RUNNING: "Desplegando",
-    DEPLOYED: "Desplegado y verificado",
-    FAILED: "Despliegue fallido",
+    QUEUED: 'Despliegue en cola',
+    RUNNING: 'Desplegando',
+    DEPLOYED: 'Desplegado y verificado',
+    FAILED: 'Despliegue fallido',
 };
 const destinationCodes: Record<string, string> = {
-    env_missing: "falta el .env del runtime",
-    env_unprotected: "el .env no está protegido (0600)",
-    env_incomplete: "el .env está incompleto",
-    env_url_mismatch: "la URL del .env difiere de la del perfil",
-    tool_missing: "el árbol del perfil no está desplegado",
-    tool_tree_mismatch: "el perfil usa otro árbol que el desplegado",
-    flock_missing: "falta flock",
-    public_url_not_https: "la URL pública no es HTTPS",
-    engine_modified: "el motor del runtime fue modificado",
-    docker_unavailable: "Docker no responde",
-    compose_v2_missing: "falta Docker Compose v2",
-    low_memory: "menos de 4 GiB de memoria",
-    low_disk: "menos de 20 GiB libres",
-    destination_written: "el destino ya recibió escrituras",
+    env_missing: 'falta el .env del runtime',
+    env_unprotected: 'el .env no está protegido (0600)',
+    env_incomplete: 'el .env está incompleto',
+    env_url_mismatch: 'la URL del .env difiere de la del perfil',
+    tool_missing: 'el árbol del perfil no está desplegado',
+    tool_tree_mismatch: 'el perfil usa otro árbol que el desplegado',
+    flock_missing: 'falta flock',
+    public_url_not_https: 'la URL pública no es HTTPS',
+    engine_modified: 'el motor del runtime fue modificado',
+    docker_unavailable: 'Docker no responde',
+    compose_v2_missing: 'falta Docker Compose v2',
+    low_memory: 'menos de 4 GiB de memoria',
+    low_disk: 'menos de 20 GiB libres',
+    destination_written: 'el destino ya recibió escrituras',
 };
 
 /** The Consolidator on a destination server: deployment and the administrator's profiles. */
@@ -483,12 +483,12 @@ function DestinationRuntime({
     editable: boolean;
 }) {
     const actions = useForm({});
-    const check = useForm({ destination: "" });
+    const check = useForm({ destination: '' });
     const base = `/projects/${projectUuid}/servers/${server.uuid}`;
     const state = server.consolidator.deployment_state;
-    const busy = state === "QUEUED" || state === "RUNNING";
+    const busy = state === 'QUEUED' || state === 'RUNNING';
     const gib = (value: number | null) =>
-        value === null ? "—" : `${(value / 1073741824).toFixed(1)} GiB`;
+        value === null ? '—' : `${(value / 1073741824).toFixed(1)} GiB`;
 
     return (
         <div
@@ -499,27 +499,27 @@ function DestinationRuntime({
                 <h4 className="text-sm font-medium">Consolidador V8</h4>
                 <Badge
                     variant={
-                        state === "FAILED"
-                            ? "destructive"
+                        state === 'FAILED'
+                            ? 'destructive'
                             : server.consolidator.deployed
-                              ? "default"
-                              : "secondary"
+                              ? 'default'
+                              : 'secondary'
                     }
                 >
                     {state
                         ? deploymentLabels[state]
                         : server.consolidator.deployed
-                          ? "Desplegado y verificado"
-                          : "Sin desplegar"}
+                          ? 'Desplegado y verificado'
+                          : 'Sin desplegar'}
                 </Badge>
-                {state === "FAILED" && server.consolidator.deployment_error && (
+                {state === 'FAILED' && server.consolidator.deployment_error && (
                     <span className="text-muted-foreground text-xs">
                         {server.consolidator.deployment_error}
                     </span>
                 )}
             </div>
             <p className="text-muted-foreground text-xs">
-                El administrador del servidor crea el perfil con{" "}
+                El administrador del servidor crea el perfil con{' '}
                 <code>mwt-destination-profile</code> después del despliegue: el
                 dominio, el TLS y las claves del sitio quedan en el servidor.
             </p>
@@ -554,8 +554,8 @@ function DestinationRuntime({
             {server.destinations.length === 0 ? (
                 <p className="text-muted-foreground text-xs">
                     {server.destinations_detected_at
-                        ? "El servidor no tiene perfiles de destino."
-                        : "Aún no se han detectado perfiles de destino."}
+                        ? 'El servidor no tiene perfiles de destino.'
+                        : 'Aún no se han detectado perfiles de destino.'}
                 </p>
             ) : (
                 <ul className="grid gap-2">
@@ -571,17 +571,17 @@ function DestinationRuntime({
                                 <Badge
                                     variant={
                                         destination.ready
-                                            ? "default"
+                                            ? 'default'
                                             : destination.checked_at
-                                              ? "destructive"
-                                              : "secondary"
+                                              ? 'destructive'
+                                              : 'secondary'
                                     }
                                 >
                                     {destination.ready
-                                        ? "Listo"
+                                        ? 'Listo'
                                         : destination.checked_at
-                                          ? "No listo"
-                                          : "Sin comprobar"}
+                                          ? 'No listo'
+                                          : 'Sin comprobar'}
                                 </Badge>
                                 {destination.public_url && (
                                     <span className="text-muted-foreground text-xs">
@@ -616,7 +616,7 @@ function DestinationRuntime({
                             )}
                             {destination.check_error && (
                                 <p className="text-xs text-red-600">
-                                    Error de la comprobación:{" "}
+                                    Error de la comprobación:{' '}
                                     {destination.check_error}
                                 </p>
                             )}
@@ -658,8 +658,8 @@ function DestinationRuntime({
                                         label="Moodle destino"
                                         value={
                                             destination.target_running
-                                                ? "en ejecución"
-                                                : "detenido"
+                                                ? 'en ejecución'
+                                                : 'detenido'
                                         }
                                     />
                                 </dl>
@@ -679,7 +679,7 @@ function Field({
     error,
     disabled,
     onChange,
-    type = "text",
+    type = 'text',
     placeholder,
 }: {
     id: string;
@@ -710,22 +710,22 @@ function Field({
 function Evidence({
     evidence,
 }: {
-    evidence: NonNullable<RemoteServer["evidence"]>;
+    evidence: NonNullable<RemoteServer['evidence']>;
 }) {
     const probe = evidence.probe;
     const gib = (value: string | number | null | undefined) =>
-        typeof value === "number"
+        typeof value === 'number'
             ? `${(value / 1073741824).toFixed(1)} GiB`
-            : "—";
+            : '—';
 
     return (
         <div className="space-y-2">
             <p className="text-muted-foreground text-xs">
-                Última prueba{" "}
+                Última prueba{' '}
                 {evidence.checked_at
                     ? new Date(evidence.checked_at).toLocaleString()
-                    : "—"}{" "}
-                · agente {evidence.agent_version ?? "—"}
+                    : '—'}{' '}
+                · agente {evidence.agent_version ?? '—'}
             </p>
             <ul className="grid gap-2">
                 {evidence.checks.map((check) => (
@@ -762,16 +762,16 @@ function Fact({
     return (
         <div className="flex gap-1">
             <dt>{label}:</dt>
-            <dd className="text-foreground">{value ?? "—"}</dd>
+            <dd className="text-foreground">{value ?? '—'}</dd>
         </div>
     );
 }
 
 function CheckIcon({ result }: { result: CheckResult }) {
     const Icon =
-        result === "SUCCESS"
+        result === 'SUCCESS'
             ? CheckCircle2
-            : result === "WARNING"
+            : result === 'WARNING'
               ? TriangleAlert
               : AlertCircle;
 
@@ -779,10 +779,10 @@ function CheckIcon({ result }: { result: CheckResult }) {
         <Icon
             aria-label={result}
             className={cn(
-                "mt-0.5 size-4 shrink-0",
-                result === "SUCCESS" && "text-emerald-600",
-                result === "WARNING" && "text-amber-600",
-                result === "ERROR" && "text-red-600",
+                'mt-0.5 size-4 shrink-0',
+                result === 'SUCCESS' && 'text-emerald-600',
+                result === 'WARNING' && 'text-amber-600',
+                result === 'ERROR' && 'text-red-600',
             )}
         />
     );
@@ -791,7 +791,7 @@ function CheckIcon({ result }: { result: CheckResult }) {
 function Operations({
     operations,
 }: {
-    operations: RemoteServer["operations"];
+    operations: RemoteServer['operations'];
 }) {
     return (
         <div className="space-y-2">
@@ -810,9 +810,9 @@ function Operations({
                         </Badge>
                         <Badge
                             variant={
-                                operation.functional_state === "FAILED"
-                                    ? "destructive"
-                                    : "secondary"
+                                operation.functional_state === 'FAILED'
+                                    ? 'destructive'
+                                    : 'secondary'
                             }
                         >
                             {operation.functional_state}
@@ -824,7 +824,7 @@ function Operations({
                         )}
                         {operation.collector && (
                             <span className="text-muted-foreground text-xs">
-                                {operation.collector.stage ?? "sin etapa"}
+                                {operation.collector.stage ?? 'sin etapa'}
                                 {operation.collector.total_courses !== null &&
                                     ` · ${operation.collector.completed_courses ?? 0}/${operation.collector.total_courses} cursos`}
                                 {operation.collector.percent !== null &&
@@ -841,7 +841,7 @@ function Operations({
                         )}
                         {operation.last_observed_at && (
                             <span className="text-muted-foreground ml-auto text-xs">
-                                Observada{" "}
+                                Observada{' '}
                                 {new Date(
                                     operation.last_observed_at,
                                 ).toLocaleString()}
