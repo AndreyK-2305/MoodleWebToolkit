@@ -154,7 +154,7 @@ class RemoteConsolidationWorkflow
             $operation = $this->operations->reconcile($operation);
         }
         // The assistant's own documents are read while it runs and once more after it ends.
-        if ($operation->process_id !== null && ! isset($operation->evidence['consolidator']['final'])) {
+        if ($operation->process_id !== null && ($operation->evidence['consolidator']['final'] ?? false) !== true) {
             $this->observeReport($operation);
         }
         $this->advanceExecution($execution);
