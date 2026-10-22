@@ -7,9 +7,12 @@ use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
 use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemoteConsolidationPreparation;
+use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RemotePackageObjects;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Execution;
+use App\Models\Server;
 use App\Models\SourcePackage;
 use App\Models\User;
 use Carbon\CarbonInterface;
@@ -479,12 +482,16 @@ class GenerateFinalArtifacts
     private function isCollector(Execution $execution): bool
     {
         return $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY
-            || RemoteCollectionPreparation::selected($execution->toolBinding);
+            || RemoteCollectionPreparation::selected($execution->toolBinding)
+            || RemoteConsolidationPreparation::selected($execution->toolBinding);
     }
 
     /** @return array<string, mixed> */
     private function collectorReport(Execution $execution): array
     {
+        if (RemoteConsolidationPreparation::selected($execution->toolBinding)) {
+            return $this->consolidationReport($execution);
+        }
         $remote = RemoteCollectionPreparation::selected($execution->toolBinding);
         $packages = SourcePackage::query()->with('artifact')->where('producer_execution_id', $execution->id)->orderBy('id')->get();
         $describe = fn (SourcePackage $package): array => ['uuid' => $package->uuid, 'name' => $package->name, 'producer_version' => $package->producer_tool_version,
@@ -506,6 +513,36 @@ class GenerateFinalArtifacts
                 'storage' => $package->artifact === null ? null : ['provider' => 's3', ...app(RemotePackageObjects::class)->location($package->artifact),
                     'retention' => 'ADMINISTRATOR', 'note' => 'El paquete queda publicado en este bucket a disposición del administrador; la plataforma no lo borra ni lo expira.']],
             )->values()->all(),
+            'source_fingerprint' => $execution->review_fingerprint];
+    }
+
+    /**
+     * The closing record of a remote consolidation: the destination, the packages consolidated,
+     * the Consolidator's own closure and site package, and every intervention with its decision.
+     * The site package stays on the destination; nothing of its content leaves it here.
+     *
+     * @return array<string, mixed>
+     */
+    private function consolidationReport(Execution $execution): array
+    {
+        $settings = $execution->toolBinding->configuration_snapshot ?? [];
+        $runs = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)->orderBy('id')->get();
+        $report = is_array($runs->last()?->evidence['consolidator'] ?? null) ? $runs->last()->evidence['consolidator'] : [];
+        $server = is_string($settings['server_uuid'] ?? null)
+            ? Server::query()->where('project_id', $execution->project_id)->where('uuid', $settings['server_uuid'])->first() : null;
+
+        return ['mode' => 'REMOTE_CONSOLIDATION', 'adapter' => RemoteConsolidationPreparation::ADAPTER_KEY,
+            'destination' => ['server' => $server?->name, 'server_uuid' => $settings['server_uuid'] ?? null,
+                'profile' => $settings['destination_profile'] ?? null, 'workers' => $settings['workers'] ?? null],
+            'source_packages' => is_array($settings['source_packages'] ?? null) ? $settings['source_packages'] : [],
+            'runs' => $runs->count(),
+            'closure' => $report['closure'] ?? null,
+            'site_package' => ['sha256' => $report['site_package']['package_sha256'] ?? null, 'location' => 'DESTINATION',
+                'note' => 'La copia integral sellada queda en exports/phase8 del destino; su respaldo es una operación aparte.'],
+            'interventions' => $execution->conflicts()->with('resolver:id,name')->orderBy('id')->get()
+                ->map(fn ($conflict): array => ['key' => $conflict->key, 'type' => $conflict->type, 'stage' => $conflict->details['stage'] ?? null,
+                    'status' => $conflict->status->value, 'decision' => $conflict->resolution['decision'] ?? null,
+                    'resolved_by' => $conflict->resolver?->name, 'resolved_at' => $conflict->resolved_at?->toIso8601String()])->values()->all(),
             'source_fingerprint' => $execution->review_fingerprint];
     }
 

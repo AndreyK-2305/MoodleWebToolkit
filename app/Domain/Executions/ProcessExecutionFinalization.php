@@ -10,6 +10,8 @@ use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Collector\CollectorWorkflow;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectionWorkflow;
+use App\Domain\Remote\RemoteConsolidationPreparation;
+use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -81,7 +83,7 @@ class ProcessExecutionFinalization
                 ]);
             }
 
-            $this->assertStillFinalizable($command->payload ?? [], $execution, $commandId);
+            $this->assertStillFinalizable($command->payload ?? [], $execution, $commandId, in_array($state->stage, ['PREPARE', 'FINAL_SUMMARY'], true));
             $state->lease_owner = $owner;
             $state->lease_expires_at = $command->lease_expires_at;
             $state->save();
@@ -392,9 +394,11 @@ class ProcessExecutionFinalization
         $execution = $command->execution;
         $artifacts = $state->artifacts;
         $remote = RemoteCollectionPreparation::selected($execution->toolBinding);
-        $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY || $remote;
-        // The laboratory captures six artifacts of its own run; a remote collection holds one S3 reference per source.
-        $expectedExisting = $remote ? SourcePackage::query()->where('producer_execution_id', $execution->id)->count() : ($real ? 6 : 0);
+        $consolidation = RemoteConsolidationPreparation::selected($execution->toolBinding);
+        $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY || $remote || $consolidation;
+        // The laboratory captures six artifacts of its own run; a remote collection holds one S3 reference per source;
+        // a remote consolidation leaves its outputs on the destination and holds none here.
+        $expectedExisting = $remote ? SourcePackage::query()->where('producer_execution_id', $execution->id)->count() : ($consolidation ? 0 : ($real ? 6 : 0));
         $existingCount = $execution->artifacts()->count();
 
         if (count($artifacts) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
@@ -438,7 +442,8 @@ class ProcessExecutionFinalization
             'proposal_version' => $execution->proposal_version,
             'fingerprint' => $execution->review_fingerprint,
             'artifact_count' => $existingCount + count(GenerateFinalArtifacts::REQUIRED_TYPES),
-            'adapter' => $remote ? RemoteCollectionPreparation::ADAPTER_KEY : ($real ? CollectorExecutionPreparation::ADAPTER_KEY : 'fake'),
+            'adapter' => $remote ? RemoteCollectionPreparation::ADAPTER_KEY : ($consolidation ? RemoteConsolidationPreparation::ADAPTER_KEY
+                : ($real ? CollectorExecutionPreparation::ADAPTER_KEY : 'fake')),
             'finalization_started_at' => $state->finalization_started_at?->toIso8601String(),
             'completed_at' => $completionAt->toIso8601String(),
         ];
@@ -498,13 +503,17 @@ class ProcessExecutionFinalization
     }
 
     /** @param array<string, mixed> $payload */
-    private function assertStillFinalizable(array $payload, Execution $execution, int $commandId): void
+    private function assertStillFinalizable(array $payload, Execution $execution, int $commandId, bool $boundary = true): void
     {
         if ($execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY) {
             app(CollectorWorkflow::class)->assertFinalizable($execution);
         }
         if (RemoteCollectionPreparation::selected($execution->toolBinding)) {
             app(RemoteCollectionWorkflow::class)->assertFinalizable($execution);
+        }
+        if (RemoteConsolidationPreparation::selected($execution->toolBinding)) {
+            // The destination is read live when finalization starts and right before it closes.
+            app(RemoteConsolidationWorkflow::class)->assertFinalizable($execution, live: $boundary);
         }
         if ($execution->review_fingerprint === null
             || $execution->validated_fingerprint === null
