@@ -6,7 +6,11 @@ use App\Domain\Collector\RetryCollectorExecution;
 use App\Domain\Executions\RequestExecutionCancellation;
 use App\Domain\Executions\ResolveExecutionConflict;
 use App\Domain\Executions\ResumeProjectExecution;
+use App\Domain\Remote\RemoteConsolidationBackup;
+use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Exceptions\ExecutionDispatchFailed;
+use App\Exceptions\RemoteAgentUnavailable;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\Checkpoint;
 use App\Models\Conflict;
 use App\Models\Execution;
@@ -14,6 +18,7 @@ use App\Models\Project;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 
@@ -32,6 +37,22 @@ class ExecutionActionController extends Controller
 
         return $this->response($request, $project, $result->execution, $result->created,
             $result->created ? 'Nueva exportación desde cero; la evidencia del intento anterior se conserva.' : 'El nuevo intento ya estaba registrado.', 201);
+    }
+
+    /** Back up the consolidation's sealed site package to S3 while it is in review. */
+    public function backupConsolidation(Request $request, Project $project, Execution $execution, RemoteConsolidationBackup $backups): RedirectResponse
+    {
+        $this->ensureBelongsToProject($project, $execution);
+        abort_unless(RemoteConsolidationPreparation::selected($execution->toolBinding), 404);
+        Gate::authorize('control', $execution);
+        try {
+            $backups->start($execution, $request->user());
+            Inertia::flash('toast', ['type' => 'success', 'message' => 'Respaldo de la copia integral iniciado en el destino.']);
+        } catch (ToolOperationBlocked|RemoteAgentUnavailable $exception) {
+            Inertia::flash('toast', ['type' => 'error', 'message' => $exception->getMessage()]);
+        }
+
+        return to_route('projects.executions.show', [$project->uuid, $execution->uuid]);
     }
 
     public function cancel(

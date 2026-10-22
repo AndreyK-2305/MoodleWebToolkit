@@ -5,9 +5,12 @@ namespace Tests\Feature\Remote;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Remote\CheckRemoteDestination;
 use App\Domain\Remote\RemoteAgent;
+use App\Domain\Remote\RemoteConsolidationBackup;
 use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Domain\Remote\RemoteConsolidationWorkflow;
+use App\Domain\Remote\RemotePackageObjects;
 use App\Domain\Remote\RemoteServerConnections;
+use App\Domain\Remote\S3ClientFactory;
 use App\Enums\ConnectionStatus;
 use App\Enums\ConnectionType;
 use App\Enums\ExecutionStatus;
@@ -52,6 +55,9 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
     private array $packages = [];
 
     private int $attempts = 0;
+
+    /** @var list<string> */
+    private array $verifiedObjects = [];
 
     protected function setUp(): void
     {
@@ -223,6 +229,68 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame(0, $this->transport->pending(), 'El destino se lee en vivo solo al iniciar y al cerrar la finalización.');
     }
 
+    public function test_the_site_package_is_backed_up_in_review_verified_and_closed_with_the_execution(): void
+    {
+        $this->fakeS3Verification();
+        $execution = $this->reviewedConsolidation();
+        $this->queueLaunch(RemoteConsolidationBackup::COMMAND);
+        $this->post(route('projects.executions.consolidation.backup', [$this->project, $execution]))->assertRedirect();
+        $upload = $execution->remoteOperations()->where('command_key', RemoteConsolidationBackup::COMMAND)->sole();
+        $this->assertSame([str_repeat('e', 64), $execution->uuid], [$upload->evidence['parameters']['sha'], $upload->evidence['parameters']['execution']]);
+        $this->getJson(route('projects.executions.events', [$this->project, $execution]))->assertOk()
+            ->assertJsonPath('execution.consolidation.backup.state', 'RUNNING')->assertJsonPath('execution.consolidation.can_backup', false);
+        // Confirming waits for the backup to end.
+        $this->post(route('projects.executions.finalize', [$this->project, $execution]), [], ['Idempotency-Key' => 'finalize-during-backup']);
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+
+        $key = 'mwt/'.$this->project->uuid.'/consolidated/'.$execution->uuid.'/'.str_repeat('e', 64).'.zip';
+        $this->queueStatus(alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T14:00:00Z'],
+            command: RemoteConsolidationBackup::COMMAND);
+        $this->transport->ok('site-upload-report', ['operation_uuid' => $upload->operation_uuid, 'result_base64' => base64_encode((string) json_encode(
+            ['bucket' => 'kevin-moodle-backups-2026', 'region' => 'us-east-2', 'key' => $key, 'sha256' => str_repeat('e', 64), 'size' => 900_000_000]))]);
+        $this->transport->ok('copias-release', ['destination' => 'campus', 'released' => 2, 'freed_bytes' => 8192]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($upload->id));
+
+        $backup = $execution->artifacts()->where('category', 'FULL_BACKUP')->sole();
+        $this->assertSame(['REFERENCE', 's3', 'kevin-moodle-backups-2026/'.$key, str_repeat('e', 64)], [$backup->storage_mode, $backup->disk, $backup->path, $backup->sha256]);
+        $this->assertSame(['kevin-moodle-backups-2026/'.$key], $this->verifiedObjects);
+        $this->getJson(route('projects.executions.events', [$this->project, $execution]))->assertOk()
+            ->assertJsonPath('execution.consolidation.backup.state', 'SUCCEEDED')->assertJsonPath('execution.consolidation.backup.released', 2)
+            ->assertJsonPath('execution.consolidation.can_backup', false);
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+
+        $this->queueLiveReports(str_repeat('e', 64));
+        $this->post(route('projects.executions.finalize', [$this->project, $execution]), [], ['Idempotency-Key' => 'finalize-with-backup'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertSame(ExecutionStatus::COMPLETED, $execution->fresh()->status);
+        $this->assertSame(5, $execution->artifacts()->count(), 'La referencia S3 del respaldo y los cuatro informes de cierre.');
+        $json = $execution->artifacts()->where('type', 'JSON_REPORT')->sole();
+        $report = json_decode((string) Storage::disk($json->disk)->get($json->path), true);
+        $this->assertSame([$key, 'ADMINISTRATOR'], [$report['site_package']['backup']['key'], $report['site_package']['backup']['retention']]);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_a_failed_backup_can_be_taken_again(): void
+    {
+        $this->fakeS3Verification();
+        $execution = $this->reviewedConsolidation();
+        $this->queueLaunch(RemoteConsolidationBackup::COMMAND);
+        $this->post(route('projects.executions.consolidation.backup', [$this->project, $execution]))->assertRedirect();
+        $upload = $execution->remoteOperations()->where('command_key', RemoteConsolidationBackup::COMMAND)->sole();
+        $this->queueStatus(alive: false, exit: ['exit_code' => 74, 'cancel_requested' => false, 'finished_at' => '2026-10-21T14:00:00Z'],
+            command: RemoteConsolidationBackup::COMMAND);
+        dispatch_sync(new ReconcileRemoteAgentOperation($upload->id));
+
+        $this->assertSame(0, $execution->artifacts()->count());
+        $this->getJson(route('projects.executions.events', [$this->project, $execution]))->assertOk()
+            ->assertJsonPath('execution.consolidation.backup.state', 'FAILED')->assertJsonPath('execution.consolidation.can_backup', true);
+        $this->queueLaunch(RemoteConsolidationBackup::COMMAND);
+        $this->post(route('projects.executions.consolidation.backup', [$this->project, $execution]))->assertRedirect();
+        $this->assertSame('consolidator-site-upload-2', $execution->remoteOperations()->where('command_key', RemoteConsolidationBackup::COMMAND)
+            ->orderByDesc('id')->first()->idempotency_key);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
     public function test_a_destination_that_changed_after_review_is_never_confirmed(): void
     {
         $execution = $this->reviewedConsolidation();
@@ -317,6 +385,28 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame('PLUGIN_INTERVENTION', $open->type);
         $this->assertStringContainsString('código 61', (string) $open->details['message']);
         $this->assertSame(0, $this->transport->pending());
+    }
+
+    /** The platform's own S3 check of a backup, recorded instead of calling AWS. */
+    private function fakeS3Verification(): void
+    {
+        config(['toolkit.remote.package_bucket' => 'kevin-moodle-backups-2026', 'toolkit.remote.package_region' => 'us-east-2']);
+        $verified = &$this->verifiedObjects;
+        $this->app->instance(RemotePackageObjects::class, new class(app(S3ClientFactory::class), $verified) extends RemotePackageObjects
+        {
+            /** @param list<string> $verified */
+            public function __construct(S3ClientFactory $clients, private array &$verified)
+            {
+                parent::__construct($clients);
+            }
+
+            public function verifyPackage(string $region, string $bucket, string $key, string $sha256, int $size): array
+            {
+                $this->verified[] = $bucket.'/'.$key;
+
+                return ['size' => $size, 'checksum_verification' => 'S3_COMPOSITE_SHA256'];
+            }
+        });
     }
 
     /** A consolidation the assistant closed in a single run, now in REVIEW. */

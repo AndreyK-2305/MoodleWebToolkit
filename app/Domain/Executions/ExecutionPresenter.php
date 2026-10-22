@@ -8,6 +8,7 @@ use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Remote\RemoteCollectionConfiguration;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteConsolidationBackup;
 use App\Domain\Remote\RemoteConsolidationInterventions;
 use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Domain\Remote\RemoteConsolidationWorkflow;
@@ -134,6 +135,9 @@ class ExecutionPresenter
             'site_package_sha256' => $report['site_package']['package_sha256'] ?? null,
             'write_locked' => ($report['write_locked'] ?? false) === true,
             'observed_at' => $report['observed_at'] ?? null,
+            'backup' => app(RemoteConsolidationBackup::class)->state($execution),
+            'can_backup' => $execution->status->value === 'REVIEW' && is_string($report['site_package']['package_sha256'] ?? null)
+                && ! in_array(app(RemoteConsolidationBackup::class)->state($execution)['state'], ['RUNNING', 'SUCCEEDED'], true),
         ];
     }
 

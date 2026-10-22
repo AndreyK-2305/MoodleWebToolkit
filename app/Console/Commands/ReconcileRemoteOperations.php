@@ -7,6 +7,7 @@ use App\Domain\Executions\RemoteOperationCoordinator;
 use App\Domain\Remote\RemoteAgentOperations;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteConsolidationBackup;
 use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RemoteSourceCleanup;
@@ -53,6 +54,13 @@ class ReconcileRemoteOperations extends Command
                         ->whereRaw("coalesce((evidence->'consolidator'->>'final')::boolean, false) = false")
                         ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['RUNNING', 'CANCELLING'])
                             ->whereHas('toolBinding', fn ($binding) => $binding->where('adapter_key', RemoteConsolidationPreparation::ADAPTER_KEY)))
+                        ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
+                })->orWhere(function ($backup): void {
+                    // A finished backup upload is verified and registered while the Execution is in REVIEW.
+                    $backup->where('provider_key', RemoteAgentOperations::PROVIDER)->where('communication_state', 'TERMINATED')
+                        ->where('command_key', RemoteConsolidationBackup::COMMAND)->where('manual_intervention_required', false)
+                        ->whereNull('evidence->backup')
+                        ->whereHas('execution', fn ($execution) => $execution->where('status', 'REVIEW'))
                         ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
                 })->orWhere(function ($cleanup): void {
                     // After REVIEW or closing, the source disk is freed; the service applies the backoff.

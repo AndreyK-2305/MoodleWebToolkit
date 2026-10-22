@@ -40,7 +40,7 @@ class RemoteConsolidationWorkflow
 
     public const APPROVE_COMMAND = 'consolidator.plugins-approve';
 
-    public const COMMANDS = [self::COMMAND, self::APPROVE_COMMAND];
+    public const COMMANDS = [self::COMMAND, self::APPROVE_COMMAND, RemoteConsolidationBackup::COMMAND];
 
     /** The assistant's exit code when it waits for the administrator. */
     public const EXIT_WAITING = 22;
@@ -149,6 +149,10 @@ class RemoteConsolidationWorkflow
             || ($report['state']['stage'] ?? null) !== 'completed' || ($report['state']['status'] ?? null) !== 'completed') {
             throw new ToolOperationBlocked('La confirmación requiere que el Consolidador haya cerrado la consolidación.');
         }
+        if ($execution->remoteOperations()->where('command_key', RemoteConsolidationBackup::COMMAND)
+            ->where('communication_state', '!=', RemoteCommunicationState::TERMINATED->value)->exists()) {
+            throw new ToolOperationBlocked('Espere a que termine el respaldo de la copia integral antes de confirmar.');
+        }
         $site = $report['site_package']['package_sha256'] ?? null;
         if (! is_string($execution->review_fingerprint) || ! hash_equals($this->fingerprint($execution, $settings, $site), $execution->review_fingerprint)) {
             throw new ToolOperationBlocked('Lo revisado cambió después de la revisión.');
@@ -194,6 +198,12 @@ class RemoteConsolidationWorkflow
         $execution = $operation->execution;
         if (! RemoteConsolidationPreparation::selected($execution->toolBinding) || ! in_array($operation->command_key, self::COMMANDS, true)) {
             throw new ToolOperationBlocked('La operación no pertenece a una consolidación remota.');
+        }
+        // The backup of the site package runs during REVIEW and never moves the Execution itself.
+        if ($operation->command_key === RemoteConsolidationBackup::COMMAND) {
+            app(RemoteConsolidationBackup::class)->observe($operation);
+
+            return;
         }
         if ($operation->communication_state !== RemoteCommunicationState::TERMINATED) {
             $operation = $this->operations->reconcile($operation);

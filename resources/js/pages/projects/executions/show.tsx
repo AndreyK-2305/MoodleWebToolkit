@@ -91,6 +91,15 @@ type ConsolidationData = {
     site_package_sha256: string | null;
     write_locked: boolean;
     observed_at: string | null;
+    backup: {
+        state: string | null;
+        sha256: string | null;
+        size: number | null;
+        location: { region: string; bucket: string; key: string } | null;
+        released: number | null;
+        freed_bytes: number | null;
+    };
+    can_backup: boolean;
 };
 
 type ExecutionData = {
@@ -657,8 +666,11 @@ function ExecutionTracker({
 
                 {execution.consolidation && (
                     <ConsolidationStatus
+                        projectUuid={project.uuid}
+                        executionUuid={execution.uuid}
                         consolidation={execution.consolidation}
                         status={execution.status}
+                        canControl={canControl && !updatesPaused}
                     />
                 )}
                 {execution.collector && (
@@ -1567,12 +1579,19 @@ const consolidationStages: Record<string, string> = {
 
 /** The Consolidator's own state on the destination, as its last report left it. */
 function ConsolidationStatus({
+    projectUuid,
+    executionUuid,
     consolidation,
     status,
+    canControl,
 }: {
+    projectUuid: string;
+    executionUuid: string;
     consolidation: ConsolidationData;
     status: string;
+    canControl: boolean;
 }) {
+    const backupForm = useForm({});
     const workers = consolidation.workers_status;
     const closure = consolidation.closure;
 
@@ -1656,6 +1675,72 @@ function ConsolidationStatus({
                         Copia integral SHA-256:{' '}
                         {consolidation.site_package_sha256}
                     </p>
+                )}
+                {(consolidation.can_backup || consolidation.backup.state) && (
+                    <div className="space-y-2 rounded-md border p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium">
+                                Respaldo de la copia integral
+                            </span>
+                            <Badge
+                                variant={
+                                    consolidation.backup.state === 'SUCCEEDED'
+                                        ? 'default'
+                                        : consolidation.backup.state ===
+                                            'FAILED'
+                                          ? 'destructive'
+                                          : 'secondary'
+                                }
+                            >
+                                {consolidation.backup.state === 'SUCCEEDED'
+                                    ? 'Respaldada y verificada'
+                                    : consolidation.backup.state === 'RUNNING'
+                                      ? 'Subiendo desde el destino'
+                                      : consolidation.backup.state === 'FAILED'
+                                        ? 'Fallida'
+                                        : 'Sin respaldo'}
+                            </Badge>
+                            {canControl && consolidation.can_backup && (
+                                <Button
+                                    size="sm"
+                                    className="ml-auto"
+                                    disabled={backupForm.processing}
+                                    onClick={() =>
+                                        backupForm.post(
+                                            `/projects/${projectUuid}/executions/${executionUuid}/consolidation/backup`,
+                                            { preserveScroll: true },
+                                        )
+                                    }
+                                >
+                                    Respaldar en S3
+                                </Button>
+                            )}
+                        </div>
+                        {consolidation.backup.location && (
+                            <p className="font-mono text-xs break-all">
+                                s3://{consolidation.backup.location.bucket}/
+                                {consolidation.backup.location.key}
+                            </p>
+                        )}
+                        {consolidation.backup.released !== null && (
+                            <p className="text-muted-foreground text-xs">
+                                Paquetes de origen liberados en el destino:{' '}
+                                {consolidation.backup.released} (
+                                {(
+                                    (consolidation.backup.freed_bytes ?? 0) /
+                                    1048576
+                                ).toFixed(1)}{' '}
+                                MiB). La copia integral se conserva en el
+                                destino para su publicación.
+                            </p>
+                        )}
+                        {consolidation.can_backup && (
+                            <p className="text-muted-foreground text-xs">
+                                Tómelo antes de finalizar: después del cierre el
+                                proyecto queda en sólo lectura.
+                            </p>
+                        )}
+                    </div>
                 )}
                 <div>
                     <p className="font-medium">Paquetes</p>

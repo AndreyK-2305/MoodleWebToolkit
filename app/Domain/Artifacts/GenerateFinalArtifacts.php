@@ -7,6 +7,7 @@ use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\DTOs\StoredArtifact;
 use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Remote\RemoteCollectionPreparation;
+use App\Domain\Remote\RemoteConsolidationBackup;
 use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RemotePackageObjects;
@@ -538,7 +539,10 @@ class GenerateFinalArtifacts
             'runs' => $runs->count(),
             'closure' => $report['closure'] ?? null,
             'site_package' => ['sha256' => $report['site_package']['package_sha256'] ?? null, 'location' => 'DESTINATION',
-                'note' => 'La copia integral sellada queda en exports/phase8 del destino; su respaldo es una operación aparte.'],
+                'note' => 'La copia integral sellada queda en exports/phase8 del destino para su publicación.',
+                'backup' => ($backup = app(RemoteConsolidationBackup::class)->artifact($execution)) === null ? null
+                    : ['provider' => 's3', ...app(RemotePackageObjects::class)->location($backup), 'sha256' => $backup->sha256, 'size' => $backup->size,
+                        'retention' => 'ADMINISTRATOR', 'note' => 'El respaldo queda en este bucket a disposición del administrador; la plataforma no lo borra ni lo expira.']],
             'interventions' => $execution->conflicts()->with('resolver:id,name')->orderBy('id')->get()
                 ->map(fn ($conflict): array => ['key' => $conflict->key, 'type' => $conflict->type, 'stage' => $conflict->details['stage'] ?? null,
                     'status' => $conflict->status->value, 'decision' => $conflict->resolution['decision'] ?? null,

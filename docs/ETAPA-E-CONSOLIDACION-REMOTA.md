@@ -296,3 +296,28 @@ Lo que cambia en E6a:
     - cada intervención, con su decisión, quién decidió y cuándo.
 
     La copia integral no sale del destino en este corte.
+
+## E6b: respaldo de la copia integral y limpieza del destino
+
+Una Ejecución `COMPLETED` deja el proyecto en solo lectura: los triggers rechazan nuevos
+artefactos, operaciones o cambios en sus servidores. Por eso el respaldo se toma **en
+`REVIEW`, antes de finalizar**, y «Finalizar» espera a que termine.
+
+- **Operación del agente.** `consolidator.site-upload` exige que el ZIP de
+  `exports/phase8/paquete-sitio-consolidado.zip` tenga el SHA-256 revisado y que
+  `site_package_summary.json` declare ese mismo hash. Lo sube con el rol de la instancia a
+  `mwt/<proyecto>/consolidated/<ejecución>/<sha>.zip`, cifrado en reposo y con el SHA-256 como
+  metadato y como checksum de S3.
+- **Registro.** La plataforma lee `site-upload-report`, verifica el objeto con su propia
+  identidad (`RemotePackageObjects::verifyPackage`) y lo registra como artefacto
+  `FULL_BACKUP`, de referencia S3 y con retención a cargo del administrador. Si la
+  verificación todavía no es posible, reintenta con backoff y, tras varios intentos, lo marca
+  para revisión.
+- **Limpieza.** Con el respaldo verificado, `copias-release` libera los ZIP de origen de
+  `copias/`, que ya están en S3. Solo lo hace si el Consolidador ya escribió en el destino. La
+  copia integral se conserva en el destino porque la publicación la necesita.
+- **Cierre.** Finalizar incluye la referencia del respaldo (cinco artefactos en lugar de
+  cuatro). El informe JSON registra su ubicación y su retención. La descarga sigue la regla de
+  las referencias S3: un enlace firmado de corta duración, solo para administradores.
+- **Fallo.** Un respaldo fallido no cambia la Ejecución y puede tomarse de nuevo.
+- **Agente 1.10.0.**

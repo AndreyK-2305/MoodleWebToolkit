@@ -34,6 +34,14 @@ class RemoteCommandRegistry
             'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
             'distribution' => '/^[0-9a-f]{64}$/D',
         ], 'cancellable' => false],
+        'consolidator.site-upload' => ['parameters' => [
+            'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
+            'project' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
+            'execution' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
+            'sha' => '/^[0-9a-f]{64}$/D',
+            'bucket' => '/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/D',
+            'region' => '/^[a-z]{2}(-gov)?-[a-z]+-[1-9]$/D',
+        ], 'cancellable' => true],
         'package.fetch' => ['parameters' => [
             'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
             'project' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D',
