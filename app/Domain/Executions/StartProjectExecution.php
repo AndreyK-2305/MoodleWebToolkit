@@ -10,6 +10,9 @@ use App\Domain\Projects\ProjectExecutionManager;
 use App\Domain\Remote\RemoteCollectionConfiguration;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorAdapter;
+use App\Domain\Remote\RemoteConsolidationConfiguration;
+use App\Domain\Remote\RemoteConsolidationPreparation;
+use App\Domain\Remote\RemoteConsolidatorAdapter;
 use App\Domain\Tools\CollectorAdapter;
 use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Enums\ExecutionCommandType;
@@ -99,9 +102,11 @@ class StartProjectExecution
                 throw new ToolOperationBlocked('La integración HTTP de COLLECT LAB todavía no está habilitada.');
             }
             $remote = app(RemoteCollectionConfiguration::class)->selected($lockedProject->configuration);
+            $consolidation = app(RemoteConsolidationConfiguration::class)->selected($lockedProject->configuration);
             $adapter = match (true) {
                 $real => app(CollectorAdapter::class),
                 $remote => app(RemoteCollectorAdapter::class),
+                $consolidation => app(RemoteConsolidatorAdapter::class),
                 default => $this->adapter,
             };
             $execution = $this->executionManager->queue($lockedProject, $actor);
@@ -109,6 +114,8 @@ class StartProjectExecution
                 app(CollectorExecutionPreparation::class)->prepare($execution, $lockedProject->configuration, $actor);
             } elseif ($remote) {
                 app(RemoteCollectionPreparation::class)->prepare($execution, $lockedProject->configuration, $actor);
+            } elseif ($consolidation) {
+                app(RemoteConsolidationPreparation::class)->prepare($execution, $lockedProject->configuration, $actor);
             }
 
             foreach ($adapter->plan($lockedProject) as $definition) {

@@ -8,6 +8,8 @@ use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Remote\RemoteCollectionConfiguration;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteConsolidationPreparation;
+use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RemoteSourceCleanup;
 use App\Models\AcademicProposal;
 use App\Models\Artifact;
@@ -48,6 +50,7 @@ class ExecutionPresenter
                     // Monotonic launch evidence: CONNECTED only lasts while the process runs.
                     'started_at' => $operation->started_at?->toIso8601String(),
                     'manual_intervention_required' => $operation->manual_intervention_required]] : null),
+            'consolidation' => RemoteConsolidationPreparation::selected($execution->toolBinding) ? $this->remoteConsolidation($execution) : null,
             'status' => $execution->status->value,
             'progress' => $execution->progress,
             'started_at' => $execution->started_at?->toIso8601String(),
@@ -93,11 +96,51 @@ class ExecutionPresenter
         ];
     }
 
+    /**
+     * The destination, packages and the Consolidator's own state for the latest run; closed fields only.
+     *
+     * @return array<string, mixed>
+     */
+    private function remoteConsolidation(Execution $execution): array
+    {
+        $settings = $execution->toolBinding->configuration_snapshot ?? [];
+        $runs = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)->orderBy('id')->get();
+        $run = $runs->last();
+        $report = is_array($run?->evidence['consolidator'] ?? null) ? $run->evidence['consolidator'] : [];
+        $server = is_string($settings['server_uuid'] ?? null)
+            ? Server::query()->where('project_id', $execution->project_id)->where('uuid', $settings['server_uuid'])->first() : null;
+        $active = $runs->contains(fn ($operation): bool => $operation->communication_state->value !== 'TERMINATED');
+
+        return [
+            'mode' => 'REMOTE_CONSOLIDATION',
+            'server' => $server?->name,
+            'destination_profile' => $settings['destination_profile'] ?? null,
+            'workers' => $settings['workers'] ?? null,
+            'packages' => array_values(array_map(fn ($package): array => ['name' => $package['name'] ?? null, 'source_id' => $package['source_id'] ?? null,
+                'sha256' => $package['sha256'] ?? null], array_filter(is_array($settings['source_packages'] ?? null) ? $settings['source_packages'] : [], 'is_array'))),
+            'runs' => $runs->count(),
+            'operation' => $run === null ? null : ['uuid' => $run->operation_uuid, 'communication_state' => $run->communication_state->value,
+                'functional_state' => $run->functional_state->value, 'exit_code' => $run->exit_code,
+                'manual_intervention_required' => $run->manual_intervention_required],
+            'stage' => $report['state']['stage'] ?? null,
+            'stage_status' => $report['state']['status'] ?? null,
+            'message' => $report['message'] ?? null,
+            'review_paths' => $report['review_paths'] ?? [],
+            'workers_status' => $report['workers'] ?? null,
+            'closure' => $report['closure'] ?? null,
+            'site_package_sha256' => $report['site_package']['package_sha256'] ?? null,
+            'write_locked' => ($report['write_locked'] ?? false) === true,
+            'observed_at' => $report['observed_at'] ?? null,
+            'can_continue' => $execution->status->value === 'WAITING_USER_ACTION' && ! $active,
+        ];
+    }
+
     /** @return array<string, mixed> */
     public function review(Execution $execution): array
     {
         $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY
-            || RemoteCollectionPreparation::selected($execution->toolBinding);
+            || RemoteCollectionPreparation::selected($execution->toolBinding)
+            || RemoteConsolidationPreparation::selected($execution->toolBinding);
         $execution->loadMissing([
             'academicSnapshot', 'academicProposals.proposer', 'verifications.requester',
             'artifacts', 'finalizer', 'resumedFromExecution',

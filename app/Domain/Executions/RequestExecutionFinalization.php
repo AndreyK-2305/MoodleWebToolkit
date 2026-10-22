@@ -4,6 +4,7 @@ namespace App\Domain\Executions;
 
 use App\Domain\Executions\DTOs\StartExecutionResult;
 use App\Domain\Idempotency\IdempotencyRegistry;
+use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -34,6 +35,10 @@ class RequestExecutionFinalization
             $locked = Execution::query()->lockForUpdate()->findOrFail((int) $seed->getKey());
             $locked->setRelation('project', $project);
             $this->authorize($locked, $actor);
+            // The academic closing of a remote consolidation (REVIEW → COMPLETED) has its own contract, still pending.
+            if (RemoteConsolidationPreparation::selected($locked->toolBinding)) {
+                throw ValidationException::withMessages(['finalization' => 'El cierre de una consolidación remota todavía no está disponible en la plataforma.']);
+            }
             $payload = [
                 'operation' => 'FINALIZE',
                 'execution_uuid' => $locked->uuid,

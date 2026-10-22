@@ -5,6 +5,9 @@ namespace App\Domain\Tools;
 use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Collector\CollectorRuntimeConfiguration;
+use App\Domain\Remote\RemoteAgentOperations;
+use App\Domain\Remote\RemoteConsolidationConfiguration;
+use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Execution;
 use App\Models\ExecutionCapacityApproval;
@@ -134,7 +137,15 @@ class BindExecutionTool
             ksort($sourceHashes, SORT_NUMERIC);
 
             $runtimeConfiguration = null;
-            if ($lockedVersion->tool->key === 'moodle-consolidador' || $adapterKey === CollectorExecutionPreparation::ADAPTER_KEY) {
+            // A remote consolidation runs in the runtime its destination's administrator derived
+            // from the deployed tree; the binding pins that tree, the profile and the package hashes.
+            $remoteConsolidation = $adapterKey === RemoteConsolidationPreparation::ADAPTER_KEY;
+            if ($remoteConsolidation && ($lockedVersion->tool->key !== 'moodle-consolidador' || $workflowKey !== RemoteConsolidationConfiguration::WORKFLOW
+                || $providerKey !== RemoteAgentOperations::PROVIDER || $sourcePackageIds !== []
+                || ($safeConfiguration['mode'] ?? null) !== RemoteConsolidationConfiguration::MODE)) {
+                throw new ToolOperationBlocked('El binding de consolidación remota no coincide con su configuración.');
+            }
+            if (($lockedVersion->tool->key === 'moodle-consolidador' && ! $remoteConsolidation) || $adapterKey === CollectorExecutionPreparation::ADAPTER_KEY) {
                 $runtimeConfiguration = ExecutionRuntimeConfiguration::query()
                     ->where('execution_id', $locked->getKey())
                     ->where('tool_version_id', $lockedVersion->getKey())

@@ -57,7 +57,7 @@ class ToolCatalogSeeder extends Seeder
                 'config/plugin-compatibility-catalog.json',
                 'FILES.sha256',
             ],
-            'compatibility' => ['moodle.consolidation.v8' => [ToolCompatibilityStatus::BLOCKED, 'consolidador_800.enabled', 'Se habilitará después de integrar y validar el flujo en la Iteración 4.']],
+            'compatibility' => ['moodle.consolidation.v8' => [ToolCompatibilityStatus::LABORATORY, 'consolidador_800.enabled', 'Consolidación remota en laboratorio (Etapa E): el destino lo prepara su administrador.']],
             'capabilities' => [
                 ['themes.global_selection', 'SUPPORTED', 'DOC', 'README.md', 'Selecciona theme global explícitamente y conserva tema por curso cuando es transportable.'],
                 ['plugins.catalog_lock', 'SUPPORTED', 'DOC', 'README.md', 'Resuelve plugins desde catálogo, lock, staging y pins.'],

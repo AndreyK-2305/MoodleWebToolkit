@@ -6,6 +6,8 @@ use App\Domain\Collector\CollectorConfiguration;
 use App\Domain\Collector\CollectorPreflight;
 use App\Domain\Remote\RemoteCollectionConfiguration;
 use App\Domain\Remote\RemoteCollectionPreflight;
+use App\Domain\Remote\RemoteConsolidationConfiguration;
+use App\Domain\Remote\RemoteConsolidationPreflight;
 use App\Models\Project;
 use App\Models\ProjectConfiguration;
 
@@ -17,11 +19,16 @@ final class ProjectPreflight
         private readonly CollectorConfiguration $configurations,
         private readonly RemoteCollectionPreflight $remote,
         private readonly RemoteCollectionConfiguration $remoteConfigurations,
+        private readonly RemoteConsolidationPreflight $consolidation,
+        private readonly RemoteConsolidationConfiguration $consolidationConfigurations,
     ) {}
 
     /** @return list<array{id: string, description: string, result: string, detail: string}> */
     public function evaluate(Project $project, ProjectConfiguration $configuration): array
     {
+        if ($this->consolidationConfigurations->selected($configuration)) {
+            return $this->consolidation->evaluate($project, $configuration);
+        }
         if ($this->remoteConfigurations->selected($configuration)) {
             return $this->remote->evaluate($project, $configuration);
         }
@@ -31,6 +38,9 @@ final class ProjectPreflight
 
     public function fingerprint(Project $project, ProjectConfiguration $configuration): string
     {
+        if ($this->consolidationConfigurations->selected($configuration)) {
+            return $this->consolidation->fingerprint($project, $configuration);
+        }
         if ($this->remoteConfigurations->selected($configuration)) {
             return $this->remote->fingerprint($project, $configuration);
         }
@@ -41,6 +51,9 @@ final class ProjectPreflight
     /** @return list<string> */
     public function configurationErrors(Project $project, ProjectConfiguration $configuration): array
     {
+        if ($this->consolidationConfigurations->selected($configuration)) {
+            return $this->consolidation->configurationErrors($project, $configuration);
+        }
         if ($this->remoteConfigurations->selected($configuration)) {
             return $this->remote->configurationErrors($project, $configuration);
         }

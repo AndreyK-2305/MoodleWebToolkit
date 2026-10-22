@@ -14,6 +14,7 @@ use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\ProjectWizardController;
 use App\Http\Controllers\RemoteCollectionConfigurationController;
 use App\Http\Controllers\RemoteConnectionController;
+use App\Http\Controllers\RemoteConsolidationConfigurationController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -26,6 +27,7 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::get('projects/{project:uuid}', [ProjectController::class, 'show'])->name('projects.show');
     Route::put('projects/{project:uuid}/collector/configuration', CollectorConfigurationController::class)->middleware('action.confirmed')->name('projects.collector.configuration');
     Route::put('projects/{project:uuid}/collector/remote-configuration', RemoteCollectionConfigurationController::class)->middleware('action.confirmed')->name('projects.collector.remote-configuration');
+    Route::put('projects/{project:uuid}/consolidation/remote-configuration', RemoteConsolidationConfigurationController::class)->middleware('action.confirmed')->name('projects.consolidation.remote-configuration');
     Route::put('projects/{project:uuid}/servers/{server:uuid}/connection', [RemoteConnectionController::class, 'update'])->middleware('action.confirmed')->name('projects.servers.connection.update');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/connection/install-agent', [RemoteConnectionController::class, 'installAgent'])->middleware('action.confirmed')->name('projects.servers.connection.install-agent');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/connection/test', [RemoteConnectionController::class, 'test'])->middleware('action.confirmed')->name('projects.servers.connection.test');
@@ -45,6 +47,7 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::get('projects/{project:uuid}/executions/{execution:uuid}/events', [ExecutionEventController::class, 'index'])->name('projects.executions.events');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/cancel', [ExecutionActionController::class, 'cancel'])->middleware('action.confirmed')->name('projects.executions.cancel');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/resume', [ExecutionActionController::class, 'resume'])->middleware('action.confirmed')->name('projects.executions.resume');
+    Route::post('projects/{project:uuid}/executions/{execution:uuid}/consolidation/continue', [ExecutionActionController::class, 'continueConsolidation'])->middleware('action.confirmed')->name('projects.executions.consolidation.continue');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/fresh-export', [ExecutionActionController::class, 'freshExport'])->middleware('action.confirmed')->name('projects.executions.fresh-export');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/proposals', [AcademicProposalController::class, 'store'])->middleware('action.confirmed')->name('projects.executions.proposals.store');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/validate', [ExecutionReviewController::class, 'validateExecution'])->middleware('action.confirmed')->name('projects.executions.validate');

@@ -51,6 +51,49 @@ type Step = {
     finished_at: string | null;
 };
 
+type ConsolidationData = {
+    mode: 'REMOTE_CONSOLIDATION';
+    server: string | null;
+    destination_profile: string | null;
+    workers: string | null;
+    packages: {
+        name: string | null;
+        source_id: string | null;
+        sha256: string | null;
+    }[];
+    runs: number;
+    operation: {
+        uuid: string;
+        communication_state: string;
+        functional_state: string;
+        exit_code: number | null;
+        manual_intervention_required: boolean;
+    } | null;
+    stage: string | null;
+    stage_status: string | null;
+    message: string | null;
+    review_paths: string[];
+    workers_status: {
+        completed?: number;
+        total?: number;
+        failed?: number;
+        pending?: number;
+        workers_effective?: number;
+        percent?: number;
+    } | null;
+    closure: {
+        closure_status?: string;
+        courses_verified?: number;
+        total_courses_verified?: number;
+        failed_courses?: number;
+        sources?: number | null;
+    } | null;
+    site_package_sha256: string | null;
+    write_locked: boolean;
+    observed_at: string | null;
+    can_continue: boolean;
+};
+
 type ExecutionData = {
     uuid: string;
     attempt: number;
@@ -62,6 +105,7 @@ type ExecutionData = {
     steps: Step[];
     resumed_from_execution_uuid: string | null;
     retried_from_execution_uuid: string | null;
+    consolidation: ConsolidationData | null;
     collector: {
         mode: 'LABORATORY' | 'REMOTE';
         producer_version: string;
@@ -492,6 +536,9 @@ function ExecutionTracker({
                                     : 'LABORATORY · Recolector 7.4.2'}
                             </Badge>
                         )}
+                        {execution.consolidation && (
+                            <Badge>Servidor de destino · Consolidador V8</Badge>
+                        )}
                         <Badge variant={live ? 'default' : 'outline'}>
                             <Radio className="size-3" />
                             {live
@@ -526,14 +573,18 @@ function ExecutionTracker({
                     <Alert>
                         <FolderTree />
                         <AlertTitle>
-                            {execution.collector
-                                ? 'Paquete fuente auditado'
-                                : 'Revisión académica simulada'}
+                            {execution.consolidation
+                                ? 'Consolidación cerrada en el destino'
+                                : execution.collector
+                                  ? 'Paquete fuente auditado'
+                                  : 'Revisión académica simulada'}
                         </AlertTitle>
                         <AlertDescription>
-                            {execution.collector
-                                ? 'Revise el productor, los hashes y las salidas verificadas antes de finalizar.'
-                                : 'Revise la estructura, proponga únicamente cambios seguros y valide la versión exacta antes de cerrar.'}
+                            {execution.consolidation
+                                ? 'El Consolidador verificó y cerró la consolidación; revise su cierre y la copia integral antes de finalizar.'
+                                : execution.collector
+                                  ? 'Revise el productor, los hashes y las salidas verificadas antes de finalizar.'
+                                  : 'Revise la estructura, proponga únicamente cambios seguros y valide la versión exacta antes de cerrar.'}
                         </AlertDescription>
                     </Alert>
                 ) : null}
@@ -586,6 +637,12 @@ function ExecutionTracker({
                     />
                 )}
 
+                {execution.consolidation && (
+                    <ConsolidationStatus
+                        consolidation={execution.consolidation}
+                        status={execution.status}
+                    />
+                )}
                 {execution.collector && (
                     <CollectorReview
                         projectUuid={project.uuid}
@@ -594,6 +651,7 @@ function ExecutionTracker({
                     />
                 )}
                 {!execution.collector &&
+                    !execution.consolidation &&
                     (review.tree.length > 0 ||
                         execution.status === 'COMPLETED') && (
                         <ReviewWorkspace
@@ -1257,9 +1315,12 @@ function ExecutionActions({
         configuration_version: execution.collector?.configuration_version ?? 0,
         accept_laboratory: false,
     });
-    const currentResumePayload = execution.collector
-        ? null
-        : resumePayload(execution);
+    const currentResumePayload =
+        execution.collector || execution.consolidation
+            ? null
+            : resumePayload(execution);
+    const [continueOpen, setContinueOpen] = useState(false);
+    const continueForm = useForm({ confirm: false });
     const cancellable = [
         'QUEUED',
         'RUNNING',
@@ -1352,8 +1413,17 @@ function ExecutionActions({
                                 <RotateCcw /> Reanudar desde checkpoint
                             </Button>
                         )}
+                    {execution.consolidation?.can_continue && (
+                        <Button
+                            disabled={disabled || continueForm.processing}
+                            onClick={() => setContinueOpen(true)}
+                        >
+                            <RotateCcw /> Continuar consolidación
+                        </Button>
+                    )}
                     {execution.status === 'REVIEW' &&
                         !execution.collector &&
+                        !execution.consolidation &&
                         review.proposals.length > 0 && (
                             <Button
                                 disabled={disabled || validateForm.processing}
@@ -1401,6 +1471,62 @@ function ExecutionActions({
                         {error}
                     </p>
                 ))}
+                <Dialog open={continueOpen} onOpenChange={setContinueOpen}>
+                    <DialogContent>
+                        <DialogHeader>
+                            <DialogTitle>
+                                Continuar la consolidación
+                            </DialogTitle>
+                            <DialogDescription>
+                                El Consolidador se detuvo para una intervención
+                                en el destino. Continúe solo después de
+                                completarla: el asistente reanuda desde sus
+                                checkpoints aprobados y vuelve a validarla.
+                            </DialogDescription>
+                        </DialogHeader>
+                        <label className="flex gap-2">
+                            <input
+                                type="checkbox"
+                                checked={continueForm.data.confirm}
+                                onChange={(event) =>
+                                    continueForm.setData(
+                                        'confirm',
+                                        event.target.checked,
+                                    )
+                                }
+                            />
+                            Completé la intervención indicada en el Moodle
+                            destino (por ejemplo, el servicio OAuth2 de Google)
+                        </label>
+                        {Object.values(continueForm.errors).map((error) => (
+                            <p
+                                key={error}
+                                role="alert"
+                                className="text-destructive text-sm"
+                            >
+                                {error}
+                            </p>
+                        ))}
+                        <Button
+                            disabled={
+                                disabled ||
+                                continueForm.processing ||
+                                !continueForm.data.confirm
+                            }
+                            onClick={() =>
+                                continueForm.post(
+                                    `/projects/${projectUuid}/executions/${execution.uuid}/consolidation/continue`,
+                                    {
+                                        preserveScroll: true,
+                                        onSuccess: () => setContinueOpen(false),
+                                    },
+                                )
+                            }
+                        >
+                            Continuar
+                        </Button>
+                    </DialogContent>
+                </Dialog>
                 <Dialog open={freshOpen} onOpenChange={setFreshOpen}>
                     <DialogContent>
                         <DialogHeader>
@@ -1458,6 +1584,139 @@ function ExecutionActions({
                         </Button>
                     </DialogContent>
                 </Dialog>
+            </CardContent>
+        </Card>
+    );
+}
+
+const consolidationStages: Record<string, string> = {
+    '01-importar-paquetes': 'Importar paquetes',
+    '02-oauth2': 'Google OAuth2',
+    '03-plugins': 'Plugins',
+    '03b-oauth2-final': 'Confirmar OAuth y proxy',
+    '04-identidades': 'Identidades',
+    '05-plan-usuarios': 'Plan de usuarios',
+    '05b-readiness': 'Readiness',
+    '06-aplicar-usuarios': 'Aplicar usuarios',
+    '07-verificar-usuarios': 'Verificar usuarios',
+    '08-plan-piloto': 'Plan del piloto',
+    '09-aplicar-piloto': 'Restaurar el piloto',
+    '09b-themes-piloto': 'Temas del piloto',
+    '10-verificar-piloto': 'Verificar el piloto',
+    '11-plan-lote': 'Plan del lote',
+    '12-preparar-lote': 'Preparar el lote',
+    '13-aplicar-lote': 'Restaurar el lote',
+    '13b-themes-lote': 'Temas del lote',
+    '14-verificar-lote': 'Verificar el lote',
+    '15-cierre': 'Cierre',
+    '16-paquete-sitio': 'Copia integral',
+    completed: 'Consolidación cerrada',
+};
+
+/** The Consolidator's own state on the destination, as its last report left it. */
+function ConsolidationStatus({
+    consolidation,
+    status,
+}: {
+    consolidation: ConsolidationData;
+    status: string;
+}) {
+    const workers = consolidation.workers_status;
+    const closure = consolidation.closure;
+
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle>Consolidador en el destino</CardTitle>
+                <p className="text-muted-foreground text-sm">
+                    {consolidation.server ?? 'Servidor de destino'} · perfil{' '}
+                    {consolidation.destination_profile} · workers{' '}
+                    {consolidation.workers} · corrida {consolidation.runs}
+                </p>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">Etapa:</span>
+                    <span>
+                        {consolidation.stage
+                            ? (consolidationStages[consolidation.stage] ??
+                              consolidation.stage)
+                            : 'sin reporte todavía'}
+                    </span>
+                    {consolidation.stage_status && (
+                        <Badge variant="outline">
+                            {consolidation.stage_status}
+                        </Badge>
+                    )}
+                    {consolidation.write_locked && (
+                        <Badge variant="secondary">
+                            El destino ya recibió escrituras
+                        </Badge>
+                    )}
+                </div>
+                {status === 'WAITING_USER_ACTION' && (
+                    <Alert>
+                        <ShieldAlert />
+                        <AlertTitle>
+                            Intervención requerida en el destino
+                        </AlertTitle>
+                        <AlertDescription className="space-y-2">
+                            <p>
+                                {consolidation.message ?? 'Revise el destino.'}
+                            </p>
+                            {consolidation.review_paths.length > 0 && (
+                                <p className="text-xs">
+                                    En el servidor, revise:{' '}
+                                    {consolidation.review_paths.join(', ')}
+                                </p>
+                            )}
+                            <p className="text-xs">
+                                Cuando termine, use «Continuar consolidación».
+                            </p>
+                        </AlertDescription>
+                    </Alert>
+                )}
+                {status !== 'WAITING_USER_ACTION' && consolidation.message && (
+                    <p className="text-muted-foreground">
+                        {consolidation.message}
+                    </p>
+                )}
+                {workers && typeof workers.total === 'number' && (
+                    <p>
+                        Cursos del lote: {workers.completed ?? 0} de{' '}
+                        {workers.total} · fallidos {workers.failed ?? 0} ·
+                        workers {workers.workers_effective ?? '—'}
+                    </p>
+                )}
+                {closure && (
+                    <p>
+                        Cierre: {closure.closure_status ?? '—'} · cursos
+                        verificados{' '}
+                        {closure.total_courses_verified ??
+                            closure.courses_verified ??
+                            '—'}{' '}
+                        · diferencias {closure.failed_courses ?? '—'}
+                    </p>
+                )}
+                {consolidation.site_package_sha256 && (
+                    <p className="font-mono text-xs break-all">
+                        Copia integral SHA-256:{' '}
+                        {consolidation.site_package_sha256}
+                    </p>
+                )}
+                <div>
+                    <p className="font-medium">Paquetes</p>
+                    <ul className="text-muted-foreground grid gap-1 text-xs">
+                        {consolidation.packages.map((item) => (
+                            <li key={item.sha256 ?? item.name}>
+                                {item.name} ({item.source_id}) ·{' '}
+                                <span className="font-mono">
+                                    {item.sha256?.slice(0, 12)}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
             </CardContent>
         </Card>
     );
