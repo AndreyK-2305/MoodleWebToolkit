@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.10.0"
+readonly AGENT_VERSION="1.10.2"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -359,7 +359,7 @@ registered_argv() {
             ;;
         package.fetch)
             [[ ${#params[@]} == 6 && ${params[destination]:-} =~ $SOURCE_RE && ${params[project]:-} =~ $UUID_RE
-                && ${params[source]:-} =~ ^[a-z][a-z0-9_-]{0,63}$ && ${params[sha]:-} =~ $SHA_RE
+                && ${params[source]:-} =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && ${params[sha]:-} =~ $SHA_RE
                 && ${params[bucket]:-} =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && ${params[region]:-} =~ ^[a-z]{2}(-gov)?-[a-z]+-[1-9]$ ]] || fail invalid_parameter
             command -v aws >/dev/null 2>&1 || fail aws_cli_unavailable
             load_destination "${params[destination]}"
@@ -563,7 +563,9 @@ cmd_tail() {
     ((offset <= size)) || fail offset_beyond_end
     chunk=''
     if ((size > offset)); then
-        chunk=$(tail -c +$((offset + 1)) "$file" | head -c "$max" | base64 -w0)
+        # head closes the pipe once it has max bytes; the SIGPIPE tail then receives is expected,
+        # so pipefail is off inside this substitution only.
+        chunk=$(set +o pipefail; tail -c +$((offset + 1)) "$file" | head -c "$max" | base64 -w0)
     fi
     local read_bytes
     read_bytes=$(printf '%s' "$chunk" | base64 -d | wc -c)

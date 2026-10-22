@@ -111,6 +111,23 @@ class RemoteDestinationPreparationTest extends DomainTestCase
             $this->service()->observe($this->server->refresh(), 'campus'), array_flip(['state', 'error_code']))));
     }
 
+    public function test_a_long_build_log_is_settled_from_its_end_when_the_reading_is_behind(): void
+    {
+        $this->launch();
+        // The incremental reading is far behind a long build log when the process ends.
+        $this->transport->ok('status', ['exit' => ['exit_code' => 0, 'cancel_requested' => false], 'process_alive' => false,
+            'heartbeat_at' => null, 'stdout_bytes' => 200000, 'stderr_bytes' => 0]);
+        $this->transport->ok('tail', $this->tail('', 0));
+        $end = "DESTINO_LISTO url_publica=https://campus.example.edu\nEXPORT_TRANSPORT_OK owner_uid=0\nTARGET_SHARED_EMAIL_POLICY_OK status=OK\n";
+        $this->transport->ok('tail', ['offset' => 183616, 'next_offset' => 183616 + strlen($end), 'size' => 200000, 'data_base64' => base64_encode($end)]);
+
+        $done = $this->service()->observe($this->server->refresh(), 'campus');
+
+        $this->assertSame(['SUCCEEDED', null], [$done['state'], $done['error_code']]);
+        $this->assertStringContainsString("'tail' '".$done['operation_uuid']."' 'stdout' '183616'", $this->transport->scripts[3]);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
     public function test_a_lost_process_or_a_launch_that_never_arrived_is_settled_without_guessing_success(): void
     {
         $this->launch();

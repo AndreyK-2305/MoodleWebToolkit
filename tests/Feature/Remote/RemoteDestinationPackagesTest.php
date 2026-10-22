@@ -79,14 +79,15 @@ class RemoteDestinationPackagesTest extends DomainTestCase
 
     public function test_a_verified_package_reaches_copias_only_with_the_hash_the_platform_expects(): void
     {
-        $package = $this->package('pregrado');
+        // As published by a remote collection: keyed by the source profile (synthetic-lab), not by the source_id.
+        $package = $this->package('pregrado', folder: 'synthetic-lab');
         $this->launch();
         $fetch = app(RemoteDestinationPackages::class)->fetch($this->server, 'campus', $package, $this->admin);
 
         $this->assertSame('RUNNING', $fetch['state']);
-        $this->assertSame(['kevin-moodle-backups-2026/mwt/'.$package->project->uuid.'/pregrado/'.$package->sha256.'.zip'], $this->verified);
+        $this->assertSame(['kevin-moodle-backups-2026/mwt/'.$package->project->uuid.'/synthetic-lab/'.$package->sha256.'.zip'], $this->verified);
         $this->assertStringContainsString("'package.fetch' 'bucket=kevin-moodle-backups-2026' 'destination=campus' 'project={$package->project->uuid}'"
-            ." 'region=us-east-2' 'sha={$package->sha256}' 'source=pregrado'", $this->transport->scripts[0]);
+            ." 'region=us-east-2' 'sha={$package->sha256}' 'source=synthetic-lab'", $this->transport->scripts[0]);
 
         // A second transfer waits for the first.
         try {
@@ -208,12 +209,12 @@ class RemoteDestinationPackagesTest extends DomainTestCase
     }
 
     /** A sealed package registered in S3, as a remote collection leaves it. */
-    private function package(string $sourceId, ?Project $project = null): SourcePackage
+    private function package(string $sourceId, ?Project $project = null, ?string $folder = null): SourcePackage
     {
         $project ??= $this->project;
         $execution = $this->execution($project, ExecutionStatus::COMPLETED, ++$this->attempts);
         $sha = hash('sha256', $sourceId.Str::uuid());
-        $key = 'mwt/'.$project->uuid.'/'.$sourceId.'/'.$sha.'.zip';
+        $key = 'mwt/'.$project->uuid.'/'.($folder ?? $sourceId).'/'.$sha.'.zip';
         $artifact = Artifact::query()->create(['execution_id' => $execution->getKey(), 'type' => 'source_package', 'category' => 'SOURCE_PACKAGE',
             'storage_mode' => 'REFERENCE', 'disk' => 's3', 'path' => 'kevin-moodle-backups-2026/'.$key, 'filename' => $sourceId.'.zip',
             'mime_type' => 'application/zip', 'size' => 4096, 'sha256' => $sha,

@@ -139,6 +139,22 @@ class PrepareRemoteDestination
         if ($exit !== null) {
             $code = (int) ($exit['exit_code'] ?? -1);
             $cancelled = ($exit['cancel_requested'] ?? false) === true;
+            // The incremental reading may still be behind a long build log: the closing markers are
+            // also looked for at the end of the output before the result is settled.
+            if ($offset < (int) ($data['stdout_bytes'] ?? 0)) {
+                try {
+                    [, $end, $markers, $endError] = $this->readOutput($target, $uuid, max($offset, (int) $data['stdout_bytes'] - self::TAIL_CHUNK_BYTES),
+                        '', $markers, null, chunks: 1);
+                    $changes['tail'] = substr($tail.$end, -self::TAIL_KEEP_BYTES);
+                    $changes['markers'] = $markers;
+                    $changes['last_error_line'] = $endError ?? $changes['last_error_line'];
+                } catch (RemoteAgentUnavailable $exception) {
+                    // Without the end of the log the result cannot be settled yet; the next pass retries.
+                    $this->update($server, $destination, [...$changes, 'state' => $current['state'], 'observe_error' => $exception->errorCode]);
+
+                    return $this->current($server->refresh(), $destination);
+                }
+            }
             // Success needs both the exit code and the Consolidator's last marker.
             $succeeded = $code === 0 && in_array('TARGET_SHARED_EMAIL_POLICY_OK', $markers, true);
             if (! $succeeded) {
@@ -193,10 +209,10 @@ class PrepareRemoteDestination
      * @param  list<string>  $markers
      * @return array{int, string, list<string>, string|null}
      */
-    private function readOutput(RemoteTarget $target, string $uuid, int $offset, string $tail, array $markers, mixed $errorLine): array
+    private function readOutput(RemoteTarget $target, string $uuid, int $offset, string $tail, array $markers, mixed $errorLine, int $chunks = self::TAIL_CHUNKS): array
     {
         $errorLine = is_string($errorLine) ? $errorLine : null;
-        for ($chunk = 0; $chunk < self::TAIL_CHUNKS; $chunk++) {
+        for ($chunk = 0; $chunk < $chunks; $chunk++) {
             $response = $this->agent->call($target, 'tail', [$uuid, 'stdout', (string) $offset, (string) self::TAIL_CHUNK_BYTES], 30);
             if (! $response->ok) {
                 break;
