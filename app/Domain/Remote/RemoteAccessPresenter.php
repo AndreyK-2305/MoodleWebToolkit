@@ -96,7 +96,9 @@ class RemoteAccessPresenter
         $deployment = $server->metadata['remote_tool_deployments'][CheckRemoteDestination::DISTRIBUTION_KEY] ?? null;
         $deployment = is_array($deployment) ? $deployment : [];
 
-        return ['deployed' => is_string($server->metadata['remote_tools'][CheckRemoteDestination::DISTRIBUTION_KEY]['tree_sha256'] ?? null),
+        $tree = $server->metadata['remote_tools'][CheckRemoteDestination::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
+
+        return ['deployed' => is_string($tree), 'tree_sha256' => is_string($tree) ? $tree : null,
             'deployment_state' => in_array($deployment['state'] ?? null, ['QUEUED', 'RUNNING', 'DEPLOYED', 'FAILED'], true) ? $deployment['state'] : null,
             'deployment_error' => is_string($deployment['error_code'] ?? null) ? $deployment['error_code'] : null,
             'updated_at' => is_string($deployment['updated_at'] ?? null) ? $deployment['updated_at'] : null];

@@ -13,7 +13,11 @@ export function useFlashToast(): void {
                 return;
             }
 
-            toast[data.type](data.message);
+            // Errors explain why an action did not happen; they stay long enough to be read.
+            toast[data.type](
+                data.message,
+                data.type === 'error' ? { duration: 12000 } : undefined,
+            );
         });
     }, []);
 }

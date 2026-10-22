@@ -126,10 +126,9 @@ class CheckRemoteDestination
         if (is_int($report['runtime_free_bytes'] ?? null) && $report['runtime_free_bytes'] < self::MIN_FREE_BYTES) {
             $warnings[] = 'low_disk';
         }
+        // A site already on the destination is shown when preparing it, where the administrator decides.
         if (($report['destination_written'] ?? false) === true) {
             $warnings[] = 'destination_written';
-        } elseif (self::used($report)) {
-            $warnings[] = 'destination_in_use';
         }
         // The Consolidator's Compose project name is fixed: two runtimes on one server share it.
         if (is_int($report['server_profiles'] ?? null) && $report['server_profiles'] > 1) {

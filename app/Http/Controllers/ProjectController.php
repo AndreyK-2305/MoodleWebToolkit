@@ -69,7 +69,7 @@ class ProjectController extends Controller
         /** @var array{name: string, type: string, description?: string|null} $validated */
         $project = $wizard->create($actor, $validated);
 
-        Inertia::flash('toast', ['type' => 'success', 'message' => 'Proyecto creado. Continúe con las instancias simuladas.']);
+        Inertia::flash('toast', ['type' => 'success', 'message' => 'Proyecto creado. Continúe con las instancias.']);
 
         return to_route('projects.show', $project->uuid);
     }

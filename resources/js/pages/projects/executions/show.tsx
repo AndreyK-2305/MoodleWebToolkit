@@ -2332,11 +2332,24 @@ function UnknownPlugins({
     );
     const [inspecting, setInspecting] = useState<string | null>(null);
     const [confirmed, setConfirmed] = useState(false);
-    const { send, processing, errors } = useInterventionAnswers(
+    const { send, processing, errors, sent } = useInterventionAnswers(
         projectUuid,
         executionUuid,
         conflict,
     );
+
+    if (sent) {
+        return (
+            <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
+                <p className="font-medium">Respuestas enviadas</p>
+                <p className="text-muted-foreground">
+                    El destino las aplica y la consolidación continúa; el
+                    seguimiento muestra el avance.
+                </p>
+            </div>
+        );
+    }
+
     const ready = Object.keys(proposals);
 
     return (
@@ -2508,6 +2521,7 @@ function useInterventionAnswers(
 ) {
     const [key] = useState(() => crypto.randomUUID());
     const [processing, setProcessing] = useState(false);
+    const [sent, setSent] = useState(false);
     const [errors, setErrors] = useState<Record<string, string>>({});
     const send = (data: Record<string, unknown>) =>
         router.post(
@@ -2518,11 +2532,15 @@ function useInterventionAnswers(
                 preserveScroll: true,
                 onStart: () => setProcessing(true),
                 onFinish: () => setProcessing(false),
+                onSuccess: () => {
+                    setErrors({});
+                    setSent(true);
+                },
                 onError: (found) => setErrors(found),
             },
         );
 
-    return { send, processing, errors };
+    return { send, processing, errors, sent };
 }
 
 function AccountFacts({
@@ -2571,11 +2589,24 @@ function IdentityReview({
             justification: '',
         })),
     );
-    const { send, processing, errors } = useInterventionAnswers(
+    const { send, processing, errors, sent } = useInterventionAnswers(
         projectUuid,
         executionUuid,
         conflict,
     );
+
+    if (sent) {
+        return (
+            <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
+                <p className="font-medium">Respuestas enviadas</p>
+                <p className="text-muted-foreground">
+                    El destino las aplica y la consolidación continúa; el
+                    seguimiento muestra el avance.
+                </p>
+            </div>
+        );
+    }
+
     const update = (index: number, changes: Partial<IdentityDecision>) =>
         setDecisions((current) =>
             current.map((decision, position) =>
@@ -2814,11 +2845,23 @@ function ThemeSelection({
               : (themes[0] ?? ''),
     );
     const [acceptLegacy, setAcceptLegacy] = useState(false);
-    const { send, processing, errors } = useInterventionAnswers(
+    const { send, processing, errors, sent } = useInterventionAnswers(
         projectUuid,
         executionUuid,
         conflict,
     );
+
+    if (sent) {
+        return (
+            <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
+                <p className="font-medium">Respuestas enviadas</p>
+                <p className="text-muted-foreground">
+                    El destino las aplica y la consolidación continúa; el
+                    seguimiento muestra el avance.
+                </p>
+            </div>
+        );
+    }
 
     return (
         <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-900 dark:bg-amber-950/30">

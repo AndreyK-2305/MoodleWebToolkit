@@ -70,7 +70,7 @@ class ProjectWizardController extends Controller
         /** @var array{instances: list<array{uuid?: string|null, server_uuid?: string|null, role: string, server_name: string, server_host: string, name: string, base_url: string, moodle_version: string, validated: bool, destination_kind?: string|null}>} $validated */
         $wizard->saveInstances($project, $actor, $validated['instances']);
 
-        Inertia::flash('toast', ['type' => 'success', 'message' => 'Instancias simuladas guardadas.']);
+        Inertia::flash('toast', ['type' => 'success', 'message' => 'Instancias guardadas.']);
 
         return to_route('projects.show', $project->uuid);
     }

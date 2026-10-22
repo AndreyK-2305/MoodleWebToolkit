@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.13.0"
+readonly AGENT_VERSION="1.13.1"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -317,17 +317,19 @@ engine_intact() {
         | sha256sum --quiet --check - >/dev/null 2>&1)
 }
 
-# The Consolidator resolved its plugin lock and it asks for nothing: no catalog
-# plugin, no unknown component and no compatibility need from the sources.
+# The Consolidator resolved its plugin lock from the sources' needs and it asks for
+# nothing: no catalog plugin and no unknown component. The needs document, when the
+# assistant has not archived it after a failed validation, must be empty as well.
 plugins_none() {
-    [[ -f $1/exports/plugin-lock.json && ! -L $1/exports/plugin-lock.json ]] || return 1
-    [[ -f $1/exports/phase2/plugin_compatibility_needs.json && ! -L $1/exports/phase2/plugin_compatibility_needs.json ]] || return 1
-    python3 -I - "$1/exports/plugin-lock.json" "$1/exports/phase2/plugin_compatibility_needs.json" <<'PY' >/dev/null 2>&1
-import json, sys
+    local needs=$1/exports/phase2/plugin_compatibility_needs.json
+    [[ -f $1/exports/plugin-lock.json && ! -L $1/exports/plugin-lock.json && ! -L $needs ]] || return 1
+    python3 -I - "$1/exports/plugin-lock.json" "$needs" <<'PY' >/dev/null 2>&1
+import json, os, sys
 lock = json.load(open(sys.argv[1], encoding="utf-8-sig"))
-needs = json.load(open(sys.argv[2], encoding="utf-8-sig"))
+needs = json.load(open(sys.argv[2], encoding="utf-8-sig")) if os.path.isfile(sys.argv[2]) else {"original_compatibility_needs": []}
 empty = lambda value: isinstance(value, list) and len(value) == 0
-sys.exit(0 if empty(lock.get("plugins")) and empty(lock.get("unknown_plugins")) and empty(needs.get("original_compatibility_needs")) else 1)
+resolved = isinstance(lock.get("compatibility_needs_sha256"), str) and len(lock["compatibility_needs_sha256"]) == 64
+sys.exit(0 if resolved and empty(lock.get("plugins")) and empty(lock.get("unknown_plugins")) and empty(needs.get("original_compatibility_needs")) else 1)
 PY
 }
 

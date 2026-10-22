@@ -51,7 +51,10 @@ Implementación:
 
 - **Hechos del destino.** `destination-check` reporta `target_volumes`, `assistant_started`,
   `copias_packages` y `server_profiles`. A partir de ellos la plataforma decide si el destino
-  está en uso y avisa con `destination_in_use` y `shared_server`.
+  está en uso. El diálogo de preparación muestra esos hechos, y la comprobación avisa con
+  `shared_server` cuando hay más de un perfil. La prueba como usuario mostró que un aviso
+  permanente de «destino en uso» confundía justo después de una preparación limpia, así que
+  ese aviso se quitó.
 - **Operación.** La limpieza es parte de la misma operación de preparación
   (`consolidator.prepare` con `reset=1`), para que un solo seguimiento muestre la limpieza y el
   `preparar`. Corre como root, porque los contenedores dejan archivos de sus propios usuarios.
@@ -147,7 +150,10 @@ Si continuar falla, la intervención resuelta se abre de nuevo con el motivo. Po
 destino rechaza la respuesta o el destino no está listo. Antes, la Ejecución quedaba esperando
 sin ninguna acción disponible.
 
-## Agente 1.13.0
+## Agente 1.13.0 y 1.13.1
+
+La versión 1.13.1 acepta además un lock sin plugins cuando el asistente ya archivó el documento
+de necesidades tras una validación fallida.
 
 Operaciones y subcomandos nuevos:
 
@@ -163,3 +169,53 @@ Después de los cortes, la prueba E1–E6b se repite desde cero y **como usuario
 interfaz web: crear los proyectos, recolectar, publicar, preparar el destino limpio,
 consolidar e intervenir. Así se evalúan la experiencia, las advertencias y el manejo de
 errores. Solo DNS, Caddy y OAuth se hacen fuera de la plataforma.
+
+### Resultado (2026-10-22)
+
+La prueba llegó a **COMPLETED** solo desde la interfaz:
+
+- **Recolección:** pregrado y posgrado, ambos paquetes en S3.
+- **Destino:** despliegue del rc13, limpieza con `CONFIRMAR` y preparación de un Moodle nuevo.
+- **Consolidación:** las intervenciones se resolvieron así:
+    - OAuth2: el usuario lo configuró en Moodle y lo confirmó en la web;
+    - plugins: «Continuar sin plugins» (E7a);
+    - identidades: tres grupos fusionados con justificación (E7d);
+    - theme: boost (E7e).
+- **Cierre:** cuatro cursos verificados, cero diferencias, respaldo en S3 desde la web y
+  finalización.
+
+Fuera de la web solo quedó el administrador del servidor. Volvió a ejecutar el helper del
+perfil con `--tree` tras desplegar el rc13 (ahora el panel muestra el comando) e instaló el
+agente 1.13.1 durante la prueba.
+
+### Hallazgos corregidos
+
+- **`plugins_none`:** fallaba cuando el asistente archivaba el documento de necesidades
+  (agente 1.13.1).
+- **Panel remoto:** se refresca solo mientras hay despliegue, preparación o transferencia; las
+  cifras pequeñas se muestran en KiB.
+- **Diálogo de preparación:** avisa que OAuth2 se configura de nuevo; se quitó el aviso engañoso
+  de «destino en uso».
+- **Respuestas a intervenciones:** muestran «Respuestas enviadas»; los avisos (toasts) ya no tapan
+  botones y los errores duran más.
+- **Textos:** se tradujeron al español, se quitaron las etiquetas de desarrollo y los textos
+  «simulados» en los modos remotos.
+
+### Hallazgos pendientes
+
+- **Página de la Ejecución:**
+    - no pasa sola a REVIEW ni a COMPLETED aunque diga «Tiempo real conectado»;
+    - recargar la misma URL mostró el estado anterior hasta cambiar la URL;
+    - en REVIEW, el progreso dice «Indeterminado».
+- **«Finalizar»:** deja el proyecto en solo lectura sin pedir confirmación.
+- **«Respaldar en S3»:** el botón desaparece pero el estado sigue en «Sin respaldo» hasta
+  recargar.
+- **Textos de intervención:** muestran rutas del servidor y scripts (`./INICIAR-…`) que el
+  usuario web no usa.
+- **Editor de instancias:** marcar casillas rápido deja estado viejo.
+- **Consolidación:** pide instancias o conexiones de origen que no usa y muestra opciones
+  simuladas de «Configuración funcional».
+- **Valores por defecto:** la región es `us-east-1` y no se toma de la configuración.
+- **Transferencias:** solo una a la vez, y el error de la segunda dura poco.
+- **Agente:** no se puede actualizar desde la web mientras un proyecto está en curso.
+- **Accesibilidad:** los radios del diálogo no tienen nombre accesible.

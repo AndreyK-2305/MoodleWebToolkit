@@ -1,5 +1,5 @@
-import { useForm, usePage } from '@inertiajs/react';
-import { useState } from 'react';
+import { router, useForm, usePage } from '@inertiajs/react';
+import { useEffect, useState } from 'react';
 import {
     AlertCircle,
     CheckCircle2,
@@ -122,6 +122,7 @@ export type RemoteServer = {
     sources_detected_at: string | null;
     consolidator: {
         deployed: boolean;
+        tree_sha256: string | null;
         deployment_state: 'QUEUED' | 'RUNNING' | 'DEPLOYED' | 'FAILED' | null;
         deployment_error: string | null;
         updated_at: string | null;
@@ -192,6 +193,35 @@ export default function RemoteAccessPanel({
     access: RemoteAccess;
     editable: boolean;
 }) {
+    // Deployments, preparations and transfers run on the servers; while one is in
+    // progress the panel reads their state again instead of waiting for a reload.
+    const busy = access.servers.some(
+        (server) =>
+            ['QUEUED', 'RUNNING'].includes(
+                server.consolidator.deployment_state ?? '',
+            ) ||
+            server.destinations.some(
+                (destination) =>
+                    ['STARTING', 'RUNNING', 'CANCELLING'].includes(
+                        destination.preparation?.state ?? '',
+                    ) ||
+                    destination.fetches.some((fetch) =>
+                        ['STARTING', 'RUNNING'].includes(fetch.state ?? ''),
+                    ),
+            ),
+    );
+    useEffect(() => {
+        if (!busy) {
+            return;
+        }
+        const timer = window.setInterval(
+            () => router.reload({ only: ['remoteAccess'] }),
+            10000,
+        );
+
+        return () => window.clearInterval(timer);
+    }, [busy]);
+
     return (
         <Card>
             <CardHeader>
@@ -533,8 +563,6 @@ const destinationCodes: Record<string, string> = {
     low_memory: 'menos de 4 GiB de memoria',
     low_disk: 'menos de 20 GiB libres',
     destination_written: 'el destino ya recibió escrituras',
-    destination_in_use:
-        'el destino ya tiene un sitio: se recomienda limpiarlo antes de preparar',
     shared_server:
         'hay más de un perfil en este servidor: comparten los servicios del Consolidador',
 };
@@ -689,6 +717,34 @@ function DestinationRuntime({
                                     {destination.check_error}
                                 </p>
                             )}
+                            {destination.blockers.includes(
+                                'tool_tree_mismatch',
+                            ) &&
+                                server.consolidator.tree_sha256 && (
+                                    <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs dark:border-amber-900 dark:bg-amber-950/30">
+                                        <p>
+                                            El perfil apunta a otra versión del
+                                            Consolidador que la desplegada. El
+                                            administrador del servidor lo
+                                            actualiza conservando el .env y
+                                            luego se comprueba de nuevo:
+                                        </p>
+                                        <code className="bg-background block rounded p-1 break-all">
+                                            sudo bash mwt-destination-profile{' '}
+                                            {destination.id} --public-url{' '}
+                                            {destination.public_url ??
+                                                'https://…'}{' '}
+                                            --force --tree{' '}
+                                            {server.consolidator.tree_sha256}
+                                        </code>
+                                        <p>
+                                            Si el destino ya recibió una
+                                            consolidación, después use «Preparar
+                                            destino» para limpiarlo con la nueva
+                                            versión.
+                                        </p>
+                                    </div>
+                                )}
                             {[...destination.blockers, ...destination.warnings]
                                 .length > 0 && (
                                 <ul className="text-xs">
@@ -925,7 +981,10 @@ function Preparation({
                                         el estado del sitio anterior, y restaura
                                         el Consolidador verificado. Conserva el
                                         .env del administrador; las copias ya
-                                        respaldadas en S3 no se tocan.
+                                        respaldadas en S3 no se tocan. El Moodle
+                                        queda nuevo: el servicio Google OAuth2
+                                        se configura de nuevo cuando la
+                                        Ejecución lo pida.
                                     </span>
                                 </span>
                             </label>
@@ -1091,7 +1150,11 @@ function DestinationPackages({
         (item) => !present.has(item.sha256),
     );
     const mib = (value: number | null | undefined) =>
-        typeof value === 'number' ? `${(value / 1048576).toFixed(1)} MiB` : '—';
+        typeof value === 'number'
+            ? value < 1048576
+                ? `${Math.max(1, Math.round(value / 1024))} KiB`
+                : `${(value / 1048576).toFixed(1)} MiB`
+            : '—';
 
     return (
         <div className="space-y-2 border-t pt-2">

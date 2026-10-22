@@ -217,11 +217,13 @@ class RemoteConsolidationInterventions
             }
         }
         $status = $this->json($documents['plugin_checkpoint'] ?? null)['status'] ?? null;
-        // The lock was resolved and asks for nothing: neither catalog plugins nor unknown components.
+        // The lock was resolved from the sources' needs and asks for nothing: neither catalog plugins
+        // nor unknown components. After a failed validation the assistant archives the needs
+        // document; when it is still there it must be empty too.
         $lock = $this->json($documents['plugin_lock'] ?? null);
         $needsDocument = $this->json($documents['plugin_needs'] ?? null);
-        $none = $lock !== [] && ($lock['plugins'] ?? null) === [] && ($lock['unknown_plugins'] ?? null) === []
-            && ($needsDocument['original_compatibility_needs'] ?? null) === [];
+        $none = is_string($lock['compatibility_needs_sha256'] ?? null) && ($lock['plugins'] ?? null) === [] && ($lock['unknown_plugins'] ?? null) === []
+            && (($documents['plugin_needs'] ?? null) === null || ($needsDocument['original_compatibility_needs'] ?? null) === []);
         $unknown = [];
         foreach (is_array($lock['unknown_plugins'] ?? null) ? array_slice($lock['unknown_plugins'], 0, 20) : [] as $plugin) {
             $component = is_array($plugin) ? ($plugin['component'] ?? null) : null;

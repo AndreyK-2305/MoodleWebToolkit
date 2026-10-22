@@ -421,7 +421,8 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
             'plugin_diff' => null,
             'plugin_technical' => (string) json_encode(['issues' => ['PLUGIN_TECHNICAL_VALIDATION_FAILED: destino, URL o pins inconsistentes.']]),
             'plugin_checkpoint' => (string) json_encode(['status' => 'PLUGIN_INTERVENTION_APPROVED']),
-            'plugin_lock' => (string) json_encode(['lock_status' => 'ARTIFACTS_VERIFIED_PENDING_STAGING', 'plugins' => [], 'unknown_plugins' => []]),
+            'plugin_lock' => (string) json_encode(['lock_status' => 'ARTIFACTS_VERIFIED_PENDING_STAGING', 'compatibility_needs_sha256' => str_repeat('d', 64),
+                'plugins' => [], 'unknown_plugins' => []]),
         ]);
         dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
         $conflict = $execution->conflicts()->sole();
