@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.8.0"
+readonly AGENT_VERSION="1.9.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -318,6 +318,34 @@ registered_argv() {
             # shellcheck disable=SC2016
             REGISTERED_ARGV=(bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh ejecutar-automatico "--workers=$2"' consolidator-run
                 "$DST_RUNTIME_DIR" "${params[workers]}")
+            ;;
+        consolidator.plugins-approve)
+            [[ ${#params[@]} == 2 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE ]] || fail invalid_parameter
+            load_destination "${params[destination]}"
+            [[ $DST_TOOL_TREE == "${params[distribution]}" ]] || fail tool_tree_mismatch
+            local approver
+            approver=$(compgen -G "$TOOLS_DIR/moodle-consolidador-*/${params[distribution]}" | head -n 1) || fail tool_not_installed
+            (($(unsafe_entries "$approver") == 0)) && [[ $(tree_hash "$approver") == "${params[distribution]}" ]] || fail tool_hash_mismatch
+            [[ -d $DST_RUNTIME_DIR && ! -L $DST_RUNTIME_DIR && -f $DST_RUNTIME_DIR/.env ]] || fail destination_runtime_missing
+            engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
+            # Plugins are approved before the first write; afterwards the sealed lock is final.
+            [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+            grep -q '"status": *"READY_FOR_APPROVAL"' "$DST_RUNTIME_DIR/exports/phase2/plugin_intervention_checkpoint.json" 2>/dev/null || fail plugins_not_ready_for_approval
+            # The same two steps the assistant runs on [Y], inside its own runtime container and
+            # under its run lock, so they never overlap a running assistant.
+            # shellcheck disable=SC2016
+            REGISTERED_ARGV=(bash -c 'set -euo pipefail; cd "$1"
+                socket=/var/run/docker.sock
+                export ASSISTANT_PROJECT_ROOT="$1" ASSISTANT_UID="$(id -u)" ASSISTANT_GID="$(id -g)" DOCKER_SOCKET_PATH=$socket
+                export DOCKER_GID="$(stat -c %g "$socket")" COMPOSE_PROJECT_NAME=moodle-consolidation-production
+                set -a; . ./.env; set +a
+                export MOODLE_MANAGED_CONFIG_DIR="${MOODLE_MANAGED_CONFIG_DIR:-$1/managed-config}"
+                exec {lock}>reports/assistant-run.lock
+                flock -n "$lock" || { echo "ASSISTANT_RUNNING" >&2; exit 61; }
+                compose=(docker compose --project-name moodle-consolidation-production)
+                "${compose[@]}" run --rm --no-deps -T assistant-runtime pwsh -NoLogo -NoProfile -File scripts/audit-package-plugins.ps1 -Mode Approve
+                "${compose[@]}" run --rm --no-deps -T assistant-runtime pwsh -NoLogo -NoProfile -File scripts/v8-plugin-resolver.ps1 -Mode Seal
+                echo PLUGIN_INTERVENTION_APPROVED' consolidator-plugins-approve "$DST_RUNTIME_DIR")
             ;;
         package.fetch)
             [[ ${#params[@]} == 6 && ${params[destination]:-} =~ $SOURCE_RE && ${params[project]:-} =~ $UUID_RE
@@ -921,6 +949,34 @@ cmd_consolidator_report() {
         "$(now_utc)")"
 }
 
+# The Consolidator's own documents for one kind of intervention, bounded so the
+# answer always fits one call. The platform keeps whitelisted fields only.
+cmd_consolidator_intervention() {
+    (($# == 2)) || fail invalid_arguments
+    local runtime kind=$2 name entries='' sep='' file
+    load_destination "$1"
+    runtime=$DST_RUNTIME_DIR
+    [[ -d $runtime && ! -L $runtime && ! -L $runtime/reports && ! -L $runtime/exports ]] || fail destination_runtime_missing
+    local -a documents
+    case $kind in
+        oauth2) documents=(oauth2_manual=reports/oauth2-configuracion-manual.txt oauth2_validation=exports/oauth2/validation.json
+            oauth2_live=exports/oauth2-live/validation.json) ;;
+        plugins) documents=(plugin_needs=exports/phase2/plugin_compatibility_needs.json plugin_diff=exports/phase2/plugin_inventory_diff.json
+            plugin_technical=exports/phase2/plugin_technical_validation.json plugin_checkpoint=exports/phase2/plugin_intervention_checkpoint.json) ;;
+        *) fail invalid_arguments ;;
+    esac
+    for name in "${documents[@]}"; do
+        file="$runtime/${name#*=}"
+        if [[ -f $file && ! -L $file ]] && (($(stat -c %s "$file") <= 10240)); then
+            entries+="$sep\"${name%%=*}\":\"$(base64 -w0 <"$file")\""
+        else
+            entries+="$sep\"${name%%=*}\":$([[ -f $file ]] && printf '"too_large"' || printf 'null')"
+        fi
+        sep=','
+    done
+    respond_ok consolidator-intervention "{\"destination\":\"$1\",\"kind\":\"$kind\",\"documents\":{$entries}}"
+}
+
 encode_document() {
     if [[ -f $1 && ! -L $1 ]]; then
         if (($(stat -c %s "$1") > 16384)); then printf '"too_large"'; else printf '"%s"' "$(base64 -w0 <"$1")"; fi
@@ -1029,6 +1085,7 @@ case $COMMAND in
     copias-list) cmd_copias_list "$@" ;;
     copias-remove) cmd_copias_remove "$@" ;;
     consolidator-report) cmd_consolidator_report "$@" ;;
+    consolidator-intervention) cmd_consolidator_intervention "$@" ;;
     collector-report) cmd_collector_report "$@" ;;
     upload-report) cmd_upload_report "$@" ;;
     cleanup) cmd_cleanup "$@" ;;

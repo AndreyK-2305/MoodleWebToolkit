@@ -91,7 +91,6 @@ type ConsolidationData = {
     site_package_sha256: string | null;
     write_locked: boolean;
     observed_at: string | null;
-    can_continue: boolean;
 };
 
 type ExecutionData = {
@@ -161,6 +160,25 @@ type ConflictData = {
     message: string | null;
     allowed_decisions: string[];
     resolved_at: string | null;
+    intervention: {
+        kind?: string;
+        stage?: string | null;
+        message?: string | null;
+        review_paths?: string[];
+        instructions?: string | null;
+        callback_uri?: string | null;
+        issues?: string[];
+        needs?: {
+            component: string;
+            display_name: string | null;
+            observed_state: string | null;
+        }[];
+        new_plugins?: string[];
+        updated_plugins?: string[];
+        removed_plugins?: string[];
+        technical_issues?: string[];
+        checkpoint_status?: string | null;
+    } | null;
 };
 
 type CheckpointData = {
@@ -1319,8 +1337,6 @@ function ExecutionActions({
         execution.collector || execution.consolidation
             ? null
             : resumePayload(execution);
-    const [continueOpen, setContinueOpen] = useState(false);
-    const continueForm = useForm({ confirm: false });
     const cancellable = [
         'QUEUED',
         'RUNNING',
@@ -1413,14 +1429,6 @@ function ExecutionActions({
                                 <RotateCcw /> Reanudar desde checkpoint
                             </Button>
                         )}
-                    {execution.consolidation?.can_continue && (
-                        <Button
-                            disabled={disabled || continueForm.processing}
-                            onClick={() => setContinueOpen(true)}
-                        >
-                            <RotateCcw /> Continuar consolidación
-                        </Button>
-                    )}
                     {execution.status === 'REVIEW' &&
                         !execution.collector &&
                         !execution.consolidation &&
@@ -1471,62 +1479,6 @@ function ExecutionActions({
                         {error}
                     </p>
                 ))}
-                <Dialog open={continueOpen} onOpenChange={setContinueOpen}>
-                    <DialogContent>
-                        <DialogHeader>
-                            <DialogTitle>
-                                Continuar la consolidación
-                            </DialogTitle>
-                            <DialogDescription>
-                                El Consolidador se detuvo para una intervención
-                                en el destino. Continúe solo después de
-                                completarla: el asistente reanuda desde sus
-                                checkpoints aprobados y vuelve a validarla.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <label className="flex gap-2">
-                            <input
-                                type="checkbox"
-                                checked={continueForm.data.confirm}
-                                onChange={(event) =>
-                                    continueForm.setData(
-                                        'confirm',
-                                        event.target.checked,
-                                    )
-                                }
-                            />
-                            Completé la intervención indicada en el Moodle
-                            destino (por ejemplo, el servicio OAuth2 de Google)
-                        </label>
-                        {Object.values(continueForm.errors).map((error) => (
-                            <p
-                                key={error}
-                                role="alert"
-                                className="text-destructive text-sm"
-                            >
-                                {error}
-                            </p>
-                        ))}
-                        <Button
-                            disabled={
-                                disabled ||
-                                continueForm.processing ||
-                                !continueForm.data.confirm
-                            }
-                            onClick={() =>
-                                continueForm.post(
-                                    `/projects/${projectUuid}/executions/${execution.uuid}/consolidation/continue`,
-                                    {
-                                        preserveScroll: true,
-                                        onSuccess: () => setContinueOpen(false),
-                                    },
-                                )
-                            }
-                        >
-                            Continuar
-                        </Button>
-                    </DialogContent>
-                </Dialog>
                 <Dialog open={freshOpen} onOpenChange={setFreshOpen}>
                     <DialogContent>
                         <DialogHeader>
@@ -1671,7 +1623,8 @@ function ConsolidationStatus({
                                 </p>
                             )}
                             <p className="text-xs">
-                                Cuando termine, use «Continuar consolidación».
+                                Cuando termine, confirme la intervención en
+                                «Acciones controladas».
                             </p>
                         </AlertDescription>
                     </Alert>
@@ -1903,6 +1856,17 @@ function ConflictAction({
         conflict_version: conflict.version,
     });
 
+    if (conflict.intervention) {
+        return (
+            <ConsolidationIntervention
+                projectUuid={projectUuid}
+                executionUuid={executionUuid}
+                conflict={conflict}
+                disabled={disabled}
+            />
+        );
+    }
+
     return (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
             <p className="font-medium">
@@ -1930,6 +1894,145 @@ function ConflictAction({
                     ? 'Aceptar advertencia y continuar'
                     : 'Confirmar intervención y continuar'}
             </Button>
+        </div>
+    );
+}
+
+const interventionTitles: Record<string, string> = {
+    OAUTH2_CONFIGURATION: 'Configurar Google OAuth2 en el Moodle destino',
+    PLUGIN_INTERVENTION: 'Plugins requeridos por los orígenes',
+    CONSOLIDATOR_INTERVENTION: 'Intervención solicitada por el Consolidador',
+};
+
+/**
+ * A typed intervention of the Consolidator: its own guidance for the stage and
+ * the decisions it allows. Each decision is versioned, idempotent and audited.
+ */
+function ConsolidationIntervention({
+    projectUuid,
+    executionUuid,
+    conflict,
+    disabled,
+}: {
+    projectUuid: string;
+    executionUuid: string;
+    conflict: ConflictData;
+    disabled: boolean;
+}) {
+    const [key] = useState(() => crypto.randomUUID());
+    const [confirmed, setConfirmed] = useState(false);
+    const [processing, setProcessing] = useState(false);
+    const details = conflict.intervention ?? {};
+    const plugins = conflict.type === 'PLUGIN_INTERVENTION';
+    const decide = (decision: string) =>
+        router.post(
+            `/projects/${projectUuid}/executions/${executionUuid}/conflicts/${conflict.id}/resolve`,
+            { decision, conflict_version: conflict.version },
+            {
+                headers: { 'Idempotency-Key': `${key}-${decision}` },
+                preserveScroll: true,
+                onStart: () => setProcessing(true),
+                onFinish: () => setProcessing(false),
+            },
+        );
+    const list = (title: string, items: string[] | undefined) =>
+        items && items.length > 0 ? (
+            <div>
+                <p className="text-xs font-medium">{title}</p>
+                <ul className="text-xs">
+                    {items.map((item) => (
+                        <li key={item} className="font-mono">
+                            {item}
+                        </li>
+                    ))}
+                </ul>
+            </div>
+        ) : null;
+
+    return (
+        <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-900 dark:bg-amber-950/30">
+            <p className="font-medium">
+                {interventionTitles[conflict.type] ?? 'Intervención pendiente'}
+            </p>
+            {details.message && (
+                <p className="text-muted-foreground">{details.message}</p>
+            )}
+            {details.callback_uri && (
+                <p className="text-xs">
+                    URI de redirección autorizada en Google Cloud:{' '}
+                    <code className="break-all">{details.callback_uri}</code>
+                </p>
+            )}
+            {details.instructions && (
+                <details open>
+                    <summary className="cursor-pointer text-xs font-medium">
+                        Instrucciones del Consolidador
+                    </summary>
+                    <pre className="bg-background mt-1 max-h-72 overflow-auto rounded p-2 text-xs whitespace-pre-wrap">
+                        {details.instructions}
+                    </pre>
+                </details>
+            )}
+            {list('Pendiente según la última validación', details.issues)}
+            {details.needs && details.needs.length > 0 && (
+                <div>
+                    <p className="text-xs font-medium">
+                        Componentes que necesitan los orígenes
+                    </p>
+                    <ul className="text-xs">
+                        {details.needs.map((need) => (
+                            <li key={need.component}>
+                                {need.display_name ?? need.component}{' '}
+                                <span className="font-mono">
+                                    [{need.component}]
+                                </span>
+                                {need.observed_state &&
+                                    ` · ${need.observed_state}`}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+            {list('Nuevos en el destino', details.new_plugins)}
+            {list('Actualizados', details.updated_plugins)}
+            {list('Eliminados', details.removed_plugins)}
+            {list('Errores de la validación técnica', details.technical_issues)}
+            {details.review_paths && details.review_paths.length > 0 && (
+                <p className="text-muted-foreground text-xs">
+                    En el servidor: {details.review_paths.join(', ')}
+                </p>
+            )}
+            <label className="flex gap-2 text-xs">
+                <input
+                    type="checkbox"
+                    checked={confirmed}
+                    onChange={(event) => setConfirmed(event.target.checked)}
+                />
+                {plugins
+                    ? 'Revisé que los plugins instalados cubren los datos de los orígenes'
+                    : 'Completé la intervención indicada en el Moodle destino'}
+            </label>
+            <div className="flex flex-wrap gap-2">
+                {conflict.allowed_decisions.includes('ACCEPT') && (
+                    <Button
+                        disabled={disabled || processing || !confirmed}
+                        onClick={() => decide('ACCEPT')}
+                    >
+                        Aprobar plugins y continuar
+                    </Button>
+                )}
+                {conflict.allowed_decisions.includes('CONFIRM_COMPLETED') && (
+                    <Button
+                        variant={plugins ? 'outline' : 'default'}
+                        disabled={disabled || processing || !confirmed}
+                        onClick={() => decide('CONFIRM_COMPLETED')}
+                    >
+                        {plugins
+                            ? 'Revalidar plugins'
+                            : 'Confirmar intervención y continuar'}
+                    </Button>
+                )}
+            </div>
         </div>
     );
 }

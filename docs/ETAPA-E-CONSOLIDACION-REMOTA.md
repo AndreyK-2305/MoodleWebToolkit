@@ -240,3 +240,30 @@ Se evalúa con la evidencia que la plataforma ya tiene:
 - **Continuar.** `POST …/consolidation/continue` exige una confirmación explícita. La transición
   `WAITING_USER_ACTION` → `RUNNING` es la reserva: un segundo Continuar no lanza otra corrida.
 - **Cierre de E4a.** «Finalizar» queda rechazado para una consolidación remota hasta E6.
+
+## E5: intervenciones tipadas
+
+Cada espera del asistente (salida 22) abre un `Conflict` tipado en la Ejecución. Su decisión
+pasa por la resolución genérica de conflictos: versionada, idempotente, auditada y con un
+comando `RESOLVE_CONFLICT` durable que el provider de la consolidación procesa. El botón
+«Continuar» de E4a queda reemplazado por esta intervención.
+
+| Tipo                        | Etapas                          | Lo que muestra (whitelist, redactado)                                                                     | Decisiones                                                                       |
+| --------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `OAUTH2_CONFIGURATION`      | `02-oauth2`, `03b-oauth2-final` | Instrucciones de `reports/oauth2-configuracion-manual.txt`, URI de callback y pendientes de la validación | `CONFIRM_COMPLETED`: el administrador configuró Google y se relanza el asistente |
+| `PLUGIN_INTERVENTION`       | `03-plugins`                    | Necesidades de los orígenes, diff del inventario, errores técnicos y estado del checkpoint                | `CONFIRM_COMPLETED` (revalidar) y, con `READY_FOR_APPROVAL`, `ACCEPT`            |
+| `CONSOLIDATOR_INTERVENTION` | Cualquier otra                  | El mensaje del asistente y las rutas a revisar en el servidor                                             | `CONFIRM_COMPLETED`                                                              |
+
+- **Agente 1.9.0.** Agrega dos piezas:
+    - `consolidator-intervention <perfil> oauth2|plugins` devuelve los documentos del
+      Consolidador, como máximo 10 KB cada uno;
+    - `consolidator.plugins-approve` ejecuta, bajo el lock del asistente y en su propio
+      contenedor `assistant-runtime`, los dos pasos que el asistente aplica con `[Y]`:
+      `audit-package-plugins.ps1 -Mode Approve` y `v8-plugin-resolver.ps1 -Mode Seal`. Solo se
+      acepta con el checkpoint en `READY_FOR_APPROVAL` y sin escrituras previas.
+- **Aceptar plugins.** La Ejecución vuelve a `RUNNING` mientras se sella la aprobación. Si se
+  sella, se lanza la siguiente corrida del asistente. Si falla, la Ejecución vuelve a esperar con
+  una nueva intervención de plugins.
+- **Continuación bloqueada.** Si el destino no está listo para continuar (conexión, perfil,
+  `copias/`), la decisión queda registrada y la Ejecución sigue esperando con el evento
+  `consolidator.continue_blocked`.
