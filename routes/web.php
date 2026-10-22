@@ -54,6 +54,8 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/validate', [ExecutionReviewController::class, 'validateExecution'])->middleware('action.confirmed')->name('projects.executions.validate');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/finalize', [ExecutionReviewController::class, 'finalize'])->middleware('action.confirmed')->name('projects.executions.finalize');
     Route::get('projects/{project:uuid}/executions/{execution:uuid}/artifacts/{artifact}/download', [ArtifactController::class, 'download'])->name('projects.executions.artifacts.download');
+    Route::post('projects/{project:uuid}/executions/{execution:uuid}/conflicts/{conflict}/plugin-inspect', [ExecutionActionController::class, 'inspectPlugin'])->middleware('action.confirmed')->name('projects.executions.conflicts.plugin-inspect');
+    Route::post('projects/{project:uuid}/executions/{execution:uuid}/conflicts/{conflict}/answers', [ExecutionActionController::class, 'answerIntervention'])->middleware('action.confirmed')->name('projects.executions.conflicts.answers');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/conflicts/{conflict}/resolve', [ExecutionActionController::class, 'resolve'])->middleware('action.confirmed')->name('projects.executions.conflicts.resolve');
     Route::patch('projects/{project:uuid}/wizard/basics', [ProjectWizardController::class, 'basics'])->middleware('action.confirmed')->name('projects.wizard.basics');
     Route::put('projects/{project:uuid}/wizard/instances', [ProjectWizardController::class, 'instances'])->middleware('action.confirmed')->name('projects.wizard.instances');

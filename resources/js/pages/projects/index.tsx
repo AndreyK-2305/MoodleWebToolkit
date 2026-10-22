@@ -47,9 +47,6 @@ export default function ProjectsIndex({
             <Head title="Proyectos" />
             <div className="space-y-6 p-4 md:p-6">
                 <div>
-                    <p className="text-sm font-medium text-amber-600 dark:text-amber-400">
-                        Iteración 1F
-                    </p>
                     <h1 className="text-2xl font-semibold tracking-tight">
                         Proyectos
                     </h1>

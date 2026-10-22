@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\DB;
  */
 class CheckRemoteDestination
 {
-    public const DISTRIBUTION_KEY = 'moodle-consolidador-8.0.0-linux-rc12-tree';
+    public const DISTRIBUTION_KEY = 'moodle-consolidador-8.0.0-linux-rc13-tree';
 
     /** Below this the Moodle 5.2.1 target, MariaDB and the restore workers compete for memory. */
     public const MIN_MEMORY_BYTES = 3_500_000_000;
@@ -26,7 +26,8 @@ class CheckRemoteDestination
 
     private const FIELDS = ['destination', 'public_url', 'env_present', 'env_protected', 'env_matches_url', 'env_complete', 'tool_tree',
         'tool_present', 'engine_intact', 'docker_version', 'compose_version', 'flock', 'python3', 'cpus', 'memory_bytes', 'runtime_free_bytes',
-        'target_running', 'destination_written', 'run_as', 'run_as_docker', 'runtime_owned'];
+        'target_running', 'destination_written', 'run_as', 'run_as_docker', 'runtime_owned', 'target_volumes', 'assistant_started',
+        'copias_packages', 'server_profiles'];
 
     public function __construct(
         private readonly RemoteServerConnections $connections,
@@ -67,6 +68,20 @@ class CheckRemoteDestination
         });
 
         return ['ready' => $ready, 'destination' => $destination, 'error_code' => $errorCode, 'blockers' => $blockers, 'warnings' => $warnings, 'report' => $report];
+    }
+
+    /**
+     * A destination that already holds a site: services or volumes of a previous Moodle,
+     * an assistant that started, packages in copias/ or writes of the Consolidator.
+     *
+     * @param  array<string, mixed>  $report
+     */
+    public static function used(array $report): bool
+    {
+        return ($report['target_running'] ?? false) === true || ($report['destination_written'] ?? false) === true
+            || ($report['assistant_started'] ?? false) === true
+            || (is_int($report['target_volumes'] ?? null) && $report['target_volumes'] > 0)
+            || (is_int($report['copias_packages'] ?? null) && $report['copias_packages'] > 0);
     }
 
     /**
@@ -111,8 +126,13 @@ class CheckRemoteDestination
         if (is_int($report['runtime_free_bytes'] ?? null) && $report['runtime_free_bytes'] < self::MIN_FREE_BYTES) {
             $warnings[] = 'low_disk';
         }
+        // A site already on the destination is shown when preparing it, where the administrator decides.
         if (($report['destination_written'] ?? false) === true) {
             $warnings[] = 'destination_written';
+        }
+        // The Consolidator's Compose project name is fixed: two runtimes on one server share it.
+        if (is_int($report['server_profiles'] ?? null) && $report['server_profiles'] > 1) {
+            $warnings[] = 'shared_server';
         }
 
         return [$blockers, $warnings];

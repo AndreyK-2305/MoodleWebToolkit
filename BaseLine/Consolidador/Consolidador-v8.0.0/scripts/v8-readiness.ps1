@@ -124,6 +124,11 @@ if ($LASTEXITCODE -ne 0) { throw 'V8_IDENTITY_CANDIDATES_FAILED' }
 $identitySummary = Read-Document $candidateSummary
 if ([int]$identitySummary.candidate_count -gt 0) {
     $choice = 'S'
+    # RC13: quien opera sin terminal (la plataforma web) puede exigir la revisión
+    # fuzzy antes de escribir usuarios; sin la variable se conserva la omisión.
+    if ($NonInteractive -and ([string]$env:CONSOLIDATION_FUZZY_REVIEW).Trim().ToLowerInvariant() -eq 'required') {
+        $choice = 'P'
+    }
     if (-not $NonInteractive) {
         Write-Host ''
         Write-Host 'CANDIDATOS FUZZY DE IDENTIDAD' -ForegroundColor Cyan

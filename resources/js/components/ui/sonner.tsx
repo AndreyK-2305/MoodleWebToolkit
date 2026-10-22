@@ -11,7 +11,8 @@ function Toaster({ ...props }: ToasterProps) {
         <Sonner
             theme={appearance}
             className="toaster group"
-            position="bottom-right"
+            // Top-right: the wizard and execution actions sit at the bottom of the page.
+            position="top-right"
             style={
                 {
                     '--normal-bg': 'var(--popover)',

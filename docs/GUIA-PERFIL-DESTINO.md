@@ -96,7 +96,21 @@ El proceso corre en el servidor, así que cerrar la página o perder la conexió
 
 **Cancelar preparación** detiene el proceso. Al terminar con éxito, la plataforma repite la comprobación del perfil.
 
-Una vez que el Consolidador escribió en el destino, la preparación queda bloqueada: repetirla recrearía sus servicios a mitad de la migración.
+Se recomienda un destino limpio, dedicado a la consolidación. **Preparar destino** abre un diálogo que lo recuerda. Si el destino ya tiene un sitio (Moodle en marcha, volúmenes de datos, paquetes en `copias/` o una consolidación previa), ofrece dos opciones:
+
+- **Limpiar el destino y preparar**, la recomendada:
+    - elimina los servicios, los volúmenes y el estado del sitio anterior;
+    - restaura el Consolidador verificado;
+    - conserva el `.env`, por lo que la clave del administrador de Moodle no cambia;
+    - no toca las copias ya respaldadas en S3.
+
+    El Moodle queda nuevo, así que el servicio Google OAuth2 se configura de nuevo cuando la Ejecución lo pida.
+
+- **Preparar sobre el destino existente.** Es propenso a colisiones con el sitio anterior si Caddy, el DNS y los servicios relacionados no están bien configurados. No está disponible si el destino ya recibió una consolidación.
+
+Cualquiera de las dos exige un administrador de la plataforma, la confirmación de su contraseña y escribir `CONFIRMAR`.
+
+El nombre del proyecto Compose del Consolidador es fijo: un servidor aloja un solo runtime. Con más de un perfil en el mismo servidor, la comprobación lo advierte y la limpieza se rechaza.
 
 ## 6. Traer los paquetes
 

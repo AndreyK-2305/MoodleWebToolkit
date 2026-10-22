@@ -55,6 +55,13 @@ class ReconcileRemoteOperations extends Command
                         ->whereHas('execution', fn ($execution) => $execution->whereIn('status', ['RUNNING', 'CANCELLING'])
                             ->whereHas('toolBinding', fn ($binding) => $binding->where('adapter_key', RemoteConsolidationPreparation::ADAPTER_KEY)))
                         ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
+                })->orWhere(function ($inspection): void {
+                    // A finished plugin inspection fills the intervention the Execution waits on.
+                    $inspection->where('provider_key', RemoteAgentOperations::PROVIDER)->where('communication_state', 'TERMINATED')
+                        ->where('command_key', RemoteConsolidationWorkflow::INSPECT_COMMAND)->where('manual_intervention_required', false)
+                        ->whereNull('evidence->inspection')
+                        ->whereHas('execution', fn ($execution) => $execution->where('status', 'WAITING_USER_ACTION'))
+                        ->where(fn ($due) => $due->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', now()->utc()));
                 })->orWhere(function ($backup): void {
                     // A finished backup upload is verified and registered while the Execution is in REVIEW.
                     $backup->where('provider_key', RemoteAgentOperations::PROVIDER)->where('communication_state', 'TERMINATED')

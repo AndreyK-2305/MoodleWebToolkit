@@ -20,6 +20,11 @@ use Illuminate\Support\Str;
  * on the server as a durable agent operation; the platform launches it once
  * and then only observes, from the scheduler, until its exit evidence.
  *
+ * A clean destination is preferred. On one already in use the administrator
+ * types CONFIRMAR either to prepare over it or to clean it first: the reset
+ * removes the previous site's services, volumes and runtime state in the same
+ * operation, keeping only the administrator's .env.
+ *
  * The preparation belongs to the server, not to an Execution: its state is
  * kept on the server's metadata under `remote_destination_preparations`.
  */
@@ -28,6 +33,9 @@ class PrepareRemoteDestination
     public const COMMAND = 'consolidator.prepare';
 
     public const ACTIVE = ['STARTING', 'RUNNING', 'CANCELLING'];
+
+    /** What the administrator types to act on a destination already in use. */
+    public const CONFIRMATION = 'CONFIRMAR';
 
     /** The Consolidator prints these markers, in this order, on a successful preparation. */
     public const MARKERS = ['PREFLIGHT_OK', 'DESTINO_LISTO', 'EXPORT_TRANSPORT_OK', 'TARGET_SHARED_EMAIL_POLICY_OK'];
@@ -48,7 +56,7 @@ class PrepareRemoteDestination
     ) {}
 
     /** @return array<string, mixed> */
-    public function start(Server $server, string $destination, ?User $actor): array
+    public function start(Server $server, string $destination, ?User $actor, bool $reset = false, ?string $confirmation = null): array
     {
         $this->connections->assertEnabled();
         if ($server->role !== ServerRole::DESTINATION) {
@@ -62,20 +70,37 @@ class PrepareRemoteDestination
         if (! is_array($check) || ($check['ready'] ?? false) !== true || ! is_string($tree)) {
             throw new ToolOperationBlocked('El perfil de destino debe superar su comprobación antes de prepararse.');
         }
-        if ((($check['report']['destination_written'] ?? false) === true)) {
-            throw new ToolOperationBlocked('El destino ya recibió escrituras del Consolidador; no se vuelve a preparar.');
+        $report = is_array($check['report'] ?? null) ? $check['report'] : [];
+        if (! $reset && ($report['destination_written'] ?? false) === true) {
+            throw new ToolOperationBlocked('El destino ya recibió escrituras del Consolidador; límpielo antes de prepararlo de nuevo.');
         }
-        $command = $this->registry->resolve(self::COMMAND, ['destination' => $destination, 'distribution' => $tree]);
+        if ($reset || CheckRemoteDestination::used($report)) {
+            if ($actor === null || ! $actor->isAdmin()) {
+                throw new ToolOperationBlocked('Solo un administrador puede preparar o limpiar un destino que ya está en uso.');
+            }
+            if ($confirmation !== self::CONFIRMATION) {
+                throw new ToolOperationBlocked('Escriba CONFIRMAR para actuar sobre un destino que ya está en uso.');
+            }
+        }
+        $command = $this->registry->resolve(self::COMMAND, ['destination' => $destination, 'distribution' => $tree, 'reset' => $reset ? '1' : '0']);
         $uuid = (string) Str::uuid();
 
         // The claim is taken under lock so two requests cannot launch two preparations.
-        DB::transaction(function () use ($server, $destination, $uuid, $tree): void {
+        DB::transaction(function () use ($server, $destination, $uuid, $tree, $reset): void {
             $locked = Server::query()->whereKey($server->getKey())->lockForUpdate()->firstOrFail();
             $current = $locked->metadata['remote_destination_preparations'][$destination] ?? null;
             if (is_array($current) && in_array($current['state'] ?? null, self::ACTIVE, true)) {
                 throw new ToolOperationBlocked('Ya hay una preparación en curso para este perfil de destino.');
             }
-            $this->write($locked, $destination, ['operation_uuid' => $uuid, 'state' => 'STARTING', 'tool_tree' => $tree,
+            if ($reset) {
+                // What the platform knew of copias/ and its transfers no longer holds; the
+                // profile is checked again once the preparation ends.
+                $metadata = $locked->metadata ?? [];
+                unset($metadata['remote_destination_copias'][$destination], $metadata['remote_destination_fetches'][$destination]);
+                $metadata['remote_destinations'][$destination]['ready'] = false;
+                $locked->metadata = $metadata;
+            }
+            $this->write($locked, $destination, ['operation_uuid' => $uuid, 'state' => 'STARTING', 'tool_tree' => $tree, 'reset' => $reset,
                 'launched_at' => now()->utc()->toIso8601String(), 'finished_at' => null, 'exit_code' => null, 'error_code' => null,
                 'markers' => [], 'last_error_line' => null, 'stdout_offset' => 0, 'tail' => '', 'heartbeat_at' => null, 'observed_at' => null]);
         });
@@ -93,8 +118,9 @@ class PrepareRemoteDestination
         $state = $errorCode === null ? $state : 'FAILED';
         $this->update($server, $destination, ['state' => $state, 'error_code' => $errorCode,
             'finished_at' => $errorCode === null ? null : now()->utc()->toIso8601String()]);
-        $this->audit($server, $actor, 'REMOTE_DESTINATION_PREPARATION_STARTED',
-            ['destination' => $destination, 'operation_uuid' => $uuid, 'tool_tree' => $tree, 'error_code' => $errorCode]);
+        $this->audit($server, $actor, $reset ? 'REMOTE_DESTINATION_RESET_STARTED' : 'REMOTE_DESTINATION_PREPARATION_STARTED',
+            ['destination' => $destination, 'operation_uuid' => $uuid, 'tool_tree' => $tree, 'error_code' => $errorCode,
+                'reset' => $reset, 'in_use' => CheckRemoteDestination::used($report)]);
 
         return $this->current($server->refresh(), $destination);
     }
@@ -174,6 +200,14 @@ class PrepareRemoteDestination
         if (! in_array($changes['state'], self::ACTIVE, true)) {
             $this->audit($server, null, 'REMOTE_DESTINATION_PREPARATION_FINISHED', ['destination' => $destination, 'operation_uuid' => $uuid,
                 'state' => $changes['state'], 'exit_code' => $changes['exit_code'] ?? null, 'error_code' => $changes['error_code'] ?? null, 'markers' => $markers]);
+            if (($current['reset'] ?? false) === true) {
+                // The cleaned destination is checked again, so the consolidation sees its new facts.
+                try {
+                    app(CheckRemoteDestination::class)->handle($server->refresh(), $destination, null);
+                } catch (RemoteAgentUnavailable|ToolOperationBlocked) {
+                    // The administrator can run the check from the panel.
+                }
+            }
         }
 
         return $this->current($server->refresh(), $destination);

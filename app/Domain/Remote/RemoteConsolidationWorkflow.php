@@ -5,6 +5,7 @@ namespace App\Domain\Remote;
 use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Executions\ExecutionEventRecorder;
 use App\Domain\Executions\ExecutionLifecycle;
+use App\Domain\Remote\DTOs\RemoteTarget;
 use App\Enums\ConnectionStatus;
 use App\Enums\EventSeverity;
 use App\Enums\ExecutionStatus;
@@ -42,7 +43,29 @@ class RemoteConsolidationWorkflow
 
     public const APPROVE_COMMAND = 'consolidator.plugins-approve';
 
-    public const COMMANDS = [self::COMMAND, self::APPROVE_COMMAND, RemoteConsolidationBackup::COMMAND];
+    /** Seals a plugin lock that asks for no plugin, working around Consolidator 8.0.0 (rc12 and rc13). */
+    public const NONE_COMMAND = 'consolidator.plugins-none';
+
+    /** Applies the administrator's fuzzy identity review with the Consolidator's own validator. */
+    public const IDENTITY_COMMAND = 'consolidator.identity-apply';
+
+    /** Inspects a plugin outside the catalog on the destination while the Execution waits. */
+    public const INSPECT_COMMAND = 'consolidator.plugin-inspect';
+
+    /** Adds the confirmed inspections to the Consolidator's catalog with its own promotion rules. */
+    public const PROMOTE_COMMAND = 'consolidator.plugin-promote';
+
+    /** Steps run on the destination between two runs, each followed by the next run, and their stage. */
+    private const STEP_COMMANDS = [self::APPROVE_COMMAND => '03-plugins', self::NONE_COMMAND => '03-plugins', self::PROMOTE_COMMAND => '03-plugins',
+        self::IDENTITY_COMMAND => '05b-readiness'];
+
+    public const COMMANDS = [self::COMMAND, self::APPROVE_COMMAND, self::NONE_COMMAND, self::IDENTITY_COMMAND, self::INSPECT_COMMAND,
+        self::PROMOTE_COMMAND, RemoteConsolidationBackup::COMMAND];
+
+    /** What an inspection's exit code means, as the agent's inspector reports it. */
+    private const INSPECTION_ERRORS = [71 => 'el tipo de plugin no está soportado', 72 => 'no se pudo clonar el repositorio o el commit no existe',
+        73 => 'el plugin usa submódulos Git, que no se inspeccionan desde la plataforma', 74 => 'version.php declara otro componente',
+        75 => 'version.php no declara version y requires'];
 
     /** The assistant's exit code when it waits for the administrator. */
     public const EXIT_WAITING = 22;
@@ -211,6 +234,12 @@ class RemoteConsolidationWorkflow
 
             return;
         }
+        // An inspection runs while the Execution waits: it only fills the open plugin intervention.
+        if ($operation->command_key === self::INSPECT_COMMAND) {
+            $this->observeInspection($operation->communication_state === RemoteCommunicationState::TERMINATED ? $operation : $this->operations->reconcile($operation));
+
+            return;
+        }
         if ($operation->communication_state !== RemoteCommunicationState::TERMINATED) {
             $operation = $this->operations->reconcile($operation);
         }
@@ -254,10 +283,10 @@ class RemoteConsolidationWorkflow
             return;
         }
         // A plugin approval launched after the latest run is followed before anything else.
-        $approval = $execution->remoteOperations()->where('command_key', self::APPROVE_COMMAND)->where('id', '>', $run->id)->orderByDesc('id')->first();
+        $approval = $execution->remoteOperations()->whereIn('command_key', array_keys(self::STEP_COMMANDS))->where('id', '>', $run->id)->orderByDesc('id')->first();
         if ($approval !== null) {
             if ($approval->communication_state === RemoteCommunicationState::TERMINATED) {
-                $this->afterApproval($execution, $approval);
+                $this->afterStep($execution, $approval);
             }
 
             return;
@@ -372,7 +401,9 @@ class RemoteConsolidationWorkflow
 
     /**
      * Applies the administrator's decision on the open intervention: confirming continues with
-     * the next run; accepting a plugin intervention first approves the sealed inventory.
+     * the next run; accepting a plugin intervention first approves the sealed inventory; the
+     * answers given in the platform (identity review, themes) are written on the destination
+     * before continuing.
      */
     public function resolve(Execution $execution, Conflict $conflict, string $decision, User $actor): void
     {
@@ -380,41 +411,197 @@ class RemoteConsolidationWorkflow
         if ($execution->status !== ExecutionStatus::WAITING_USER_ACTION) {
             return;
         }
-        if ($decision === 'ACCEPT' && $conflict->type === RemoteConsolidationInterventions::PLUGINS) {
-            $this->approvePlugins($execution, $actor);
+        if ($conflict->type === RemoteConsolidationInterventions::PLUGINS && in_array($decision, ['ACCEPT', 'CONTINUE_WITHOUT_PLUGINS'], true)) {
+            $this->launchStep($execution, $actor, $decision === 'ACCEPT' ? self::APPROVE_COMMAND : self::NONE_COMMAND);
 
             return;
+        }
+        if ($decision === 'APPLY_ANSWERS') {
+            $answers = is_array($conflict->details['answers'] ?? null) ? $conflict->details['answers'] : null;
+            if ($answers === null) {
+                throw new ToolOperationBlocked('La intervención no tiene respuestas registradas.');
+            }
+            $settings = $this->settings($execution);
+            $target = $this->connections->target($this->server($execution, $settings));
+            $profile = (string) $settings['destination_profile'];
+            if ($conflict->type === RemoteConsolidationInterventions::IDENTITY) {
+                $payload = rtrim(strtr(base64_encode((string) json_encode([
+                    'operator' => $actor->name.' <'.$actor->email.'>', 'decision_timestamp_utc' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
+                    'evidence_reference' => 'MoodleWebToolkit: ejecución '.$execution->uuid.', intervención '.$conflict->id,
+                    'decisions' => $answers['decisions'] ?? [],
+                ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)), '+/', '-_'), '=');
+                $this->agentStep($target, 'identity-review-submit', [$profile, ...str_split($payload, 150)]);
+                $this->launchStep($execution, $actor, self::IDENTITY_COMMAND);
+
+                return;
+            }
+            if ($conflict->type === RemoteConsolidationInterventions::PLUGINS) {
+                $approver = mb_substr($actor->name.' <'.$actor->email.'>', 0, 100);
+                $this->launchStep($execution, $actor, self::PROMOTE_COMMAND, ['components' => implode(',', $answers['promote'] ?? []),
+                    'approver' => rtrim(strtr(base64_encode($approver), '+/', '-_'), '=')]);
+
+                return;
+            }
+            if ($conflict->type === RemoteConsolidationInterventions::THEMES) {
+                $this->agentStep($target, 'theme-policy-set', [$profile, (string) ($answers['theme'] ?? ''), ($answers['accept_legacy'] ?? false) === true ? '1' : '0']);
+                $this->resume($execution, $actor);
+
+                return;
+            }
+            throw new ToolOperationBlocked('Esta intervención no admite respuestas desde la plataforma.');
         }
         $this->resume($execution, $actor);
     }
 
-    private function approvePlugins(Execution $execution, User $actor): void
+    /**
+     * A short agent call that writes the administrator's answers on the destination.
+     *
+     * @param  list<string>  $arguments
+     */
+    private function agentStep(RemoteTarget $target, string $subcommand, array $arguments): void
+    {
+        try {
+            $response = $this->agent->call($target, $subcommand, $arguments, 60);
+        } catch (RemoteAgentUnavailable $exception) {
+            throw new ToolOperationBlocked('No se pudo escribir la respuesta en el destino ('.$exception->errorCode.').');
+        }
+        if (! $response->ok) {
+            throw new ToolOperationBlocked('El destino rechazó la respuesta ('.$response->errorCode.').');
+        }
+    }
+
+    /**
+     * Inspects, on the destination, a plugin the sources need and the catalog lacks: the
+     * administrator names its Git repository and commit; the result fills the intervention.
+     */
+    public function inspectPlugin(Execution $execution, Conflict $conflict, User $actor, string $component, string $repository, string $commit): RemoteOperation
+    {
+        $execution->refresh();
+        if ($execution->status !== ExecutionStatus::WAITING_USER_ACTION || $conflict->type !== RemoteConsolidationInterventions::PLUGINS
+            || $conflict->status->value !== 'OPEN' || ! in_array($component, $conflict->details['unknown'] ?? [], true)) {
+            throw new ToolOperationBlocked('Solo se inspecciona un plugin pedido por la intervención de plugins abierta.');
+        }
+        $settings = $this->settings($execution);
+        $server = $this->server($execution, $settings);
+        $distribution = $this->assertLaunchable($server, $settings, true);
+        $attempt = $execution->remoteOperations()->where('command_key', self::INSPECT_COMMAND)->count() + 1;
+        $operation = $this->operations->launch($execution, $server, 'consolidator-plugin-inspect-'.$attempt, self::INSPECT_COMMAND, [
+            'destination' => (string) $settings['destination_profile'], 'distribution' => $distribution->distribution_sha256, 'component' => $component,
+            'repository' => rtrim(strtr(base64_encode($repository), '+/', '-_'), '='), 'commit' => $commit,
+        ], $actor);
+        DB::transaction(function () use ($conflict, $component, $repository, $commit, $operation): void {
+            $locked = Conflict::query()->whereKey($conflict->getKey())->lockForUpdate()->firstOrFail();
+            $details = $locked->details ?? [];
+            $details['inspections'][$component] = ['operation_uuid' => $operation->operation_uuid, 'state' => 'RUNNING',
+                'repository' => $repository, 'commit' => $commit, 'message' => null];
+            unset($details['proposals'][$component]);
+            $locked->details = $details;
+            $locked->save();
+        });
+        $this->events->record($execution, 'consolidator.plugin_inspection_requested', '03-plugins',
+            message: 'Inspección de '.$component.' en el destino: '.$repository.' @ '.substr($commit, 0, 12).'.',
+            payload: ['operation_uuid' => $operation->operation_uuid, 'component' => $component], operation: $operation);
+
+        return $operation;
+    }
+
+    /** Settles a finished inspection into the open plugin intervention, once. */
+    private function observeInspection(RemoteOperation $operation): void
+    {
+        if ($operation->communication_state !== RemoteCommunicationState::TERMINATED || isset($operation->evidence['inspection'])) {
+            return;
+        }
+        $component = (string) ($operation->evidence['parameters']['component'] ?? '');
+        $execution = $operation->execution;
+        $proposal = null;
+        $message = null;
+        if ($operation->functional_state === RemoteFunctionalState::SUCCEEDED && $operation->exit_code === 0) {
+            $settings = $this->settings($execution);
+            try {
+                $response = $this->agent->call($this->connections->target($this->server($execution, $settings)), 'plugin-proposal',
+                    [(string) $settings['destination_profile'], $component], 30);
+            } catch (RemoteAgentUnavailable) {
+                return;
+            }
+            $decoded = $response->ok ? json_decode((string) base64_decode((string) ($response->data['proposal_base64'] ?? ''), true), true) : null;
+            $entry = is_array($decoded['entry'] ?? null) ? $decoded['entry'] : [];
+            if (($decoded['component'] ?? null) === $component && is_int($entry['version'] ?? null) && is_string($entry['tree_sha256'] ?? null)) {
+                $proposal = ['version' => $entry['version'], 'requires' => is_int($entry['requires'] ?? null) ? $entry['requires'] : null,
+                    'release' => is_string($entry['release'] ?? null) ? mb_substr($entry['release'], 0, 120) : null,
+                    'path' => is_string($entry['path'] ?? null) ? mb_substr($entry['path'], 0, 120) : null,
+                    'tree_sha256' => preg_match('/^[0-9a-f]{64}$/D', $entry['tree_sha256']) === 1 ? $entry['tree_sha256'] : null,
+                    'dependencies' => array_slice(array_keys(is_array($entry['dependencies'] ?? null) ? $entry['dependencies'] : []), 0, 20)];
+            } else {
+                $message = 'La inspección terminó sin una propuesta válida.';
+            }
+        } else {
+            $message = 'La inspección falló: '.(self::INSPECTION_ERRORS[$operation->exit_code ?? 0] ?? 'código '.($operation->exit_code ?? '?')).'.';
+        }
+        DB::transaction(function () use ($operation, $execution, $component, $proposal, $message): void {
+            $locked = RemoteOperation::query()->whereKey($operation->getKey())->lockForUpdate()->firstOrFail();
+            if (isset($locked->evidence['inspection'])) {
+                return;
+            }
+            $locked->forceFill(['evidence' => [...($locked->evidence ?? []), 'inspection' => ['state' => $proposal === null ? 'FAILED' : 'SUCCEEDED']]])->save();
+            $conflict = Conflict::query()->where('execution_id', $execution->id)->where('type', RemoteConsolidationInterventions::PLUGINS)
+                ->where('status', 'OPEN')->lockForUpdate()->first();
+            if ($conflict === null || ($conflict->details['inspections'][$component]['operation_uuid'] ?? null) !== $operation->operation_uuid) {
+                return;
+            }
+            $details = $conflict->details;
+            $details['inspections'][$component]['state'] = $proposal === null ? 'FAILED' : 'SUCCEEDED';
+            $details['inspections'][$component]['message'] = $message;
+            if ($proposal !== null) {
+                $details['proposals'][$component] = $proposal;
+            }
+            $conflict->details = $details;
+            $conflict->save();
+        }, attempts: 3);
+    }
+
+    /**
+     * Launches one of the steps that run on the destination between two runs.
+     *
+     * @param  array<string, string>  $extra
+     */
+    private function launchStep(Execution $execution, User $actor, string $command, array $extra = []): void
     {
         $settings = $this->settings($execution);
         $server = $this->server($execution, $settings);
         $distribution = $this->assertLaunchable($server, $settings, true);
+        $stage = self::STEP_COMMANDS[$command];
         $running = $this->lifecycle->transition($execution, ExecutionStatus::RUNNING, $actor);
-        $attempt = $running->remoteOperations()->where('command_key', self::APPROVE_COMMAND)->count() + 1;
+        $attempt = $running->remoteOperations()->where('command_key', $command)->count() + 1;
         try {
-            $operation = $this->operations->launch($running, $server, 'consolidator-plugins-approve-'.$attempt, self::APPROVE_COMMAND, [
-                'destination' => (string) $settings['destination_profile'], 'distribution' => $distribution->distribution_sha256,
+            $operation = $this->operations->launch($running, $server, str_replace('.', '-', $command).'-'.$attempt, $command, [
+                'destination' => (string) $settings['destination_profile'], 'distribution' => $distribution->distribution_sha256, ...$extra,
             ], $actor);
         } catch (ToolOperationBlocked $exception) {
             $this->close($running, null, false, $exception->getMessage());
 
             return;
         }
-        $this->step($running, '03-plugins', ExecutionStepStatus::RUNNING);
-        $this->events->record($running, 'consolidator.plugins_approval_requested', '03-plugins',
-            message: 'Aprobación de plugins aceptada; el Consolidador sella el inventario en el destino.',
-            payload: ['operation_uuid' => $operation->operation_uuid], operation: $operation);
+        $this->step($running, $stage, ExecutionStepStatus::RUNNING);
+        [$type, $message, $action] = match ($command) {
+            self::NONE_COMMAND => ['consolidator.plugins_approval_requested',
+                'Continuar sin plugins aceptado; el destino reconstruye Moodle si hace falta y sella el inventario vacío.', 'CONSOLIDATOR_PLUGINS_NONE_ACCEPTED'],
+            self::PROMOTE_COMMAND => ['consolidator.plugins_promoted',
+                'Plugins confirmados para el catálogo; el Consolidador los agrega y revalida la etapa de plugins.', 'CONSOLIDATOR_PLUGINS_PROMOTED'],
+            self::IDENTITY_COMMAND => ['consolidator.identity_review_submitted',
+                'Revisión de identidades registrada; el Consolidador la valida y la aplica en el destino.', 'CONSOLIDATOR_IDENTITY_REVIEW_SUBMITTED'],
+            default => ['consolidator.plugins_approval_requested',
+                'Aprobación de plugins aceptada; el Consolidador sella el inventario en el destino.', 'CONSOLIDATOR_PLUGINS_APPROVED'],
+        };
+        $this->events->record($running, $type, $stage, message: $message,
+            payload: ['operation_uuid' => $operation->operation_uuid, 'command' => $command], operation: $operation);
         AuditLog::query()->create(['actor_id' => $actor->getKey(), 'project_id' => $running->project_id, 'execution_id' => $running->id,
-            'action' => 'CONSOLIDATOR_PLUGINS_APPROVED', 'payload' => ['operation_uuid' => $operation->operation_uuid]]);
+            'action' => $action, 'payload' => ['operation_uuid' => $operation->operation_uuid]]);
     }
 
-    /** After the plugin approval ends: a sealed approval continues with the next run, a failed one waits again. */
-    private function afterApproval(Execution $execution, RemoteOperation $approval): void
+    /** After a step on the destination ends: a successful one continues with the next run, a failed one waits again. */
+    private function afterStep(Execution $execution, RemoteOperation $approval): void
     {
+        $stage = self::STEP_COMMANDS[$approval->command_key] ?? '03-plugins';
         if ($approval->functional_state === RemoteFunctionalState::SUCCEEDED && $approval->exit_code === 0) {
             $settings = $this->settings($execution);
             try {
@@ -426,14 +613,21 @@ class RemoteConsolidationWorkflow
 
                 return;
             }
-            $this->events->record($execution, 'consolidator.resumed', '03-plugins',
-                message: 'Plugins aprobados; el Consolidador reanuda desde sus checkpoints aprobados.',
-                payload: ['operation_uuid' => $operation->operation_uuid, 'stage' => '03-plugins'], operation: $operation);
+            $this->events->record($execution, 'consolidator.resumed', $stage,
+                message: ($approval->command_key === self::IDENTITY_COMMAND ? 'Revisión de identidades aplicada' : 'Plugins aprobados')
+                    .'; el Consolidador reanuda desde sus checkpoints aprobados.',
+                payload: ['operation_uuid' => $operation->operation_uuid, 'stage' => $stage], operation: $operation);
 
             return;
         }
-        $this->wait($execution, $approval, ['state' => ['stage' => '03-plugins', 'status' => 'PLUGIN_APPROVAL_FAILED'],
-            'message' => 'La aprobación de plugins no se selló en el destino (código '.($approval->exit_code ?? '?').'); revise el inventario.']);
+        $code = $approval->exit_code ?? '?';
+        $this->wait($execution, $approval, ['state' => ['stage' => $stage, 'status' => 'STEP_FAILED'], 'message' => match ($approval->command_key) {
+            // The same prefix as the assistant's own stop, so the review opens again with its candidates.
+            self::IDENTITY_COMMAND => 'V8_IDENTITY_REVIEW_REQUIRED: el Consolidador no aceptó la revisión (código '.$code.'); revise las decisiones.',
+            self::NONE_COMMAND => 'El sellado del inventario sin plugins no se completó en el destino (código '.$code.'); revise el inventario.',
+            self::PROMOTE_COMMAND => 'El catálogo no aceptó los plugins inspeccionados (código '.$code.'); revise las propuestas.',
+            default => 'La aprobación de plugins no se completó en el destino (código '.$code.'); revise el inventario.',
+        }]);
     }
 
     /** @param array<string, mixed> $report */

@@ -498,7 +498,9 @@ function InstancesStep({
                 </CardTitle>
                 <p className="text-muted-foreground text-sm">
                     {project.type === 'COLLECT' &&
-                        'Recolectar utiliza exactamente un origen y no requiere destino.'}
+                        (simulated
+                            ? 'Recolectar utiliza exactamente un origen y no requiere destino.'
+                            : 'Recolectar utiliza uno o más orígenes, cada uno con su paquete, y no requiere destino.')}
                     {project.type === 'CONSOLIDATE' &&
                         'Consolidar utiliza dos o más orígenes y referencia un destino ya preparado.'}
                     {project.type === 'INTEGRATE' &&
@@ -564,9 +566,9 @@ function InstancesStep({
                                             : 'Moodle consolidado existente'}
                                     </AlertTitle>
                                     <AlertDescription>
-                                        La plataforma sólo guarda esta
-                                        referencia simulada; no crea el servidor
-                                        ni la instalación Moodle.
+                                        {simulated
+                                            ? 'La plataforma sólo guarda esta referencia simulada; no crea el servidor ni la instalación Moodle.'
+                                            : 'El administrador mantiene el servidor, su dominio y el proxy TLS; la plataforma conecta con él y prepara Moodle con el Consolidador.'}
                                     </AlertDescription>
                                 </Alert>
                             )}
