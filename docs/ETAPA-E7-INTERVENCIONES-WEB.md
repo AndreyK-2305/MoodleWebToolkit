@@ -85,7 +85,9 @@ asistente, y `compose.yaml` la transmite al contenedor. Sin la variable, rc13 se
 que rc12.
 
 Es una nueva distribución del catálogo: `8.0.0-linux-rc13`, con árbol `f4119912…` y 264
-archivos. Sus cambios están en `CAMBIOS-8.0.0-RC13.md`.
+archivos. Sus cambios están en `CAMBIOS-8.0.0-RC13.md`. Con ese archivo la BaseLine pasa a 424
+archivos y su huella canónica a `1b22d480e9b0c4380210634a11bc567bc293f49157e27d6bb214bef68bfb383e`.
+Las comprobaciones de integridad y de tracking de CI usan esos valores.
 
 ### E7d: revisión de identidades en la web
 
