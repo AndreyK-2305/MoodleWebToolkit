@@ -100,6 +100,8 @@ type ConsolidationData = {
         freed_bytes: number | null;
     };
     can_backup: boolean;
+    configuration_version: number | null;
+    can_retry: boolean;
 };
 
 type ExecutionData = {
@@ -1592,6 +1594,8 @@ function ConsolidationStatus({
     canControl: boolean;
 }) {
     const backupForm = useForm({});
+    const retryForm = useForm({ configuration_version: 0 });
+    const [retryKey] = useState(() => crypto.randomUUID());
     const workers = consolidation.workers_status;
     const closure = consolidation.closure;
 
@@ -1652,6 +1656,46 @@ function ConsolidationStatus({
                     <p className="text-muted-foreground">
                         {consolidation.message}
                     </p>
+                )}
+                {consolidation.can_retry && (
+                    <Alert>
+                        <ShieldAlert />
+                        <AlertTitle>
+                            Nuevo intento de la consolidación
+                        </AlertTitle>
+                        <AlertDescription className="space-y-2">
+                            <p>
+                                El Consolidador conserva sus checkpoints en el
+                                destino: un nuevo intento continúa desde la
+                                etapa en que se detuvo. Corrija antes en el
+                                servidor lo que indica el mensaje.
+                            </p>
+                            {canControl && (
+                                <Button
+                                    size="sm"
+                                    disabled={retryForm.processing}
+                                    onClick={() => {
+                                        retryForm.transform(() => ({
+                                            configuration_version:
+                                                consolidation.configuration_version ??
+                                                0,
+                                        }));
+                                        retryForm.post(
+                                            `/projects/${projectUuid}/executions/${executionUuid}/consolidation/retry`,
+                                            {
+                                                headers: {
+                                                    'Idempotency-Key': retryKey,
+                                                },
+                                                preserveScroll: true,
+                                            },
+                                        );
+                                    }}
+                                >
+                                    Nuevo intento
+                                </Button>
+                            )}
+                        </AlertDescription>
+                    </Alert>
                 )}
                 {workers && typeof workers.total === 'number' && (
                     <p>

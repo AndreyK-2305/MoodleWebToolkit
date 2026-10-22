@@ -321,3 +321,55 @@ artefactos, operaciones o cambios en sus servidores. Por eso el respaldo se toma
   las referencias S3: un enlace firmado de corta duración, solo para administradores.
 - **Fallo.** Un respaldo fallido no cambia la Ejecución y puede tomarse de nuevo.
 - **Agente 1.10.0.**
+
+## Prueba real E1–E6b (2026-10-21 y 22): hallazgos
+
+Destino: EC2 `t3.medium` (Ubuntu 26.04, 4 GiB, 50 GB), perfil `campus` en
+`https://moodle-test.cuadre.click`, con Caddy como proxy TLS. Origen: los paquetes `pregrado`
+y `posgrado` de la Recolección D3.
+
+**Corregido en la plataforma (agente 1.11.0):**
+
+- **Carpeta S3.** El paquete se busca en la carpeta del perfil de origen que registra su clave
+  S3, no en su `source_id`.
+- **`tail` en logs grandes.** El agente salía con 141 (`SIGPIPE`).
+- **Marcadores de la preparación.** Se leían con la lectura atrasada.
+- **Usuario sin privilegios.** El Consolidador se niega a ejecutarse como root
+  (`ASSISTANT_UID y ASSISTANT_GID deben ser enteros positivos`). El perfil declara `RUN_AS`,
+  un usuario sin privilegios del grupo `docker`, dueño del runtime. El helper lo crea y le
+  pasa el runtime. El agente ejecuta como ese usuario `preparar`, `ejecutar-automatico` y la
+  aprobación de plugins, y deja `copias/` a su nombre. La comprobación bloquea con
+  `runtime_not_owned` o `run_as_not_docker`.
+- **Configuración administrada.** El helper la crea dentro del runtime (`managed-config/`),
+  como propone `CONFIGURAR.sh`. Fuera de él, el gestor de configuración del contenedor del
+  asistente no podía escribirla y la política de themes de `05b-readiness` fallaba.
+- **Motor intacto.** `config.yaml`, que el Consolidador reescribe al importar los paquetes, y
+  `docker/custom-plugins/`, donde instala los plugins del catálogo, quedan fuera de la
+  comprobación, igual que `config/`.
+- **Exit 20.** Una etapa bloqueada en una decisión de configuración, como el theme global de
+  `05b-readiness`, ya no cierra la Ejecución en `FAILED`. Abre una intervención
+  `CONSOLIDATOR_INTERVENTION`: el administrador corrige `config/` en el servidor y pulsa
+  Continuar, o cancela.
+- **Nuevo intento.** Una consolidación `FAILED` o `CANCELLED` que ya corrió admite un nuevo
+  intento. Continúa desde los checkpoints del destino, aunque este ya haya recibido escrituras
+  de esta misma consolidación, y conserva el intento anterior.
+
+**Del administrador:**
+
+- **Proxy TLS.** Con `MOODLE_REVERSE_PROXY=1`, Moodle rechaza toda petición cuyo `Host` sea el
+  de su URL pública («Proxy inverso habilitado…»). El proxy debe reenviar el `Host` local; ver
+  la guía del perfil de destino, § 1.1.
+- **DNS.** Un registro A antiguo hizo fallar la validación de Let's Encrypt hasta que se
+  eliminó.
+
+**Del Consolidador 8.0.0-linux-rc12** (para reportar a su mantenimiento):
+
+- **Pins sin plugins.** Con cero plugins por instalar, `v8c_install` reescribe
+  `docker/custom-plugins/approved-plugins.json` con otro formato, pero el resolver solo
+  reconstruye la imagen si `installed_count > 0`. La auditoría ve entonces pins distintos a
+  los de la imagen (`PLUGIN_TECHNICAL_VALIDATION_FAILED: destino, URL o pins inconsistentes`).
+  Se resolvió reconstruyendo `moodle-target` como hace el resolver.
+- **Sello sin revisión.** Sin necesidades de plugins, la auditoría aprueba sin pasar por
+  `READY_FOR_APPROVAL`, y el asistente solo ejecuta `v8-plugin-resolver -Mode Seal` desde ese
+  estado. El lock queda en `ARTIFACTS_VERIFIED_PENDING_STAGING` y la etapa 03 espera
+  indefinidamente. Se resolvió ejecutando una vez `-Mode Seal` en el contenedor del asistente.

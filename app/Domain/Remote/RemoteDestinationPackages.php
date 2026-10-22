@@ -54,14 +54,17 @@ class RemoteDestinationPackages
             throw new ToolOperationBlocked('Solo se transfieren paquetes vigentes guardados en S3.');
         }
         $location = $this->objects->location($package->artifact);
-        $prefix = 'mwt/'.$package->project->uuid.'/'.$package->source_id.'/'.$package->sha256;
-        if ($location['key'] !== $prefix.'.zip' || preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $package->source_id) !== 1) {
+        // The publication keys the object by the source profile that produced it, not by the
+        // package's source_id: mwt/<project>/<profile>/<sha256>.zip.
+        $pattern = '#^mwt/'.preg_quote($package->project->uuid, '#').'/([a-z0-9][a-z0-9_-]{0,63})/'.preg_quote($package->sha256, '#').'\.zip$#D';
+        if (preg_match($pattern, $location['key'], $match) !== 1) {
             throw new ToolOperationBlocked('La ubicación del paquete en S3 no sigue el contrato de publicación.');
         }
+        $folder = $match[1];
         // The object is checked with the platform's identity before the destination trusts it.
         $this->objects->verifyPackage($location['region'], $location['bucket'], $location['key'], $package->sha256, $package->size_bytes);
         $command = $this->registry->resolve(self::COMMAND, ['destination' => $destination, 'project' => $package->project->uuid,
-            'source' => $package->source_id, 'sha' => $package->sha256, 'bucket' => $location['bucket'], 'region' => $location['region']]);
+            'source' => $folder, 'sha' => $package->sha256, 'bucket' => $location['bucket'], 'region' => $location['region']]);
         $uuid = (string) Str::uuid();
 
         DB::transaction(function () use ($server, $destination, $package, $uuid): void {

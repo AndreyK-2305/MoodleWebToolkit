@@ -4,18 +4,32 @@ Para el administrador del servidor de destino. La plataforma despliega el Consol
 
 ## 1. Requisitos del servidor
 
-| Requisito     | Detalle                                                                                                                          |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Sistema       | Linux/Ubuntu de 64 bits con systemd, Bash 4 o superior y `flock` (`util-linux`)                                                  |
-| Acceso        | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                                     |
-| Docker        | Docker Engine en marcha y Docker Compose v2 (`docker compose`)                                                                   |
-| AWS CLI v2    | Instalado en el servidor: trae los paquetes de S3 con el rol de la instancia                                                     |
-| Rol IAM (EC2) | `AmazonSSMManagedInstanceCore` y lectura **solo** del prefijo `mwt/` del bucket de paquetes (`s3:GetObject`)                     |
-| Dominio y TLS | El dominio definitivo del sitio con su certificado y un proxy TLS hacia `127.0.0.1:<puerto>` (8090 por defecto). Lo monta usted  |
-| Internet      | Salida a Internet durante la primera preparación: se construyen las imágenes de Moodle 5.2.1, MariaDB y el runtime del asistente |
-| Memoria       | 4 GiB o más; con menos, la comprobación lo advierte                                                                              |
-| Disco         | 20 GiB libres como mínimo en el runtime, más el tamaño de los paquetes, de la base de datos y de la copia integral final         |
-| Google OAuth2 | Un cliente OAuth de Google con la URI `https://<dominio>/admin/oauth2callback.php`. Se configura en Moodle durante la ejecución  |
+| Requisito     | Detalle                                                                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sistema       | Linux/Ubuntu de 64 bits con systemd, Bash 4 o superior y `flock` (`util-linux`)                                                             |
+| Acceso        | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                                                |
+| Docker        | Docker Engine en marcha y Docker Compose v2 (`docker compose`)                                                                              |
+| AWS CLI v2    | Instalado en el servidor: trae los paquetes de S3 con el rol de la instancia                                                                |
+| Rol IAM (EC2) | `AmazonSSMManagedInstanceCore` y lectura **solo** del prefijo `mwt/` del bucket de paquetes (`s3:GetObject`)                                |
+| Dominio y TLS | El dominio definitivo del sitio con su certificado y un proxy TLS hacia `127.0.0.1:<puerto>` (8090 por defecto). Lo monta usted (ver § 1.1) |
+| Internet      | Salida a Internet durante la primera preparación: se construyen las imágenes de Moodle 5.2.1, MariaDB y el runtime del asistente            |
+| Memoria       | 4 GiB o más; con menos, la comprobación lo advierte                                                                                         |
+| Disco         | 20 GiB libres como mínimo en el runtime, más el tamaño de los paquetes, de la base de datos y de la copia integral final                    |
+| Google OAuth2 | Un cliente OAuth de Google con la URI `https://<dominio>/admin/oauth2callback.php`. Se configura en Moodle durante la ejecución             |
+
+### 1.1 Proxy TLS
+
+El `.env` activa el proxy inverso de Moodle (`reverseproxy`) y SSL (`sslproxy`), como pide el Consolidador. Con `reverseproxy`, Moodle rechaza con «Proxy inverso habilitado para que no se pueda acceder directamente al servidor» toda petición cuyo `Host` sea el de su URL pública. El proxy debe reenviar el `Host` del destino local, no el del cliente. Con Caddy, que obtiene el certificado por su cuenta cuando el DNS ya apunta al servidor:
+
+```caddyfile
+campus.example.edu {
+    reverse_proxy 127.0.0.1:8090 {
+        header_up Host {upstream_hostport}
+    }
+}
+```
+
+Con nginx el equivalente es `proxy_set_header Host 127.0.0.1:8090;` junto con `proxy_set_header X-Forwarded-Proto https;`.
 
 ## 2. Desplegar el Consolidador
 
@@ -36,13 +50,14 @@ sudo bash mwt-destination-profile campus --public-url https://campus.example.edu
 El script hace lo siguiente:
 
 - Crea el runtime `/srv/mwt-destinations/campus`, una copia privada del Consolidador desplegado. `--runtime-dir` cambia la ruta.
-- Escribe su `.env` (`root:root 0600`) con lo mismo que pide `CONFIGURAR.sh` para un sitio HTTPS:
+- Crea, si no existe, el usuario de sistema sin privilegios `mwt-campus` (`--run-as` cambia el nombre) y lo agrega al grupo `docker`. El Consolidador se niega a ejecutarse como root; el agente lo ejecuta como este usuario, dueño del runtime. Pertenecer al grupo `docker` equivale a root en ese servidor.
+- Escribe su `.env` (`0600`, del usuario anterior) con lo mismo que pide `CONFIGURAR.sh` para un sitio HTTPS:
     - claves de base de datos y del administrador generadas;
     - proxy inverso y SSL activados;
     - notificaciones desactivadas.
-- Crea la configuración administrada de `config.php` en `/srv/mwt-destinations/campus-managed-config`.
+- Crea la configuración administrada de `config.php` dentro del runtime, en `managed-config/`, como propone `CONFIGURAR.sh`: el contenedor del asistente solo puede escribir en el runtime.
 - Muestra **una sola vez** la clave del administrador de Moodle. Guárdela en el gestor institucional de credenciales.
-- Escribe `/etc/mwt-agent/destinations/campus.conf` (`root:root 0600`) con la ruta del runtime, la URL y el árbol de origen.
+- Escribe `/etc/mwt-agent/destinations/campus.conf` (`root:root 0600`) con la ruta del runtime, la URL, el árbol de origen y el usuario (`RUN_AS`).
 - Si el agente ya está instalado, ejecuta la misma comprobación que hará la plataforma.
 
 Opciones:
@@ -52,9 +67,10 @@ Opciones:
 | `--admin-user` | Usuario administrador de Moodle (`admin` por defecto)                                          |
 | `--http-port`  | Puerto local donde escucha Moodle detrás del proxy TLS (8090 por defecto)                      |
 | `--tree`       | Árbol del Consolidador a usar, cuando hay más de uno desplegado                                |
+| `--run-as`     | Usuario sin privilegios que ejecuta el Consolidador (`mwt-<id>` por defecto)                   |
 | `--force`      | Conserva un runtime existente (su `.env`, checkpoints y resultados) y solo reescribe el perfil |
 
-Con `--force` el runtime no se toca. La URL indicada debe coincidir con `MOODLE_PUBLIC_URL` de su `.env`.
+Con `--force` el runtime conserva su contenido; solo pasa al usuario del perfil lo que pertenezca a root. La URL indicada debe coincidir con `MOODLE_PUBLIC_URL` de su `.env`.
 
 ## 4. Verificarlo desde la plataforma
 
@@ -62,6 +78,7 @@ Con `--force` el runtime no se toca. La URL indicada debe coincidir con `MOODLE_
 2. **Comprobar perfil**: reporta los siguientes hechos:
     - el `.env` existe, está protegido, completo y declara la misma URL;
     - el runtime no fue modificado;
+    - el runtime pertenece al usuario del perfil y este está en el grupo `docker`;
     - el árbol coincide con el desplegado;
     - Docker, Compose v2, `flock` y `python3` están disponibles;
     - memoria y disco libre;

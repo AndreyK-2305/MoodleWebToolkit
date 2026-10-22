@@ -13,6 +13,7 @@ use App\Domain\Remote\RemoteConsolidationInterventions;
 use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RemoteSourceCleanup;
+use App\Domain\Remote\RetryRemoteConsolidation;
 use App\Models\AcademicProposal;
 use App\Models\Artifact;
 use App\Models\Checkpoint;
@@ -138,6 +139,8 @@ class ExecutionPresenter
             'backup' => app(RemoteConsolidationBackup::class)->state($execution),
             'can_backup' => $execution->status->value === 'REVIEW' && is_string($report['site_package']['package_sha256'] ?? null)
                 && ! in_array(app(RemoteConsolidationBackup::class)->state($execution)['state'], ['RUNNING', 'SUCCEEDED'], true),
+            'configuration_version' => $execution->project->configuration?->version,
+            'can_retry' => RetryRemoteConsolidation::retryable($execution, $execution->project),
         ];
     }
 

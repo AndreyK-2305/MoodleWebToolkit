@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.10.0"
+readonly AGENT_VERSION="1.11.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -207,7 +207,7 @@ load_destination() {
         [[ $(stat -c %u "$file") == 0 ]] || fail destination_profile_unsafe
     fi
     (((8#$(stat -c '%a' "$file") & 8#022) == 0)) || fail destination_profile_unsafe
-    DST_ID=$id DST_RUNTIME_DIR='' DST_PUBLIC_URL='' DST_TOOL_TREE=''
+    DST_ID=$id DST_RUNTIME_DIR='' DST_PUBLIC_URL='' DST_TOOL_TREE='' DST_RUN_AS=''
     while IFS= read -r line || [[ -n $line ]]; do
         [[ -z $line || $line == \#* ]] && continue
         [[ $line =~ ^([A-Z_]{2,32})=(.*)$ ]] || fail destination_profile_invalid
@@ -217,18 +217,40 @@ load_destination() {
             RUNTIME_DIR) safe_path "$value" || fail destination_profile_invalid; DST_RUNTIME_DIR=$value ;;
             PUBLIC_URL) [[ $value =~ $HTTPS_URL_RE ]] || fail destination_profile_invalid; DST_PUBLIC_URL=$value ;;
             TOOL_TREE) [[ $value =~ $SHA_RE ]] || fail destination_profile_invalid; DST_TOOL_TREE=$value ;;
+            RUN_AS) [[ $value =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail destination_profile_invalid; DST_RUN_AS=$value ;;
             *) fail destination_profile_invalid ;;
         esac
     done <"$file"
-    [[ -n $DST_RUNTIME_DIR && -n $DST_PUBLIC_URL && -n $DST_TOOL_TREE ]] || fail destination_profile_invalid
+    [[ -n $DST_RUNTIME_DIR && -n $DST_PUBLIC_URL && -n $DST_TOOL_TREE && -n $DST_RUN_AS ]] || fail destination_profile_invalid
+    # The Consolidator refuses root (its exports are chowned to the invoking user), so it
+    # runs as the runtime's unprivileged owner; Docker access comes from its group.
+    local uid
+    uid=$(id -u "$DST_RUN_AS" 2>/dev/null) || fail destination_user_missing
+    ((uid > 0)) || fail destination_user_invalid
+    if [[ $(id -u) == 0 ]]; then
+        DST_EXEC=(runuser -u "$DST_RUN_AS" --)
+    else
+        [[ $(id -un) == "$DST_RUN_AS" ]] || fail destination_user_mismatch
+        DST_EXEC=()
+    fi
+}
+
+# The runtime and everything the Consolidator runs from belongs to the profile's user.
+destination_owned() {
+    [[ $(stat -c %U "$DST_RUNTIME_DIR") == "$DST_RUN_AS" ]] || return 1
+    [[ -z $(find "$DST_RUNTIME_DIR" -maxdepth 1 -user 0 -print -quit 2>/dev/null) ]]
 }
 
 # The Consolidator's engine in a runtime is unchanged against its own manifest.
-# config/ holds the operator's policies and resolutions, which the Consolidator
-# and its operator edit on purpose; everything else must match.
+# config.yaml and config/ hold the operator's configuration, policies and
+# resolutions, which the Consolidator (its package import included) and its
+# operator edit on purpose; docker/custom-plugins/ is where the Consolidator
+# installs the catalog plugins it resolved, each checked against its pin when
+# the target image is built. Everything else must match.
 engine_intact() {
     [[ -f $1/FILES.sha256 && ! -L $1/FILES.sha256 ]] || return 1
-    (cd "$1" && grep -v '^[0-9a-f]\{64\}  \./config/' FILES.sha256 | sha256sum --quiet --check - >/dev/null 2>&1)
+    (cd "$1" && grep -v '^[0-9a-f]\{64\}  \./\(config/\|config\.yaml$\|docker/custom-plugins/\)' FILES.sha256 \
+        | sha256sum --quiet --check - >/dev/null 2>&1)
 }
 
 # --- Registered operations -------------------------------------------------
@@ -301,8 +323,9 @@ registered_argv() {
             # Preparing again after the Consolidator wrote to the site would recreate its services mid-migration.
             [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
             engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
+            destination_owned || fail destination_owner_mismatch
             # shellcheck disable=SC2016
-            REGISTERED_ARGV=(bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh preparar' consolidator-prepare "$DST_RUNTIME_DIR")
+            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh preparar' consolidator-prepare "$DST_RUNTIME_DIR")
             ;;
         consolidator.run)
             [[ ${#params[@]} == 3 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE
@@ -314,9 +337,10 @@ registered_argv() {
             (($(unsafe_entries "$consolidator") == 0)) && [[ $(tree_hash "$consolidator") == "${params[distribution]}" ]] || fail tool_hash_mismatch
             [[ -d $DST_RUNTIME_DIR && ! -L $DST_RUNTIME_DIR && -f $DST_RUNTIME_DIR/.env ]] || fail destination_runtime_missing
             engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
+            destination_owned || fail destination_owner_mismatch
             # The assistant resumes from its own checkpoints; it is never run twice at once (flock inside).
             # shellcheck disable=SC2016
-            REGISTERED_ARGV=(bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh ejecutar-automatico "--workers=$2"' consolidator-run
+            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh ejecutar-automatico "--workers=$2"' consolidator-run
                 "$DST_RUNTIME_DIR" "${params[workers]}")
             ;;
         consolidator.plugins-approve)
@@ -331,10 +355,11 @@ registered_argv() {
             # Plugins are approved before the first write; afterwards the sealed lock is final.
             [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
             grep -q '"status": *"READY_FOR_APPROVAL"' "$DST_RUNTIME_DIR/exports/phase2/plugin_intervention_checkpoint.json" 2>/dev/null || fail plugins_not_ready_for_approval
+            destination_owned || fail destination_owner_mismatch
             # The same two steps the assistant runs on [Y], inside its own runtime container and
             # under its run lock, so they never overlap a running assistant.
             # shellcheck disable=SC2016
-            REGISTERED_ARGV=(bash -c 'set -euo pipefail; cd "$1"
+            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'set -euo pipefail; cd "$1"
                 socket=/var/run/docker.sock
                 export ASSISTANT_PROJECT_ROOT="$1" ASSISTANT_UID="$(id -u)" ASSISTANT_GID="$(id -g)" DOCKER_SOCKET_PATH=$socket
                 export DOCKER_GID="$(stat -c %g "$socket")" COMPOSE_PROJECT_NAME=moodle-consolidation-production
@@ -359,7 +384,7 @@ registered_argv() {
             ;;
         package.fetch)
             [[ ${#params[@]} == 6 && ${params[destination]:-} =~ $SOURCE_RE && ${params[project]:-} =~ $UUID_RE
-                && ${params[source]:-} =~ ^[a-z][a-z0-9_-]{0,63}$ && ${params[sha]:-} =~ $SHA_RE
+                && ${params[source]:-} =~ ^[a-z0-9][a-z0-9_-]{0,63}$ && ${params[sha]:-} =~ $SHA_RE
                 && ${params[bucket]:-} =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && ${params[region]:-} =~ ^[a-z]{2}(-gov)?-[a-z]+-[1-9]$ ]] || fail invalid_parameter
             command -v aws >/dev/null 2>&1 || fail aws_cli_unavailable
             load_destination "${params[destination]}"
@@ -563,7 +588,9 @@ cmd_tail() {
     ((offset <= size)) || fail offset_beyond_end
     chunk=''
     if ((size > offset)); then
-        chunk=$(tail -c +$((offset + 1)) "$file" | head -c "$max" | base64 -w0)
+        # head closes the pipe once it has max bytes; the SIGPIPE tail then receives is expected,
+        # so pipefail is off inside this substitution only.
+        chunk=$(set +o pipefail; tail -c +$((offset + 1)) "$file" | head -c "$max" | base64 -w0)
     fi
     local read_bytes
     read_bytes=$(printf '%s' "$chunk" | base64 -d | wc -c)
@@ -725,12 +752,12 @@ cmd_destination_check() {
     (($# == 1)) || fail invalid_arguments
     local runtime env env_present=0 env_protected=0 env_url='' env_complete=0 tool_present=0 engine_intact=0
     local docker_version='' compose_version='' flock_present=0 cpus='' mem_kb='' free='' target_running=0 written=0 required python_present=0
+    local owned=0 docker_group=0
     load_destination "$1"
     runtime=$DST_RUNTIME_DIR
     [[ -d $runtime && ! -L $runtime ]] || fail destination_runtime_missing
-    if [[ $(id -u) == 0 ]]; then
-        [[ $(stat -c %u "$runtime") == 0 ]] || fail destination_profile_unsafe
-    fi
+    destination_owned && owned=1
+    id -nG "$DST_RUN_AS" 2>/dev/null | tr ' ' '\n' | grep -qx docker && docker_group=1
     env="$runtime/.env"
     if [[ -f $env && ! -L $env ]]; then
         env_present=1
@@ -757,13 +784,13 @@ cmd_destination_check() {
     [[ -r /proc/meminfo ]] && mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
     free=$(df -PB1 "$runtime" 2>/dev/null | awk 'NR==2 {print $4}') || free=''
     [[ -f $runtime/reports/destination-write.lock.json ]] && written=1
-    respond_ok destination-check "$(printf '{"destination":"%s","public_url":%s,"env_present":%s,"env_protected":%s,"env_matches_url":%s,"env_complete":%s,"tool_tree":"%s","tool_present":%s,"engine_intact":%s,"docker_version":%s,"compose_version":%s,"flock":%s,"python3":%s,"cpus":%s,"memory_bytes":%s,"runtime_free_bytes":%s,"target_running":%s,"destination_written":%s}' \
+    respond_ok destination-check "$(printf '{"destination":"%s","public_url":%s,"env_present":%s,"env_protected":%s,"env_matches_url":%s,"env_complete":%s,"tool_tree":"%s","tool_present":%s,"engine_intact":%s,"docker_version":%s,"compose_version":%s,"flock":%s,"python3":%s,"cpus":%s,"memory_bytes":%s,"runtime_free_bytes":%s,"target_running":%s,"destination_written":%s,"run_as":"%s","run_as_docker":%s,"runtime_owned":%s}' \
         "$DST_ID" "$(json_escape "$DST_PUBLIC_URL")" "$(bool "$env_present")" "$(bool "$env_protected")" \
         "$(bool "$([[ -n $env_url && $env_url == "$DST_PUBLIC_URL" ]] && echo 1 || echo 0)")" "$(bool "$env_complete")" \
         "$DST_TOOL_TREE" "$(bool "$tool_present")" "$(bool "$engine_intact")" "$(json_or_null "$docker_version")" \
         "$(json_or_null "$compose_version")" "$(bool "$flock_present")" "$(bool "$python_present")" "$(int_or_null "$cpus")" \
         "$(if [[ $mem_kb =~ ^[0-9]+$ ]]; then printf '%s' $((mem_kb * 1024)); else printf 'null'; fi)" \
-        "$(int_or_null "$free")" "$(bool "$target_running")" "$(bool "$written")")"
+        "$(int_or_null "$free")" "$(bool "$target_running")" "$(bool "$written")" "$DST_RUN_AS" "$(bool "$docker_group")" "$(bool "$owned")")"
 }
 
 # Sets PKG_* for a finished collector.742 operation whose ZIP matches its sidecar.
@@ -854,7 +881,10 @@ cmd_package_fetch_internal() {
     [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || { echo "DESTINATION_ALREADY_WRITTEN" >&2; exit 51; }
     copias="$DST_RUNTIME_DIR/copias"
     [[ ! -L $copias ]] || exit 50
-    mkdir -p "$copias" "$op_dir/work"
+    mkdir -p "$op_dir/work"
+    [[ -d $copias ]] || install -d -m 0755 "$copias"
+    # The Consolidator, running as the profile's user, moves and extracts what lands here.
+    [[ $(id -u) != 0 ]] || chown "$DST_RUN_AS:" "$copias"
     staging="$copias/.incoming-$(basename "$op_dir")"
     rm -rf -- "$staging"
     mkdir -m 0700 "$staging"
@@ -871,6 +901,7 @@ cmd_package_fetch_internal() {
         # Same name already there: only the very same package counts as present.
         [[ $(sha256sum "$copias/$name" | cut -c1-64) == "$sha" ]] || { echo "DESTINATION_NAME_CONFLICT" >&2; exit 54; }
         cp "$staging/sidecar" "$copias/$name.sha256.tmp" && mv -f "$copias/$name.sha256.tmp" "$copias/$name.sha256"
+        [[ $(id -u) != 0 ]] || chown "$DST_RUN_AS:" "$copias/$name" "$copias/$name.sha256"
         size=$(stat -c %s "$copias/$name")
         write_atomic "$op_dir/work/result.json" "$(printf '{"name":"%s","sha256":"%s","size":%s,"already_present":true,"fetched_at":"%s"}' "$name" "$sha" "$size" "$(now_utc)")"
         echo "FETCH_OK name=$name already_present=1"
@@ -887,6 +918,7 @@ cmd_package_fetch_internal() {
     actual=$(sha256sum "$staging/$name" | cut -c1-64)
     [[ $actual == "$sha" && $(stat -c %s "$staging/$name") == "$size" ]] || { echo "PACKAGE_HASH_MISMATCH" >&2; exit 58; }
     chmod 0644 "$staging/$name" "$staging/sidecar"
+    [[ $(id -u) != 0 ]] || chown "$DST_RUN_AS:" "$staging/$name" "$staging/sidecar"
     mv "$staging/$name" "$copias/$name"
     mv "$staging/sidecar" "$copias/$name.sha256"
     write_atomic "$op_dir/work/result.json" "$(printf '{"name":"%s","sha256":"%s","size":%s,"already_present":false,"fetched_at":"%s"}' "$name" "$sha" "$size" "$(now_utc)")"

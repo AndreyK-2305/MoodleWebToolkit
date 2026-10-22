@@ -27,8 +27,13 @@ final class RemoteConsolidationPreflight
         private readonly ToolOperationGate $gate,
     ) {}
 
-    /** @return list<array{id: string, description: string, result: string, detail: string}> */
-    public function evaluate(Project $project, ProjectConfiguration $configuration): array
+    /**
+     * With $retry the checks are those of a new attempt of this same consolidation: the
+     * destination may already hold its writes and copias/ is then fixed by the Consolidator.
+     *
+     * @return list<array{id: string, description: string, result: string, detail: string}>
+     */
+    public function evaluate(Project $project, ProjectConfiguration $configuration, bool $retry = false): array
     {
         $errors = $this->configurationErrors($project, $configuration);
         $checks = [$this->check('consolidation.configuration', 'Configuración de la consolidación vigente', $errors === [],
@@ -57,11 +62,18 @@ final class RemoteConsolidationPreflight
         $checks[] = $this->check('destination.prepared', 'Destino preparado', $prepared,
             $prepared ? 'Moodle 5.2.1 destino quedó instalado por la preparación del Consolidador.' : 'Prepara el destino antes de consolidar.');
         $written = ($check['report']['destination_written'] ?? false) === true || ($copias['write_locked'] ?? false) === true;
-        $checks[] = $this->check('destination.unwritten', 'Destino sin consolidaciones previas', ! $written,
-            $written ? 'El Consolidador ya escribió en este destino; una nueva consolidación requiere un destino limpio.'
-                : 'El Consolidador aún no escribió en el destino.');
-        [$matches, $detail] = $this->copias(is_array($copias) ? $copias : null, $settings['source_packages']);
-        $checks[] = $this->check('destination.copias', 'Paquetes en copias/', $matches, $detail);
+        if ($retry && $written) {
+            $checks[] = $this->check('destination.unwritten', 'Destino de esta consolidación', true,
+                'El Consolidador ya escribió en el destino; el nuevo intento continúa desde sus checkpoints.');
+            $checks[] = $this->check('destination.copias', 'Paquetes en copias/', true,
+                'El Consolidador fijó los paquetes al escribir en el destino y él mismo los hace cumplir.');
+        } else {
+            $checks[] = $this->check('destination.unwritten', 'Destino sin consolidaciones previas', ! $written,
+                $written ? 'El Consolidador ya escribió en este destino; una nueva consolidación requiere un destino limpio.'
+                    : 'El Consolidador aún no escribió en el destino.');
+            [$matches, $detail] = $this->copias(is_array($copias) ? $copias : null, $settings['source_packages']);
+            $checks[] = $this->check('destination.copias', 'Paquetes en copias/', $matches, $detail);
+        }
         $checks[] = ['id' => 'consolidation.oauth', 'description' => 'Configuración manual de Google OAuth2', 'result' => 'WARNING',
             'detail' => 'La Ejecución se detendrá para que el administrador configure el servicio OAuth2 en el Moodle destino; luego se continúa desde la plataforma.'];
 

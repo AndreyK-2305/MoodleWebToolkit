@@ -5,11 +5,14 @@
 #
 #   sudo bash mwt-destination-profile <id> --public-url https://campus.example.edu \
 #        --admin-email admin@example.edu [--admin-user admin] [--http-port 8090] \
-#        [--runtime-dir /srv/mwt-destinations/<id>] [--tree <sha256>]
+#        [--runtime-dir /srv/mwt-destinations/<id>] [--tree <sha256>] [--run-as mwt-<id>]
 #   sudo bash mwt-destination-profile <id> --public-url https://... --runtime-dir <existing> --force
 #
 # A new runtime is a private copy of the deployed Consolidator with its .env
 # written here instead of by CONFIGURAR.sh, which needs an interactive terminal.
+# The Consolidator refuses to run as root: the runtime belongs to an unprivileged
+# system user (created here if missing) that reaches Docker through the docker
+# group, which on this server is equivalent to root. The agent runs it as that user.
 # Domain, DNS and the TLS proxy in front of 127.0.0.1:<http-port> are the
 # administrator's; the URL must already be the site's final HTTPS address.
 # With --force an existing runtime and its .env are kept; only the profile is
@@ -33,9 +36,10 @@ id=$1
 shift
 [[ $id =~ $ID_RE ]] || die 'el identificador admite minúsculas, dígitos y guiones (2 a 63 caracteres)'
 
-public_url='' admin_email='' admin_user='admin' http_port=8090 runtime='' tree='' force=0
+public_url='' admin_email='' admin_user='admin' http_port=8090 runtime='' tree='' force=0 run_as="mwt-${id:0:28}"
 while (($# > 0)); do
     case $1 in
+        --run-as) run_as=${2:-}; shift 2 ;;
         --public-url) public_url=${2:-}; shift 2 ;;
         --admin-email) admin_email=${2:-}; shift 2 ;;
         --admin-user) admin_user=${2:-}; shift 2 ;;
@@ -53,6 +57,18 @@ runtime=${runtime:-/srv/mwt-destinations/$id}
 safe_path "$runtime" || die '--runtime-dir debe ser una ruta absoluta sin ".." ni caracteres especiales'
 profile="$DESTINATIONS_DIR/$id.conf"
 [[ ! -e $profile || $force == 1 ]] || die "ya existe $profile (use --force para reemplazarlo)"
+[[ $run_as =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die '--run-as debe ser un nombre de usuario de Linux válido'
+if id -u "$run_as" >/dev/null 2>&1; then
+    (($(id -u "$run_as") > 0)) || die '--run-as no puede ser root: el Consolidador se niega a ejecutarse como root'
+else
+    useradd --system --create-home --home-dir "/var/lib/$run_as" --shell /usr/sbin/nologin "$run_as"
+    printf 'Usuario de sistema %s creado\n' "$run_as"
+fi
+if getent group docker >/dev/null; then
+    id -nG "$run_as" | tr ' ' '\n' | grep -qx docker || usermod -aG docker "$run_as"
+else
+    printf 'Aviso: no existe el grupo docker; tras instalar Docker ejecute: usermod -aG docker %s\n' "$run_as"
+fi
 
 if [[ -e $runtime ]]; then
     # An existing runtime keeps its .env, checkpoints and results untouched.
@@ -84,8 +100,10 @@ else
     chown -R root:root "$tmp"
     chmod 0755 "$tmp"
     chmod 0755 "$tmp"/*.sh
-    managed="$runtime-managed-config"
-    install -d -o root -g root -m 0700 "$managed"
+    # Inside the runtime, as CONFIGURAR.sh proposes: the assistant's container mounts only
+    # the runtime with write access, and its configuration manager writes here.
+    managed="$runtime/managed-config"
+    install -d -o root -g root -m 0700 "$tmp/managed-config"
     admin_password="Mdl9@$(random_hex)"
     # The same variables CONFIGURAR.sh writes for an HTTPS site; notifications start disabled.
     {
@@ -126,12 +144,17 @@ else
     printf 'Guárdela ahora en el gestor institucional de credenciales; también queda en %s/.env (0600).\n' "$runtime"
 fi
 
+# What root left in the runtime passes to the profile's user; files the Consolidator's
+# containers wrote under their own users (www-data and the like) are left as they are.
+find "$runtime" -xdev -user 0 -exec chown -h "$run_as" {} +
+find "$runtime" -xdev -group 0 -exec chgrp -h "$run_as" {} +
+
 install -d -o root -g root -m 0755 "$(dirname "$DESTINATIONS_DIR")"
 install -d -o root -g root -m 0700 "$DESTINATIONS_DIR"
 tmp=$(mktemp "$DESTINATIONS_DIR/.profile.XXXXXX")
 {
     printf '# Perfil de destino para mwt-agent; creado %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'RUNTIME_DIR=%s\nPUBLIC_URL=%s\nTOOL_TREE=%s\n' "$runtime" "$public_url" "$tree"
+    printf 'RUNTIME_DIR=%s\nPUBLIC_URL=%s\nTOOL_TREE=%s\nRUN_AS=%s\n' "$runtime" "$public_url" "$tree" "$run_as"
 } >"$tmp"
 chown root:root "$tmp"
 chmod 0600 "$tmp"

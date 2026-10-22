@@ -120,6 +120,23 @@ class RemoteAgentLifecycleTest extends TestCase
         $this->assertSame(0, $tail->data['next_offset']);
     }
 
+    public function test_a_log_larger_than_one_chunk_is_read_in_bounded_chunks(): void
+    {
+        app(RemoteAgentInstaller::class)->install($this->target());
+        $uuid = $this->launch('diagnostic.lines', ['count=9999']);
+        $finished = $this->waitForStatus($uuid, fn (array $data): bool => $data['exit'] !== null);
+        $this->assertGreaterThan(16384, $finished['stdout_bytes']);
+
+        // head closes the pipe early: the agent still answers with exactly the requested chunk.
+        $first = $this->agent()->call($this->target(), 'tail', [$uuid, 'stdout', '0', '16384']);
+        $this->assertTrue($first->ok, (string) $first->errorCode);
+        $this->assertSame(16384, $first->data['next_offset']);
+        $this->assertStringStartsWith("linea 1\nlinea 2\n", (string) base64_decode($first->data['data_base64']));
+        $second = $this->agent()->call($this->target(), 'tail', [$uuid, 'stdout', '16384', '16384']);
+        $this->assertTrue($second->ok, (string) $second->errorCode);
+        $this->assertSame(32768, $second->data['next_offset']);
+    }
+
     public function test_unregistered_operations_and_unsafe_arguments_are_rejected(): void
     {
         app(RemoteAgentInstaller::class)->install($this->target());
