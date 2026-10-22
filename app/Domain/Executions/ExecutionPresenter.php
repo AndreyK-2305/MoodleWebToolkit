@@ -8,6 +8,7 @@ use App\Domain\Collector\CollectorExecutionPreparation;
 use App\Domain\Remote\RemoteCollectionConfiguration;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorExport;
+use App\Domain\Remote\RemoteConsolidationInterventions;
 use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RemoteSourceCleanup;
@@ -80,6 +81,9 @@ class ExecutionPresenter
                         ? array_values($conflict->details['allowed_decisions'])
                         : [],
                     'resolved_at' => $conflict->resolved_at?->toIso8601String(),
+                    // The Consolidator's own guidance for a typed intervention, whitelisted.
+                    'intervention' => in_array($conflict->type, RemoteConsolidationInterventions::TYPES, true)
+                        ? RemoteConsolidationInterventions::present($conflict->details) : null,
                 ])
                 ->values()
                 ->all(),
@@ -109,7 +113,6 @@ class ExecutionPresenter
         $report = is_array($run?->evidence['consolidator'] ?? null) ? $run->evidence['consolidator'] : [];
         $server = is_string($settings['server_uuid'] ?? null)
             ? Server::query()->where('project_id', $execution->project_id)->where('uuid', $settings['server_uuid'])->first() : null;
-        $active = $runs->contains(fn ($operation): bool => $operation->communication_state->value !== 'TERMINATED');
 
         return [
             'mode' => 'REMOTE_CONSOLIDATION',
@@ -131,7 +134,6 @@ class ExecutionPresenter
             'site_package_sha256' => $report['site_package']['package_sha256'] ?? null,
             'write_locked' => ($report['write_locked'] ?? false) === true,
             'observed_at' => $report['observed_at'] ?? null,
-            'can_continue' => $execution->status->value === 'WAITING_USER_ACTION' && ! $active,
         ];
     }
 

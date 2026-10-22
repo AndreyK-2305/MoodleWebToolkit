@@ -14,6 +14,7 @@ use App\Enums\RemoteFunctionalState;
 use App\Exceptions\RemoteAgentUnavailable;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\AuditLog;
+use App\Models\Conflict;
 use App\Models\Execution;
 use App\Models\ExecutionStep;
 use App\Models\Project;
@@ -37,6 +38,10 @@ class RemoteConsolidationWorkflow
 {
     public const COMMAND = 'consolidator.run';
 
+    public const APPROVE_COMMAND = 'consolidator.plugins-approve';
+
+    public const COMMANDS = [self::COMMAND, self::APPROVE_COMMAND];
+
     /** The assistant's exit code when it waits for the administrator. */
     public const EXIT_WAITING = 22;
 
@@ -59,6 +64,7 @@ class RemoteConsolidationWorkflow
         private readonly ExecutionLifecycle $lifecycle,
         private readonly ExecutionEventRecorder $events,
         private readonly SensitiveValueRedactor $redactor,
+        private readonly RemoteConsolidationInterventions $interventions,
     ) {}
 
     /** Launches the first run once, after checking the destination and its copias/ live. */
@@ -147,14 +153,14 @@ class RemoteConsolidationWorkflow
     {
         $operation->loadMissing('execution');
         $execution = $operation->execution;
-        if (! RemoteConsolidationPreparation::selected($execution->toolBinding) || $operation->command_key !== self::COMMAND) {
+        if (! RemoteConsolidationPreparation::selected($execution->toolBinding) || ! in_array($operation->command_key, self::COMMANDS, true)) {
             throw new ToolOperationBlocked('La operación no pertenece a una consolidación remota.');
         }
         if ($operation->communication_state !== RemoteCommunicationState::TERMINATED) {
             $operation = $this->operations->reconcile($operation);
         }
         // The assistant's own documents are read while it runs and once more after it ends.
-        if ($operation->process_id !== null && ($operation->evidence['consolidator']['final'] ?? false) !== true) {
+        if ($operation->command_key === self::COMMAND && $operation->process_id !== null && ($operation->evidence['consolidator']['final'] ?? false) !== true) {
             $this->observeReport($operation);
         }
         $this->advanceExecution($execution);
@@ -190,6 +196,15 @@ class RemoteConsolidationWorkflow
             return;
         }
         if ($run === null || $execution->status !== ExecutionStatus::RUNNING) {
+            return;
+        }
+        // A plugin approval launched after the latest run is followed before anything else.
+        $approval = $execution->remoteOperations()->where('command_key', self::APPROVE_COMMAND)->where('id', '>', $run->id)->orderByDesc('id')->first();
+        if ($approval !== null) {
+            if ($approval->communication_state === RemoteCommunicationState::TERMINATED) {
+                $this->afterApproval($execution, $approval);
+            }
+
             return;
         }
         $report = $run->evidence['consolidator'] ?? null;
@@ -267,13 +282,18 @@ class RemoteConsolidationWorkflow
         }, attempts: 3);
     }
 
-    /** @param array<string, mixed> $report */
+    /**
+     * The Execution waits and opens the typed intervention for the stage; its documents are
+     * read from the destination after the transition, outside the lock.
+     *
+     * @param  array<string, mixed>  $report
+     */
     private function wait(Execution $execution, RemoteOperation $run, array $report): void
     {
-        DB::transaction(function () use ($execution, $run, $report): void {
+        $waited = DB::transaction(function () use ($execution, $run, $report): bool {
             $locked = Execution::query()->whereKey($execution->id)->lockForUpdate()->firstOrFail();
             if ($locked->status !== ExecutionStatus::RUNNING) {
-                return;
+                return false;
             }
             $stage = $report['state']['stage'] ?? null;
             $stage = is_string($stage) && isset(RemoteConsolidationPreparation::STAGES[$stage]) ? $stage : null;
@@ -285,7 +305,78 @@ class RemoteConsolidationWorkflow
                 message: 'El Consolidador espera una intervención en '.$this->stageName($stage).': '.($report['message'] ?? 'revise el destino').'',
                 payload: ['stage' => $stage, 'status' => $report['state']['status'] ?? null, 'review_paths' => $report['review_paths'] ?? []],
                 operation: $run);
+
+            return true;
         }, attempts: 3);
+        if ($waited) {
+            $this->interventions->open($execution->fresh(), $this->settings($execution), $report, $run->id);
+        }
+    }
+
+    /**
+     * Applies the administrator's decision on the open intervention: confirming continues with
+     * the next run; accepting a plugin intervention first approves the sealed inventory.
+     */
+    public function resolve(Execution $execution, Conflict $conflict, string $decision, User $actor): void
+    {
+        $execution->refresh();
+        if ($execution->status !== ExecutionStatus::WAITING_USER_ACTION) {
+            return;
+        }
+        if ($decision === 'ACCEPT' && $conflict->type === RemoteConsolidationInterventions::PLUGINS) {
+            $this->approvePlugins($execution, $actor);
+
+            return;
+        }
+        $this->resume($execution, $actor);
+    }
+
+    private function approvePlugins(Execution $execution, User $actor): void
+    {
+        $settings = $this->settings($execution);
+        $server = $this->server($execution, $settings);
+        $distribution = $this->assertLaunchable($server, $settings, true);
+        $running = $this->lifecycle->transition($execution, ExecutionStatus::RUNNING, $actor);
+        $attempt = $running->remoteOperations()->where('command_key', self::APPROVE_COMMAND)->count() + 1;
+        try {
+            $operation = $this->operations->launch($running, $server, 'consolidator-plugins-approve-'.$attempt, self::APPROVE_COMMAND, [
+                'destination' => (string) $settings['destination_profile'], 'distribution' => $distribution->distribution_sha256,
+            ], $actor);
+        } catch (ToolOperationBlocked $exception) {
+            $this->close($running, null, false, $exception->getMessage());
+
+            return;
+        }
+        $this->step($running, '03-plugins', ExecutionStepStatus::RUNNING);
+        $this->events->record($running, 'consolidator.plugins_approval_requested', '03-plugins',
+            message: 'Aprobación de plugins aceptada; el Consolidador sella el inventario en el destino.',
+            payload: ['operation_uuid' => $operation->operation_uuid], operation: $operation);
+        AuditLog::query()->create(['actor_id' => $actor->getKey(), 'project_id' => $running->project_id, 'execution_id' => $running->id,
+            'action' => 'CONSOLIDATOR_PLUGINS_APPROVED', 'payload' => ['operation_uuid' => $operation->operation_uuid]]);
+    }
+
+    /** After the plugin approval ends: a sealed approval continues with the next run, a failed one waits again. */
+    private function afterApproval(Execution $execution, RemoteOperation $approval): void
+    {
+        if ($approval->functional_state === RemoteFunctionalState::SUCCEEDED && $approval->exit_code === 0) {
+            $settings = $this->settings($execution);
+            try {
+                $server = $this->server($execution, $settings);
+                $distribution = $this->assertLaunchable($server, $settings, true);
+                $operation = $this->launch($execution, $server, $settings, $distribution, $this->runs($execution)->count() + 1, $execution->creator);
+            } catch (ToolOperationBlocked $exception) {
+                $this->close($execution, $approval, false, $exception->getMessage());
+
+                return;
+            }
+            $this->events->record($execution, 'consolidator.resumed', '03-plugins',
+                message: 'Plugins aprobados; el Consolidador reanuda desde sus checkpoints aprobados.',
+                payload: ['operation_uuid' => $operation->operation_uuid, 'stage' => '03-plugins'], operation: $operation);
+
+            return;
+        }
+        $this->wait($execution, $approval, ['state' => ['stage' => '03-plugins', 'status' => 'PLUGIN_APPROVAL_FAILED'],
+            'message' => 'La aprobación de plugins no se selló en el destino (código '.($approval->exit_code ?? '?').'); revise el inventario.']);
     }
 
     /** @param array<string, mixed> $report */

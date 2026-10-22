@@ -53,7 +53,7 @@ final class ReconcileRemoteAgentOperation implements ShouldBeUnique, ShouldQueue
         }
         // A consolidation run is observed with the Consolidator's own state documents.
         if (RemoteConsolidationPreparation::selected($operation->execution->toolBinding)
-            && $operation->command_key === RemoteConsolidationWorkflow::COMMAND) {
+            && in_array($operation->command_key, RemoteConsolidationWorkflow::COMMANDS, true)) {
             app(RemoteConsolidationWorkflow::class)->advance($operation);
 
             return;

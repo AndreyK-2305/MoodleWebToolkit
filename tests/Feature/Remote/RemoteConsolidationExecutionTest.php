@@ -17,6 +17,7 @@ use App\Enums\ServerRole;
 use App\Enums\UserRole;
 use App\Jobs\ReconcileRemoteAgentOperation;
 use App\Models\Artifact;
+use App\Models\Conflict;
 use App\Models\Execution;
 use App\Models\Project;
 use App\Models\RemoteOperation;
@@ -27,6 +28,7 @@ use App\Models\User;
 use Database\Seeders\ToolCatalogSeeder;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 use Tests\Feature\Domain\DomainTestCase;
 use Tests\Support\QueuedRemoteTransport;
 
@@ -139,29 +141,42 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->queueStatus(alive: false, exit: ['exit_code' => 22, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
         $this->queueReport(['stage' => '02-oauth2', 'status' => 'waiting_manual',
             'message' => 'Google OAuth2 aún no está listo. MOODLE_DB_PASSWORD=supersecreto123'], ['reports\\oauth2-configuracion-manual.txt']);
+        $this->queueIntervention('oauth2', [
+            'oauth2_manual' => "1. Registre en Google Cloud la URI https://campus.example.edu/admin/oauth2callback.php\nclient_secret=no-debe-salir\n",
+            'oauth2_validation' => (string) json_encode(['callback_uri' => 'https://campus.example.edu/admin/oauth2callback.php',
+                'issues' => ['No existe un servicio Google habilitado.', ['message' => 'Falta mostrarlo en la página de acceso.']]]),
+            'oauth2_live' => null,
+        ]);
         dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
         $execution->refresh();
         $this->assertSame(ExecutionStatus::WAITING_USER_ACTION, $execution->status);
         $this->assertSame(ExecutionStepStatus::WAITING_USER, $this->stepStatus($execution, '02-oauth2'));
         $this->assertStringNotContainsString('supersecreto123', (string) json_encode($run->fresh()->evidence));
+        $conflict = $execution->conflicts()->sole();
+        $this->assertSame(['OAUTH2_CONFIGURATION', ['CONFIRM_COMPLETED']], [$conflict->type, $conflict->details['allowed_decisions']]);
+        $this->assertSame('02-oauth2', $conflict->step->step_key);
         $page = $this->getJson(route('projects.executions.events', [$this->project, $execution]))->assertOk();
-        $page->assertJsonPath('execution.consolidation.can_continue', true)->assertJsonPath('execution.consolidation.stage', '02-oauth2')
-            ->assertJsonPath('execution.consolidation.review_paths.0', 'reports/oauth2-configuracion-manual.txt');
+        $page->assertJsonPath('execution.consolidation.stage', '02-oauth2')
+            ->assertJsonPath('execution.consolidation.review_paths.0', 'reports/oauth2-configuracion-manual.txt')
+            ->assertJsonPath('execution.conflicts.0.intervention.callback_uri', 'https://campus.example.edu/admin/oauth2callback.php')
+            ->assertJsonPath('execution.conflicts.0.intervention.issues', ['No existe un servicio Google habilitado.', 'Falta mostrarlo en la página de acceso.']);
+        $this->assertStringContainsString('Registre en Google Cloud', (string) $page->json('execution.conflicts.0.intervention.instructions'));
+        $this->assertStringNotContainsString('no-debe-salir', (string) json_encode($conflict->details));
         // Waiting is a resting state: the scheduler does not call the server.
         $this->artisan('executions:reconcile-remote-operations')->assertSuccessful();
         $this->assertSame(0, $this->transport->pending());
 
-        // Continue requires the explicit confirmation, then launches the next run on the same Execution.
-        $continue = route('projects.executions.consolidation.continue', [$this->project, $execution]);
-        $this->post($continue, [])->assertSessionHasErrors('confirm');
+        // The audited decision on the intervention launches the next run on the same Execution.
         $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
         $this->queueLaunch();
-        $this->post($continue, ['confirm' => '1'])->assertRedirect()->assertSessionHasNoErrors();
+        $this->resolve($execution, $conflict, 'CONFIRM_COMPLETED', 'oauth-done')->assertSessionHasNoErrors();
         $execution->refresh();
         $this->assertSame(ExecutionStatus::RUNNING, $execution->status);
         $second = $execution->remoteOperations()->orderByDesc('id')->first();
         $this->assertSame(['consolidator-run-2', ExecutionStepStatus::RUNNING], [$second->idempotency_key, $this->stepStatus($execution, '02-oauth2')]);
-        $this->post($continue, ['confirm' => '1'])->assertRedirect();
+        $this->assertSame('RESOLVED', $conflict->fresh()->status->value);
+        // The same decision again changes nothing.
+        $this->resolve($execution, $conflict, 'CONFIRM_COMPLETED', 'oauth-done');
         $this->assertSame(2, $execution->remoteOperations()->count());
 
         // The assistant closes: stage 16 done, closure consolidated and the site package sealed.
@@ -205,13 +220,106 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
     {
         [$execution, $run] = $this->startExecution();
         $this->queueStatus(alive: false, exit: ['exit_code' => 22, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
-        $this->queueReport(['stage' => '03-plugins', 'status' => 'WAITING_USER_ACTION', 'message' => 'PLUGIN_INTERVENTION_PENDING']);
+        $this->queueReport(['stage' => '04-identidades', 'status' => 'waiting_manual', 'message' => 'V8_IDENTITY_REVIEW_REQUIRED']);
         dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
         $this->assertSame(ExecutionStatus::WAITING_USER_ACTION, $execution->fresh()->status);
+        $this->assertSame('CONSOLIDATOR_INTERVENTION', $execution->conflicts()->sole()->type);
 
         $this->post(route('projects.executions.cancel', [$this->project, $execution]), [], ['Idempotency-Key' => 'cancel-waiting'])->assertRedirect();
         $this->assertSame(ExecutionStatus::CANCELLED, $execution->fresh()->status);
         $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_plugins_are_revalidated_or_approved_through_the_typed_intervention(): void
+    {
+        [$execution, $run] = $this->startExecution();
+        $this->stopAtPlugins($run, 'PLUGIN_TECHNICAL_VALIDATION_FAILED');
+        $conflict = $execution->conflicts()->sole();
+        $this->assertSame(['PLUGIN_INTERVENTION', ['CONFIRM_COMPLETED']], [$conflict->type, $conflict->details['allowed_decisions']]);
+        $this->assertSame([['component' => 'mod_vpl', 'display_name' => 'VPL', 'observed_state' => 'missing']], $conflict->details['needs']);
+        // Accepting is not offered until the assistant is ready for approval.
+        $this->resolve($execution, $conflict, 'ACCEPT', 'too-early')->assertSessionHasErrors('decision');
+
+        // Revalidating relaunches the assistant, which stops again, now ready for approval.
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch();
+        $this->resolve($execution, $conflict, 'CONFIRM_COMPLETED', 'revalidate');
+        $second = $execution->remoteOperations()->orderByDesc('id')->first();
+        $this->stopAtPlugins($second, 'READY_FOR_APPROVAL');
+        $ready = $execution->conflicts()->where('status', 'OPEN')->sole();
+        $this->assertSame(['ACCEPT', 'CONFIRM_COMPLETED'], $ready->details['allowed_decisions']);
+        $this->assertSame(['mod_vpl'], $ready->details['new_plugins']);
+
+        // Approving runs the sealed approval on the destination, then the next run.
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch(RemoteConsolidationWorkflow::APPROVE_COMMAND);
+        $this->resolve($execution, $ready, 'ACCEPT', 'approve');
+        $approval = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::APPROVE_COMMAND)->sole();
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertSame(1, $execution->events()->where('type', 'consolidator.plugins_approval_requested')->count());
+
+        $this->queueStatus(alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:30:00Z'],
+            command: RemoteConsolidationWorkflow::APPROVE_COMMAND);
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch();
+        dispatch_sync(new ReconcileRemoteAgentOperation($approval->id));
+        $third = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)->orderByDesc('id')->first();
+        $this->assertSame(['consolidator-run-3', ExecutionStatus::RUNNING], [$third->idempotency_key, $execution->fresh()->status]);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_a_failed_plugin_approval_waits_again_with_a_new_intervention(): void
+    {
+        [$execution, $run] = $this->startExecution();
+        $this->stopAtPlugins($run, 'READY_FOR_APPROVAL');
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch(RemoteConsolidationWorkflow::APPROVE_COMMAND);
+        $this->resolve($execution, $execution->conflicts()->sole(), 'ACCEPT', 'approve');
+        $approval = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::APPROVE_COMMAND)->sole();
+
+        $this->queueStatus(alive: false, exit: ['exit_code' => 61, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:30:00Z'],
+            command: RemoteConsolidationWorkflow::APPROVE_COMMAND);
+        $this->queueIntervention('plugins', $this->pluginDocuments('READY_FOR_APPROVAL'));
+        dispatch_sync(new ReconcileRemoteAgentOperation($approval->id));
+        $this->assertSame(ExecutionStatus::WAITING_USER_ACTION, $execution->fresh()->status);
+        $open = $execution->conflicts()->where('status', 'OPEN')->sole();
+        $this->assertSame('PLUGIN_INTERVENTION', $open->type);
+        $this->assertStringContainsString('código 61', (string) $open->details['message']);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    private function stopAtPlugins(RemoteOperation $run, string $checkpoint): void
+    {
+        $this->queueStatus(alive: false, exit: ['exit_code' => 22, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
+        $this->queueReport(['stage' => '03-plugins', 'status' => 'WAITING_USER_ACTION', 'message' => 'PLUGIN_INTERVENTION_PENDING: instalación y revisión de plugins.']);
+        $this->queueIntervention('plugins', $this->pluginDocuments($checkpoint));
+        dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
+        $this->assertSame(ExecutionStatus::WAITING_USER_ACTION, $run->execution->fresh()->status);
+    }
+
+    /** @return array<string, string|null> */
+    private function pluginDocuments(string $checkpoint): array
+    {
+        return [
+            'plugin_needs' => (string) json_encode(['original_compatibility_needs' => [['component' => 'mod_vpl', 'display_name' => 'VPL', 'observed_state' => 'missing']]]),
+            'plugin_diff' => $checkpoint === 'READY_FOR_APPROVAL' ? (string) json_encode(['newly_detected_plugins' => [['component' => 'mod_vpl', 'name' => 'VPL']],
+                'updated_plugins' => [], 'removed_plugins' => []]) : null,
+            'plugin_technical' => $checkpoint === 'READY_FOR_APPROVAL' ? null : (string) json_encode(['issues' => ['mod_vpl no está instalado.']]),
+            'plugin_checkpoint' => (string) json_encode(['status' => $checkpoint]),
+        ];
+    }
+
+    /** @param array<string, string|null> $documents */
+    private function queueIntervention(string $kind, array $documents): void
+    {
+        $this->transport->ok('consolidator-intervention', ['destination' => 'campus', 'kind' => $kind,
+            'documents' => array_map(fn (?string $document): ?string => $document === null ? null : base64_encode($document), $documents)]);
+    }
+
+    private function resolve(Execution $execution, Conflict $conflict, string $decision, string $key): TestResponse
+    {
+        return $this->post(route('projects.executions.conflicts.resolve', [$this->project, $execution, $conflict->id]),
+            ['decision' => $decision, 'conflict_version' => $conflict->fresh()->version], ['Idempotency-Key' => 'resolve-'.$key.'-'.md5($key)]);
     }
 
     public function test_the_first_run_is_never_launched_onto_a_copias_that_changed(): void
@@ -292,20 +400,20 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         return $execution->steps()->where('step_key', $key)->sole()->status;
     }
 
-    private function queueLaunch(): void
+    private function queueLaunch(string $command = RemoteConsolidationWorkflow::COMMAND): void
     {
         $this->transport->okWith('launch', fn (string $script): array => ['operation_uuid' => QueuedRemoteTransport::operationUuid($script),
-            'created' => true, 'launch' => $this->launchEvidence(QueuedRemoteTransport::operationUuid($script))]);
+            'created' => true, 'launch' => $this->launchEvidence(QueuedRemoteTransport::operationUuid($script), $command)]);
     }
 
     /** @param array<string, mixed>|null $exit */
-    private function queueStatus(bool $alive, ?array $exit = null): void
+    private function queueStatus(bool $alive, ?array $exit = null, string $command = RemoteConsolidationWorkflow::COMMAND): void
     {
-        $this->transport->okWith('status', function (string $script) use ($alive, $exit): array {
+        $this->transport->okWith('status', function (string $script) use ($alive, $exit, $command): array {
             $uuid = QueuedRemoteTransport::operationUuid($script);
             $now = now()->utc()->toIso8601String();
 
-            return ['operation_uuid' => $uuid, 'launch' => $this->launchEvidence($uuid), 'run' => ['pid' => 7, 'started_at' => $now],
+            return ['operation_uuid' => $uuid, 'launch' => $this->launchEvidence($uuid, $command), 'run' => ['pid' => 7, 'started_at' => $now],
                 'exit' => $exit, 'cancel_requested' => ($exit['cancel_requested'] ?? false) === true, 'process_alive' => $alive, 'heartbeat_at' => $now,
                 'stdout_bytes' => 0, 'stderr_bytes' => 0, 'observed_at' => $now];
         });
@@ -327,11 +435,11 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
     }
 
     /** @return array<string, mixed> */
-    private function launchEvidence(string $uuid): array
+    private function launchEvidence(string $uuid, string $command = RemoteConsolidationWorkflow::COMMAND): array
     {
         $distribution = app(RemoteAgent::class)->distribution();
 
-        return ['operation_uuid' => $uuid, 'command_key' => RemoteConsolidationWorkflow::COMMAND, 'launcher' => 'systemd', 'unit' => 'mwt-op-'.$uuid,
+        return ['operation_uuid' => $uuid, 'command_key' => $command, 'launcher' => 'systemd', 'unit' => 'mwt-op-'.$uuid,
             'agent_version' => $distribution['version'], 'agent_sha256' => $distribution['sha256'], 'argv_sha256' => str_repeat('b', 64),
             'launched_at' => now()->utc()->toIso8601String(), 'parameters' => []];
     }

@@ -18,7 +18,7 @@ class RemoteAgent
     public const SCHEMA = 'mwt-agent.v1';
 
     private const SUBCOMMANDS = ['version', 'probe', 'launch', 'status', 'tail', 'cancel', 'tool-status', 'tool-commit', 'source-check', 'collector-report', 'upload-report', 'cleanup', 'source-list', 'destination-list', 'destination-check',
-        'fetch-report', 'copias-list', 'copias-remove', 'consolidator-report'];
+        'fetch-report', 'copias-list', 'copias-remove', 'consolidator-report', 'consolidator-intervention'];
 
     private const ARGUMENT = '/^[A-Za-z0-9._:=-]{1,160}$/D';
 
