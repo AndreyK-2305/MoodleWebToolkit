@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.9.0"
+readonly AGENT_VERSION="1.10.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -346,6 +346,16 @@ registered_argv() {
                 "${compose[@]}" run --rm --no-deps -T assistant-runtime pwsh -NoLogo -NoProfile -File scripts/audit-package-plugins.ps1 -Mode Approve
                 "${compose[@]}" run --rm --no-deps -T assistant-runtime pwsh -NoLogo -NoProfile -File scripts/v8-plugin-resolver.ps1 -Mode Seal
                 echo PLUGIN_INTERVENTION_APPROVED' consolidator-plugins-approve "$DST_RUNTIME_DIR")
+            ;;
+        consolidator.site-upload)
+            [[ ${#params[@]} == 6 && ${params[destination]:-} =~ $SOURCE_RE && ${params[project]:-} =~ $UUID_RE
+                && ${params[execution]:-} =~ $UUID_RE && ${params[sha]:-} =~ $SHA_RE
+                && ${params[bucket]:-} =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && ${params[region]:-} =~ ^[a-z]{2}(-gov)?-[a-z]+-[1-9]$ ]] || fail invalid_parameter
+            command -v aws >/dev/null 2>&1 || fail aws_cli_unavailable
+            load_destination "${params[destination]}"
+            [[ -f $DST_RUNTIME_DIR/exports/phase8/paquete-sitio-consolidado.zip && ! -L $DST_RUNTIME_DIR/exports/phase8/paquete-sitio-consolidado.zip ]] || fail site_package_missing
+            REGISTERED_ARGV=(bash "$SELF_PATH" __site-upload "${params[destination]}" "${params[project]}" "${params[execution]}" "${params[sha]}"
+                "${params[bucket]}" "${params[region]}" "$OP_DIR")
             ;;
         package.fetch)
             [[ ${#params[@]} == 6 && ${params[destination]:-} =~ $SOURCE_RE && ${params[project]:-} =~ $UUID_RE
@@ -883,6 +893,57 @@ cmd_package_fetch_internal() {
     echo "FETCH_OK name=$name already_present=0"
 }
 
+# Uploads the Consolidator's sealed site package to the platform's bucket. The
+# ZIP must hash as the platform reviewed and as the Consolidator's own summary
+# declares; S3 receives the SHA-256 both as metadata and as its checksum.
+cmd_site_upload_internal() {
+    local destination=$1 project=$2 execution=$3 sha=$4 bucket=$5 region=$6 op_dir=$7 package summary declared actual size key
+    [[ $project =~ $UUID_RE && $execution =~ $UUID_RE && $sha =~ $SHA_RE && $op_dir == "$OPS_DIR/"* ]] || exit 70
+    load_destination "$destination" >/dev/null
+    package="$DST_RUNTIME_DIR/exports/phase8/paquete-sitio-consolidado.zip"
+    summary="$DST_RUNTIME_DIR/exports/phase8/site_package_summary.json"
+    [[ -f $package && ! -L $package && -f $summary && ! -L $summary ]] || { echo "SITE_PACKAGE_MISSING" >&2; exit 71; }
+    declared=$(sed -n 's/.*"package_sha256" *: *"\([0-9a-f]\{64\}\)".*/\1/p' "$summary" | head -n 1)
+    [[ $declared == "$sha" ]] || { echo "SITE_SUMMARY_MISMATCH" >&2; exit 72; }
+    actual=$(sha256sum "$package" | cut -c1-64)
+    [[ $actual == "$sha" ]] || { echo "SITE_PACKAGE_HASH_MISMATCH" >&2; exit 73; }
+    size=$(stat -c %s "$package")
+    key="mwt/$project/consolidated/$execution/$sha.zip"
+    mkdir -p "$op_dir/work"
+    aws s3 cp "$package" "s3://$bucket/$key" --region "$region" --only-show-errors --sse AES256 --checksum-algorithm SHA256 \
+        --metadata "mwt-sha256=$sha,mwt-project=$project,mwt-execution=$execution" || { echo "UPLOAD_FAILED" >&2; exit 74; }
+    write_atomic "$op_dir/work/result.json" "$(printf '{"bucket":"%s","region":"%s","key":"%s","sha256":"%s","size":%s,"uploaded_at":"%s"}' \
+        "$bucket" "$region" "$key" "$sha" "$size" "$(now_utc)")"
+    echo "SITE_UPLOAD_OK"
+}
+
+cmd_site_upload_report() {
+    (($# == 1)) || fail invalid_arguments
+    require_operation "$1"
+    [[ -f $OP_DIR/launch.json ]] || fail operation_not_found 4
+    [[ $(sed -n 's/.*"command_key":"\([^"]*\)".*/\1/p' "$OP_DIR/launch.json") == consolidator.site-upload ]] || fail not_a_site_upload_operation
+    respond_ok site-upload-report "{\"operation_uuid\":\"$1\",\"result_base64\":$(encode_document "$OP_DIR/work/result.json")}"
+}
+
+# Frees the source ZIPs in copias/ once the Consolidator wrote to the site: they
+# are already published in S3 and the Consolidator never imports them again.
+cmd_copias_release() {
+    (($# == 1)) || fail invalid_arguments
+    local copias file freed=0 count=0
+    load_destination "$1"
+    [[ -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_not_written
+    copias="$DST_RUNTIME_DIR/copias"
+    [[ ! -L $copias ]] || fail destination_profile_unsafe
+    if [[ -d $copias ]]; then
+        while IFS= read -r -d '' file; do
+            freed=$((freed + $(stat -c %s "$file")))
+            count=$((count + 1))
+            rm -f -- "$file" "$file.sha256"
+        done < <(find "$copias" -maxdepth 1 -type f -name '*.zip' -print0)
+    fi
+    respond_ok copias-release "{\"destination\":\"$1\",\"released\":$count,\"freed_bytes\":$freed}"
+}
+
 cmd_fetch_report() {
     (($# == 1)) || fail invalid_arguments
     require_operation "$1"
@@ -1086,11 +1147,14 @@ case $COMMAND in
     copias-remove) cmd_copias_remove "$@" ;;
     consolidator-report) cmd_consolidator_report "$@" ;;
     consolidator-intervention) cmd_consolidator_intervention "$@" ;;
+    site-upload-report) cmd_site_upload_report "$@" ;;
+    copias-release) cmd_copias_release "$@" ;;
     collector-report) cmd_collector_report "$@" ;;
     upload-report) cmd_upload_report "$@" ;;
     cleanup) cmd_cleanup "$@" ;;
     __package-upload) (($# == 5)) || exit 40; cmd_package_upload_internal "$@" ;;
     __package-fetch) (($# == 7)) || exit 50; cmd_package_fetch_internal "$@" ;;
+    __site-upload) (($# == 7)) || exit 70; cmd_site_upload_internal "$@" ;;
     __run) (($# == 1)) || exit 3; cmd_run "$1" ;;
     *) fail unknown_subcommand ;;
 esac

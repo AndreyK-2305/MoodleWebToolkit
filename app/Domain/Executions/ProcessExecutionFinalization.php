@@ -397,8 +397,9 @@ class ProcessExecutionFinalization
         $consolidation = RemoteConsolidationPreparation::selected($execution->toolBinding);
         $real = $execution->toolBinding?->adapter_key === CollectorExecutionPreparation::ADAPTER_KEY || $remote || $consolidation;
         // The laboratory captures six artifacts of its own run; a remote collection holds one S3 reference per source;
-        // a remote consolidation leaves its outputs on the destination and holds none here.
-        $expectedExisting = $remote ? SourcePackage::query()->where('producer_execution_id', $execution->id)->count() : ($consolidation ? 0 : ($real ? 6 : 0));
+        // a remote consolidation holds only the S3 reference of its site package backup, when it was taken.
+        $expectedExisting = $remote ? SourcePackage::query()->where('producer_execution_id', $execution->id)->count()
+            : ($consolidation ? $execution->artifacts()->where('category', 'FULL_BACKUP')->count() : ($real ? 6 : 0));
         $existingCount = $execution->artifacts()->count();
 
         if (count($artifacts) !== count(GenerateFinalArtifacts::REQUIRED_TYPES)
