@@ -7,6 +7,7 @@ use App\Domain\Executions\ExecutionCommandLease;
 use App\Domain\Executions\ExecutionEventRecorder;
 use App\Domain\Executions\ProcessExecutionFinalization;
 use App\Domain\Tools\Contracts\ToolAdapter;
+use App\Enums\ConflictStatus;
 use App\Enums\EventSeverity;
 use App\Enums\ExecutionCommandType;
 use App\Enums\ExecutionStatus;
@@ -76,9 +77,14 @@ final class RemoteConsolidationProvider implements ExecutionProvider
         try {
             $this->workflow->resolve($command->execution, $conflict, (string) ($command->payload['decision'] ?? ''), $actor);
         } catch (ToolOperationBlocked $exception) {
-            // The destination is not ready to continue: the Execution keeps waiting with the reason.
+            // The destination is not ready to continue: the Execution keeps waiting with the reason,
+            // and the same intervention opens again so the administrator can decide once more.
             app(ExecutionEventRecorder::class)->record($command->execution, 'consolidator.continue_blocked', $conflict->step?->step_key,
                 EventSeverity::WARNING, message: $exception->getMessage());
+            $execution = $command->execution->fresh();
+            if ($execution?->status === ExecutionStatus::WAITING_USER_ACTION && ! $execution->conflicts()->where('status', ConflictStatus::OPEN)->exists()) {
+                app(RemoteConsolidationInterventions::class)->reopen($conflict, $exception->getMessage());
+            }
         }
     }
 }

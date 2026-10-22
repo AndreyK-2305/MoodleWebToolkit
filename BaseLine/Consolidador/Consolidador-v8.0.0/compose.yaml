@@ -117,6 +117,7 @@ services:
       DOCKER_SOCKET_PATH: ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}
       COMPOSE_PROJECT_NAME: moodle-consolidation-production
       CONSOLIDATION_WORKERS: ${CONSOLIDATION_WORKERS:-auto}
+      CONSOLIDATION_FUZZY_REVIEW: ${CONSOLIDATION_FUZZY_REVIEW:-}
     env_file:
       - .env
     volumes:

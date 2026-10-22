@@ -221,6 +221,158 @@ class RemoteDestinationTest extends DomainTestCase
         $this->assertSame(['FAILED', 'engine_modified'], [$refused['state'], $refused['error_code']]);
     }
 
+    public function test_the_real_reset_restores_the_runtime_keeping_only_the_env_before_preparing(): void
+    {
+        $this->requireRoot();
+        DeployRemoteTool::dispatchSync($this->server->getKey(), $this->distribution->getKey(), null);
+        $runtime = $this->root.'/srv/campus';
+        $this->assertSame(0, $this->helper(['campus', '--public-url', self::URL, '--admin-email', 'admin@example.edu', '--runtime-dir', $runtime])->getExitCode());
+        $env = (string) file_get_contents($runtime.'/.env');
+        // What a previous site left: its packages, reports, exports, settings and a modified engine file.
+        file_put_contents($runtime.'/copias/pregrado.zip', 'zip');
+        file_put_contents($runtime.'/reports/assistant-state.json', '{}');
+        file_put_contents($runtime.'/reports/destination-write.lock.json', '{}');
+        mkdir($runtime.'/exports/phase7', 0755, true);
+        file_put_contents($runtime.'/exports/phase7/closure_summary.json', '{}');
+        file_put_contents($runtime.'/managed-config/current.json', '{}');
+        file_put_contents($runtime.'/scripts/phase6-lib.php', "\n// alterado\n", FILE_APPEND);
+        $check = app(CheckRemoteDestination::class)->handle($this->server, 'campus', null);
+        $this->assertSame([true, true, 1], [$check['report']['destination_written'], $check['report']['assistant_started'], $check['report']['copias_packages']]);
+        $metadata = $this->server->refresh()->metadata;
+        $metadata['remote_destinations']['campus']['ready'] = true;
+        $this->server->update(['metadata' => $metadata]);
+
+        $admin = $this->user(UserRole::ADMIN);
+        $started = app(PrepareRemoteDestination::class)->start($this->server->refresh(), 'campus', $admin, true, 'CONFIRMAR');
+        $this->assertSame('RUNNING', $started['state'], (string) ($started['error_code'] ?? ''));
+        $deadline = hrtime(true) + 60_000_000_000;
+        do {
+            usleep(500_000);
+            $observed = app(PrepareRemoteDestination::class)->observe($this->server->refresh(), 'campus');
+        } while (in_array($observed['state'], PrepareRemoteDestination::ACTIVE, true) && hrtime(true) < $deadline);
+
+        // The reset finished; the Consolidator's own preflight then stops without Docker.
+        $this->assertStringContainsString('DESTINATION_RESET_DONE', (string) $observed['tail']);
+        $this->assertSame(['FAILED', 'prepare_failed'], [$observed['state'], $observed['error_code']]);
+        $this->assertSame($env, file_get_contents($runtime.'/.env'));
+        foreach (['/copias/pregrado.zip', '/reports/assistant-state.json', '/reports/destination-write.lock.json',
+            '/exports/phase7/closure_summary.json', '/managed-config/current.json'] as $left) {
+            $this->assertFileDoesNotExist($runtime.$left);
+        }
+        $this->assertDirectoryExists($runtime.'/managed-config');
+        $this->assertStringNotContainsString('alterado', (string) file_get_contents($runtime.'/scripts/phase6-lib.php'));
+        $this->assertSame('mwt-campus', posix_getpwuid(fileowner($runtime.'/scripts/phase6-lib.php'))['name']);
+        // The profile was checked again by itself: the engine is intact and nothing was written.
+        $report = $this->server->refresh()->metadata['remote_destinations']['campus']['report'];
+        $this->assertSame([true, false, 0], [$report['engine_intact'], $report['destination_written'], $report['copias_packages']]);
+    }
+
+    public function test_the_real_agent_reads_the_review_and_writes_the_administrators_answers(): void
+    {
+        $this->requireRoot();
+        if (trim((string) shell_exec('command -v python3')) === '') {
+            $this->markTestSkipped('Estos subcomandos usan python3, que la comprobación del destino exige.');
+        }
+        DeployRemoteTool::dispatchSync($this->server->getKey(), $this->distribution->getKey(), null);
+        $runtime = $this->root.'/srv/campus';
+        $this->assertSame(0, $this->helper(['campus', '--public-url', self::URL, '--admin-email', 'admin@example.edu', '--runtime-dir', $runtime])->getExitCode());
+        $headers = ['candidate_group', 'candidate_type', 'source_a', 'source_user_id_a', 'canonical_id_a', 'canonical_members_a', 'name_a', 'email_a',
+            'google_identity_state_a', 'source_b', 'source_user_id_b', 'canonical_id_b', 'canonical_members_b', 'name_b', 'email_b', 'google_identity_state_b',
+            'name_similarity', 'email_similarity', 'institutional_identifier_match', 'other_evidence', 'confidence_band', 'resolution', 'canonical_target',
+            'canonical_email', 'canonical_username', 'oauth_policy', 'operator', 'decision_timestamp_utc', 'evidence_reference', 'justification'];
+        $row = fn (string $group, string $a, string $b): array => array_combine($headers, [$group, 'POSSIBLE_IDENTITY_MATCH', 'pregrado', $a, 'C-'.$a,
+            'pregrado:'.$a, 'Ana "Mía" Pérez, M.', 'ana@ufps.edu.co', 'none', 'posgrado', $b, 'C-'.$b, 'posgrado:'.$b, 'Ana Perez', 'ana@gmail.com', 'none',
+            '0.9', '0.7', 'no', 'cedula', 'high', '', '', '', '', '', '', '', '', '']);
+        $csv = fopen($runtime.'/exports/identity_candidate_review.csv', 'w');
+        fputcsv($csv, $headers, ',', '"', '');
+        foreach ([$row('FUZZ-0001', '1', '2'), $row('FUZZ-0002', '3', '4')] as $line) {
+            fputcsv($csv, $line, ',', '"', '');
+        }
+        fclose($csv);
+
+        $page = $this->agent()->call($this->target(), 'identity-candidates', ['campus', '0']);
+        $this->assertTrue($page->ok, (string) $page->errorCode);
+        $this->assertSame([2, 'FUZZ-0001', 'Ana "Mía" Pérez, M.', ['posgrado:2']], [$page->data['total'], $page->data['candidates'][0]['group'],
+            $page->data['candidates'][0]['a']['name'], $page->data['candidates'][0]['b']['members']]);
+
+        $answers = ['operator' => 'Admin <admin@example.edu>', 'decision_timestamp_utc' => '2026-10-22T15:00:00Z', 'evidence_reference' => 'plataforma',
+            'decisions' => [['group' => 'FUZZ-0001', 'resolution' => 'MERGE', 'canonical_target' => 'pregrado:1', 'canonical_email' => 'ana@ufps.edu.co',
+                'canonical_username' => 'ana', 'oauth_policy' => 'canonical_account', 'justification' => 'Misma persona'],
+                ['group' => 'FUZZ-0002', 'resolution' => 'IGNORE', 'justification' => 'Coincidencia débil']]];
+        $chunks = str_split(rtrim(strtr(base64_encode((string) json_encode($answers)), '+/', '-_'), '='), 150);
+        // A review that leaves a group undecided is refused.
+        $partial = str_split(rtrim(strtr(base64_encode((string) json_encode([...$answers, 'decisions' => [$answers['decisions'][0]]])), '+/', '-_'), '='), 150);
+        $this->assertSame('identity_review_invalid', $this->agent()->call($this->target(), 'identity-review-submit', ['campus', ...$partial])->errorCode);
+        $this->assertSame(2, $this->agent()->call($this->target(), 'identity-review-submit', ['campus', ...$chunks])->data['decided']);
+        $stream = fopen($runtime.'/exports/identity_candidate_review.csv', 'r');
+        fgetcsv($stream, 0, ',', '"', '');
+        $written = array_combine($headers, (array) fgetcsv($stream, 0, ',', '"', ''));
+        fclose($stream);
+        $this->assertSame(['MERGE', 'pregrado:1', 'Admin <admin@example.edu>', 'Ana "Mía" Pérez, M.', 'pregrado:1'],
+            [$written['resolution'], $written['canonical_target'], $written['operator'], $written['name_a'], $written['canonical_members_a']]);
+        $this->assertSame('mwt-campus', posix_getpwuid(fileowner($runtime.'/exports/identity_candidate_review.csv'))['name']);
+
+        mkdir($runtime.'/exports/phase2', 0755, true);
+        file_put_contents($runtime.'/exports/phase2/plugin_inventory_after.json', (string) json_encode(['plugins' => [
+            ['component' => 'theme_boost', 'installation_status' => 'installed'], ['component' => 'theme_classic', 'installation_status' => 'installed'],
+            ['component' => 'theme_moove', 'installation_status' => 'missing'], ['component' => 'mod_quiz', 'installation_status' => 'installed']]]));
+        $options = $this->agent()->call($this->target(), 'theme-options', ['campus']);
+        $this->assertSame([['boost', 'classic'], 'boost'], [$options->data['themes'], $options->data['default']]);
+        $this->assertTrue($this->agent()->call($this->target(), 'theme-policy-set', ['campus', 'classic', '0'])->ok);
+        $policy = json_decode((string) file_get_contents($runtime.'/config/theme-policy.json'), true);
+        $this->assertSame(['classic', 'operator'], [$policy['global_theme_selection'], $policy['selection_source']]);
+
+        // Once the Consolidator wrote to the destination, its review and policy are fixed.
+        file_put_contents($runtime.'/reports/destination-write.lock.json', '{}');
+        $this->assertSame('destination_already_written', $this->agent()->call($this->target(), 'theme-policy-set', ['campus', 'boost', '0'])->errorCode);
+        $this->assertSame('destination_already_written', $this->agent()->call($this->target(), 'identity-review-submit', ['campus', ...$chunks])->errorCode);
+    }
+
+    public function test_the_agents_plugin_inspector_writes_a_proposal_the_catalog_promotes(): void
+    {
+        $this->requireRoot();
+        if (trim((string) shell_exec('command -v git')) === '') {
+            $this->markTestSkipped('La inspección requiere git.');
+        }
+        DeployRemoteTool::dispatchSync($this->server->getKey(), $this->distribution->getKey(), null);
+        $runtime = $this->root.'/srv/campus';
+        $this->assertSame(0, $this->helper(['campus', '--public-url', self::URL, '--admin-email', 'admin@example.edu', '--runtime-dir', $runtime])->getExitCode());
+        // A plugin repository with a pinned commit, as a public Git host would serve it.
+        $repository = $this->root.'/vpl';
+        mkdir($repository, 0755, true);
+        file_put_contents($repository.'/version.php', "<?php\n\$plugin->component = 'local_mwttest';\n\$plugin->version = 2026050100;\n"
+            ."\$plugin->requires = 2024100700;\n\$plugin->release = '4.4.1';\n\$plugin->dependencies = ['local_extra' => ANY_VERSION];\n");
+        file_put_contents($repository.'/lib.php', "<?php\n");
+        $git = fn (string ...$arguments): string => trim((string) (new Process(['git', '-C', $repository, '-c', 'user.email=t@example.edu', '-c', 'user.name=t', ...$arguments]))
+            ->mustRun()->getOutput());
+        $git('init', '-q');
+        $git('add', '.');
+        $git('commit', '-q', '-m', 'v');
+        $commit = $git('rev-parse', 'HEAD');
+        $agent = (string) file_get_contents(base_path('remote-agent/mwt-agent'));
+        $code = fn (string $name): string => preg_match("/readonly {$name}=\\$\\(cat <<'MWT_PHP'\\n(.*?)\\nMWT_PHP\\n\\)/s", $agent, $match) === 1 ? $match[1] : '';
+
+        $inspect = new Process(['php', '-r', $code('PLUGIN_INSPECT_PHP'), '--', 'local_mwttest', 'file://'.$repository, $commit], $runtime);
+        $inspect->run();
+        $this->assertSame(0, $inspect->getExitCode(), $inspect->getErrorOutput());
+        $proposal = json_decode((string) file_get_contents($runtime.'/exports/plugin-proposals/local_mwttest.json'), true);
+        $this->assertSame(['public/local/mwttest', 2026050100, '4.4.1', 2024100700, ['local_extra' => 1]], [$proposal['entry']['path'],
+            $proposal['entry']['version'], $proposal['entry']['release'], $proposal['entry']['requires'], $proposal['entry']['dependencies']]);
+        $this->assertDirectoryDoesNotExist($runtime.'/cache/plugin-inspect/local_mwttest');
+        // Another component than the one requested is refused.
+        $other = new Process(['php', '-r', $code('PLUGIN_INSPECT_PHP'), '--', 'mod_otro', 'file://'.$repository, $commit], $runtime);
+        $this->assertSame(74, $other->run());
+
+        // The catalog accepts only public hosts: the promotion of a local repository is refused by the Consolidator itself.
+        $promote = new Process(['php', '-r', $code('PLUGIN_PROMOTE_PHP'), '--', 'local_mwttest', 'Admin <admin@example.edu>'], $runtime);
+        $this->assertNotSame(0, $promote->run());
+        $proposal['entry']['repository'] = 'https://github.com/example/moodle-local_mwttest.git';
+        file_put_contents($runtime.'/exports/plugin-proposals/local_mwttest.json', (string) json_encode($proposal));
+        $this->assertSame(0, (new Process(['php', '-r', $code('PLUGIN_PROMOTE_PHP'), '--', 'local_mwttest', 'Admin <admin@example.edu>'], $runtime))->run());
+        $catalog = json_decode((string) file_get_contents($runtime.'/config/plugin-compatibility-catalog.json'), true);
+        $this->assertSame([$commit, 'Admin <admin@example.edu>'], [$catalog['entries']['local_mwttest']['commit'], $catalog['entries']['local_mwttest']['provenance']['reviewed_by']]);
+    }
+
     public function test_the_real_fetch_moves_only_a_verified_package_into_copias(): void
     {
         $this->requireRoot();

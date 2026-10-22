@@ -309,7 +309,7 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         // Blocked on a configuration decision (exit 20): the assistant keeps its checkpoints.
         $this->queueStatus(alive: false, exit: ['exit_code' => 20, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
         $this->queueReport(['stage' => '05b-readiness', 'status' => 'blocked',
-            'message' => 'V8_THEME_SELECTION_REQUIRED: defina global_theme_selection; selection_source se registrará como config.']);
+            'message' => 'V8_READINESS_INPUT_MISSING: exports/phase4/plan_summary.json']);
         dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
         $execution->refresh();
         $this->assertSame(ExecutionStatus::WAITING_USER_ACTION, $execution->status);
@@ -407,6 +407,197 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         dispatch_sync(new ReconcileRemoteAgentOperation($approval->id));
         $third = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)->orderByDesc('id')->first();
         $this->assertSame(['consolidator-run-3', ExecutionStatus::RUNNING], [$third->idempotency_key, $execution->fresh()->status]);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_a_lock_that_asks_for_no_plugin_continues_without_plugins_from_the_web(): void
+    {
+        [$execution, $run] = $this->startExecution();
+        // Consolidator rc12: the pins no longer match the image although nothing is installed.
+        $this->queueStatus(alive: false, exit: ['exit_code' => 22, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
+        $this->queueReport(['stage' => '03-plugins', 'status' => 'WAITING_USER_ACTION', 'message' => 'PLUGIN_INTERVENTION_PENDING: instalación y revisión de plugins.']);
+        $this->queueIntervention('plugins', [
+            'plugin_needs' => (string) json_encode(['original_compatibility_needs' => []]),
+            'plugin_diff' => null,
+            'plugin_technical' => (string) json_encode(['issues' => ['PLUGIN_TECHNICAL_VALIDATION_FAILED: destino, URL o pins inconsistentes.']]),
+            'plugin_checkpoint' => (string) json_encode(['status' => 'PLUGIN_INTERVENTION_APPROVED']),
+            'plugin_lock' => (string) json_encode(['lock_status' => 'ARTIFACTS_VERIFIED_PENDING_STAGING', 'plugins' => [], 'unknown_plugins' => []]),
+        ]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
+        $conflict = $execution->conflicts()->sole();
+        $this->assertSame(['CONTINUE_WITHOUT_PLUGINS', 'CONFIRM_COMPLETED'], $conflict->details['allowed_decisions']);
+        $this->getJson(route('projects.executions.events', [$this->project, $execution]))->assertOk()
+            ->assertJsonPath('execution.conflicts.0.intervention.plugins_none', true);
+
+        // The destination seals the empty lock, then the next run continues.
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch(RemoteConsolidationWorkflow::NONE_COMMAND);
+        $this->resolve($execution, $conflict, 'CONTINUE_WITHOUT_PLUGINS', 'no-plugins')->assertSessionHasNoErrors();
+        $sealing = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::NONE_COMMAND)->sole();
+        $this->assertSame(1, AuditLog::query()->where('action', 'CONSOLIDATOR_PLUGINS_NONE_ACCEPTED')->count());
+        $this->queueStatus(alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:30:00Z'],
+            command: RemoteConsolidationWorkflow::NONE_COMMAND);
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch();
+        dispatch_sync(new ReconcileRemoteAgentOperation($sealing->id));
+        $this->assertSame(['consolidator-run-2', ExecutionStatus::RUNNING], [
+            $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)->orderByDesc('id')->value('idempotency_key'),
+            $execution->fresh()->status]);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_the_fuzzy_identity_review_is_decided_in_the_platform_and_applied_by_the_consolidator(): void
+    {
+        [$execution, $run] = $this->startExecution();
+        $this->queueStatus(alive: false, exit: ['exit_code' => 20, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
+        $this->queueReport(['stage' => '05b-readiness', 'status' => 'WAITING_USER_ACTION',
+            'message' => 'V8_IDENTITY_REVIEW_REQUIRED: IDENTITY_REVIEW_PREPARED; WAITING_USER_ACTION.']);
+        $account = fn (string $source, string $id, string $name, string $email): array => ['source' => $source, 'user_id' => $id,
+            'canonical_id' => 'CAN-'.$source.'-'.$id, 'name' => $name, 'email' => $email, 'google' => 'none', 'members' => [$source.':'.$id]];
+        $this->transport->ok('identity-candidates', ['total' => 2, 'offset' => 0, 'candidates' => [
+            ['group' => 'FUZZ-0001', 'type' => 'POSSIBLE_IDENTITY_MATCH', 'confidence' => 'high', 'name_similarity' => '0.96', 'email_similarity' => '0.80',
+                'a' => $account('pregrado', '12', 'Ana María Pérez', 'ana.perez@ufps.edu.co'), 'b' => $account('posgrado', '7', 'Ana Maria Perez', 'anaperez@gmail.com')],
+            ['group' => 'FUZZ-0002', 'type' => 'POSSIBLE_IDENTITY_MATCH', 'confidence' => 'low',
+                'a' => $account('pregrado', '30', 'Luis Gómez', 'lgomez@ufps.edu.co'), 'b' => $account('posgrado', '31', 'Luis Gomes', 'luisg@gmail.com')],
+        ]]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
+        $conflict = $execution->conflicts()->sole();
+        $this->assertSame(['IDENTITY_REVIEW', ['APPLY_ANSWERS', 'CONFIRM_COMPLETED']], [$conflict->type, $conflict->details['allowed_decisions']]);
+        $this->assertSame(['FUZZ-0001', 'FUZZ-0002'], array_column($conflict->details['candidates'], 'group'));
+        // The personal data reaches the administrator's review only, never the events.
+        $this->assertStringNotContainsString('ana.perez@ufps.edu.co', (string) json_encode($execution->events()->get()));
+
+        $url = route('projects.executions.conflicts.answers', [$this->project, $execution, $conflict->id]);
+        $merge = ['group' => 'FUZZ-0001', 'resolution' => 'MERGE', 'justification' => 'Misma persona: cédula y nombre.',
+            'canonical_target' => 'pregrado:12', 'canonical_email' => 'Ana.Perez@ufps.edu.co', 'canonical_username' => 'ana.perez', 'oauth_policy' => 'canonical_account'];
+        $separate = ['group' => 'FUZZ-0002', 'resolution' => 'KEEP_SEPARATE', 'justification' => 'Personas distintas.'];
+        $key = ['Idempotency-Key' => 'consolidation-identity-review-answers'];
+        $this->postJson($url, ['conflict_version' => 1, 'decisions' => [$merge]], $key)->assertJsonValidationErrors('decisions');
+        $this->postJson($url, ['conflict_version' => 1, 'decisions' => [[...$merge, 'canonical_target' => 'otro:99'], $separate]], $key)
+            ->assertJsonValidationErrors('decisions.0.canonical_target');
+
+        $this->transport->ok('identity-review-submit', ['destination' => 'campus', 'decided' => 2]);
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch(RemoteConsolidationWorkflow::IDENTITY_COMMAND);
+        $this->postJson($url, ['conflict_version' => 1, 'decisions' => [$merge, $separate]], $key)->assertSuccessful();
+        $submit = collect($this->transport->scripts)->first(fn (string $script): bool => str_contains($script, "'identity-review-submit'"));
+        preg_match_all("/'([A-Za-z0-9_-]{1,160})'/", substr((string) $submit, (int) strpos((string) $submit, "'campus'") + 8), $chunks);
+        $sent = json_decode((string) base64_decode(strtr(implode('', $chunks[1]), '-_', '+/')), true);
+        $this->assertSame(['ana.perez@ufps.edu.co', 'KEEP_SEPARATE'], [$sent['decisions'][0]['canonical_email'], $sent['decisions'][1]['resolution']]);
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $sent['decision_timestamp_utc']);
+        $this->assertSame('RESOLVED', $conflict->fresh()->status->value);
+        $this->assertSame(2, count($conflict->fresh()->details['answers']['decisions']));
+        $apply = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::IDENTITY_COMMAND)->sole();
+
+        $this->queueStatus(alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:30:00Z'],
+            command: RemoteConsolidationWorkflow::IDENTITY_COMMAND);
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch();
+        dispatch_sync(new ReconcileRemoteAgentOperation($apply->id));
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertSame('consolidator-run-2', $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)
+            ->orderByDesc('id')->value('idempotency_key'));
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_the_global_theme_is_chosen_in_the_platform_and_a_rejected_answer_opens_the_intervention_again(): void
+    {
+        [$execution, $run] = $this->startExecution();
+        $this->queueStatus(alive: false, exit: ['exit_code' => 20, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
+        $this->queueReport(['stage' => '05b-readiness', 'status' => 'blocked',
+            'message' => 'V8_THEME_SELECTION_REQUIRED: defina global_theme_selection; selection_source se registrará como config.']);
+        $this->transport->ok('theme-options', ['themes' => ['boost', 'classic'], 'selected' => '', 'default' => 'boost',
+            'legacy_sources' => [], 'legacy_accepted' => false]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
+        $conflict = $execution->conflicts()->sole();
+        $this->assertSame(['THEME_SELECTION', ['boost', 'classic'], 'boost'], [$conflict->type, $conflict->details['themes'], $conflict->details['theme_default']]);
+        $url = route('projects.executions.conflicts.answers', [$this->project, $execution, $conflict->id]);
+        $this->postJson($url, ['conflict_version' => 1, 'theme' => 'moove'], ['Idempotency-Key' => 'consolidation-theme-unknown'])
+            ->assertJsonValidationErrors('theme');
+
+        // The destination rejects it: the Execution keeps waiting with the same intervention open again.
+        $this->transport->error('theme-policy-set', 'destination_already_written');
+        $this->postJson($url, ['conflict_version' => 1, 'theme' => 'boost'], ['Idempotency-Key' => 'consolidation-theme-first'])->assertSuccessful();
+        $this->assertSame(ExecutionStatus::WAITING_USER_ACTION, $execution->fresh()->status);
+        $again = $execution->conflicts()->where('status', 'OPEN')->sole();
+        $this->assertSame('THEME_SELECTION', $again->type);
+        $this->assertStringContainsString('destination_already_written', (string) $again->details['message']);
+        $this->assertArrayNotHasKey('answers', $again->details);
+
+        $this->transport->ok('theme-policy-set', ['destination' => 'campus', 'theme' => 'classic', 'legacy_accepted' => false]);
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch();
+        $this->postJson(route('projects.executions.conflicts.answers', [$this->project, $execution, $again->id]), ['conflict_version' => 1, 'theme' => 'classic'],
+            ['Idempotency-Key' => 'consolidation-theme-second'])->assertSuccessful();
+        $this->assertStringContainsString("'theme-policy-set' 'campus' 'classic' '0'", implode("\n", $this->transport->scripts));
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_a_plugin_outside_the_catalog_is_inspected_and_added_from_the_platform(): void
+    {
+        [$execution, $run] = $this->startExecution();
+        $this->queueStatus(alive: false, exit: ['exit_code' => 22, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
+        $this->queueReport(['stage' => '03-plugins', 'status' => 'WAITING_USER_ACTION', 'message' => 'PLUGIN_INTERVENTION_PENDING: instalación y revisión de plugins.']);
+        $this->queueIntervention('plugins', [...$this->pluginDocuments('PLUGIN_TECHNICAL_VALIDATION_FAILED'),
+            'plugin_lock' => (string) json_encode(['lock_status' => 'DISCOVERY_REQUIRED', 'plugins' => [], 'unknown_plugins' => [['component' => 'mod_vpl']]])]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
+        $conflict = $execution->conflicts()->sole();
+        $this->assertSame([['mod_vpl'], ['APPLY_ANSWERS', 'CONFIRM_COMPLETED']], [$conflict->details['unknown'], $conflict->details['allowed_decisions']]);
+
+        $inspect = route('projects.executions.conflicts.plugin-inspect', [$this->project, $execution, $conflict->id]);
+        $commit = str_repeat('a1', 20);
+        $this->post($inspect, ['component' => 'mod_vpl', 'repository' => 'https://gitlab.com/x/vpl.git', 'commit' => $commit])->assertSessionHasErrors('repository');
+        $this->post($inspect, ['component' => 'mod_quiz', 'repository' => 'https://github.com/jcrodriguez-dis/moodle-mod_vpl.git', 'commit' => $commit])
+            ->assertSessionHasErrors('component');
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch(RemoteConsolidationWorkflow::INSPECT_COMMAND);
+        $this->post($inspect, ['component' => 'mod_vpl', 'repository' => 'https://github.com/jcrodriguez-dis/moodle-mod_vpl.git', 'commit' => $commit])
+            ->assertSessionHasNoErrors();
+        $inspection = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::INSPECT_COMMAND)->sole();
+        $this->assertSame(ExecutionStatus::WAITING_USER_ACTION, $execution->fresh()->status, 'La inspección no mueve la Ejecución.');
+        $this->assertSame('RUNNING', $conflict->fresh()->details['inspections']['mod_vpl']['state']);
+
+        $this->queueStatus(alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:10:00Z'],
+            command: RemoteConsolidationWorkflow::INSPECT_COMMAND);
+        $entry = ['repository' => 'https://github.com/jcrodriguez-dis/moodle-mod_vpl.git', 'commit' => $commit, 'version' => 2026050100, 'requires' => 2024100700,
+            'release' => '4.4.1', 'path' => 'public/mod/vpl', 'tree_sha256' => str_repeat('c', 64), 'dependencies' => []];
+        $this->transport->ok('plugin-proposal', ['destination' => 'campus', 'component' => 'mod_vpl',
+            'proposal_base64' => base64_encode((string) json_encode(['component' => 'mod_vpl', 'entry' => $entry]))]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($inspection->id));
+        $details = $conflict->fresh()->details;
+        $this->assertSame(['SUCCEEDED', 2026050100, 'public/mod/vpl'], [$details['inspections']['mod_vpl']['state'],
+            $details['proposals']['mod_vpl']['version'], $details['proposals']['mod_vpl']['path']]);
+
+        // Confirmed, the proposal enters the catalog on the destination and the plugin stage is revalidated.
+        $answers = route('projects.executions.conflicts.answers', [$this->project, $execution, $conflict->id]);
+        $this->postJson($answers, ['conflict_version' => 1, 'promote' => ['mod_vpl']], ['Idempotency-Key' => 'consolidation-plugin-promote-unconfirmed'])
+            ->assertJsonValidationErrors('confirm');
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch(RemoteConsolidationWorkflow::PROMOTE_COMMAND);
+        $this->postJson($answers, ['conflict_version' => 1, 'promote' => ['mod_vpl'], 'confirm' => true], ['Idempotency-Key' => 'consolidation-plugin-promote'])
+            ->assertSuccessful();
+        $promote = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::PROMOTE_COMMAND)->sole();
+        $this->assertStringContainsString("'components=mod_vpl'", (string) collect($this->transport->scripts)
+            ->first(fn (string $script): bool => str_contains($script, RemoteConsolidationWorkflow::PROMOTE_COMMAND)));
+        $this->queueStatus(alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:20:00Z'],
+            command: RemoteConsolidationWorkflow::PROMOTE_COMMAND);
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch();
+        dispatch_sync(new ReconcileRemoteAgentOperation($promote->id));
+        $this->assertSame(['consolidator-run-2', ExecutionStatus::RUNNING], [
+            $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)->orderByDesc('id')->value('idempotency_key'),
+            $execution->fresh()->status]);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_plugins_needed_by_the_sources_never_offer_continuing_without_them(): void
+    {
+        [$execution, $run] = $this->startExecution();
+        $this->stopAtPlugins($run, 'PLUGIN_TECHNICAL_VALIDATION_FAILED');
+        $conflict = $execution->conflicts()->sole();
+        $this->assertSame(['CONFIRM_COMPLETED'], $conflict->details['allowed_decisions']);
+        $this->resolve($execution, $conflict, 'CONTINUE_WITHOUT_PLUGINS', 'not-offered')->assertSessionHasErrors('decision');
         $this->assertSame(0, $this->transport->pending());
     }
 

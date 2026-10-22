@@ -182,6 +182,58 @@ class RemoteDestinationPreparationTest extends DomainTestCase
         $this->assertSame(['FAILED', 'engine_modified'], [$rejected['state'], $rejected['error_code']]);
     }
 
+    public function test_a_destination_in_use_needs_an_administrator_who_types_confirmar_to_clean_or_reuse_it(): void
+    {
+        $this->checked(true, ['target_running' => true, 'target_volumes' => 3, 'copias_packages' => 2]);
+        $operator = $this->user();
+        foreach ([[$operator, 'CONFIRMAR'], [$this->admin, null], [$this->admin, 'confirmar']] as [$actor, $typed]) {
+            try {
+                $this->service()->start($this->server->refresh(), 'campus', $actor, true, $typed);
+                $this->fail('Un destino en uso exige un administrador y CONFIRMAR.');
+            } catch (ToolOperationBlocked) {
+                $this->addToAssertionCount(1);
+            }
+        }
+        $this->assertSame([], $this->transport->scripts);
+
+        // Cleaning: copias/ and its transfers are forgotten and the profile is checked again at the end.
+        $metadata = $this->server->refresh()->metadata;
+        $metadata['remote_destination_copias']['campus'] = ['write_locked' => false, 'packages' => [['name' => 'pregrado.zip']]];
+        $metadata['remote_destination_fetches']['campus'] = ['x' => ['state' => 'SUCCEEDED']];
+        $this->server->update(['metadata' => $metadata]);
+        $this->transport->okWith('launch', fn (string $script): array => ['operation_uuid' => QueuedRemoteTransport::operationUuid($script), 'created' => true]);
+        $started = $this->service()->start($this->server->refresh(), 'campus', $this->admin, true, 'CONFIRMAR');
+        $this->assertSame(['RUNNING', true], [$started['state'], $started['reset']]);
+        $this->assertStringContainsString("'reset=1'", $this->transport->scripts[0]);
+        $metadata = $this->server->refresh()->metadata;
+        $this->assertArrayNotHasKey('campus', $metadata['remote_destination_copias'] ?? []);
+        $this->assertArrayNotHasKey('campus', $metadata['remote_destination_fetches'] ?? []);
+        $this->assertFalse($metadata['remote_destinations']['campus']['ready']);
+        $this->assertSame(1, AuditLog::query()->where('action', 'REMOTE_DESTINATION_RESET_STARTED')->count());
+
+        $this->transport->ok('status', $this->agentStatus(['exit_code' => 0, 'cancel_requested' => false], false));
+        $this->transport->ok('tail', $this->tail("DESTINATION_RESET_DONE\nPREFLIGHT_OK\nDESTINO_LISTO\nEXPORT_TRANSPORT_OK\nTARGET_SHARED_EMAIL_POLICY_OK\n", 0));
+        $this->transport->error('destination-check', 'destination_runtime_missing');
+        $this->assertSame('SUCCEEDED', $this->service()->observe($this->server->refresh(), 'campus')['state']);
+        $this->assertStringContainsString("'destination-check' 'campus'", (string) end($this->transport->scripts));
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_a_written_destination_is_only_prepared_again_after_cleaning_it(): void
+    {
+        $this->checked(true, ['destination_written' => true]);
+        try {
+            $this->service()->start($this->server->refresh(), 'campus', $this->admin, false, 'CONFIRMAR');
+            $this->fail('Un destino escrito no se prepara encima.');
+        } catch (ToolOperationBlocked $exception) {
+            $this->assertStringContainsString('límpielo', $exception->getMessage());
+        }
+        $this->transport->okWith('launch', fn (string $script): array => ['operation_uuid' => QueuedRemoteTransport::operationUuid($script), 'created' => true]);
+        $this->assertSame('RUNNING', $this->service()->start($this->server->refresh(), 'campus', $this->admin, true, 'CONFIRMAR')['state']);
+        // A clean destination needs no confirmation.
+        $this->assertFalse(CheckRemoteDestination::used(['target_running' => false, 'destination_written' => false, 'target_volumes' => 0, 'copias_packages' => 0]));
+    }
+
     public function test_the_endpoints_launch_and_the_scheduler_observes_active_preparations(): void
     {
         Queue::fake();

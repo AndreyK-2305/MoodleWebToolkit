@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.11.0"
+readonly AGENT_VERSION="1.13.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -30,6 +30,70 @@ readonly PATH_RE='^/[A-Za-z0-9._/-]{1,255}$'
 readonly MAX_TAIL_BYTES=16384
 readonly HEARTBEAT_SECONDS=10
 readonly SELF_PATH=$(readlink -f "${BASH_SOURCE[0]}")
+readonly PLUGIN_INSPECT_PHP=$(cat <<'MWT_PHP'
+// Inspects a plugin for the Consolidator's catalog: the pinned commit, its version.php and its
+// tree, with the catalog's own functions. Writes a proposal; nothing is installed here.
+require getcwd() . "/scripts/v8-plugin-catalog.php";
+[, $component, $repository, $commit] = $argv;
+$dirs = ["mod" => "mod", "block" => "blocks", "local" => "local", "theme" => "theme", "auth" => "auth", "enrol" => "enrol",
+    "filter" => "filter", "format" => "course/format", "qtype" => "question/type", "qbehaviour" => "question/behaviour",
+    "report" => "report", "tool" => "admin/tool", "atto" => "lib/editor/atto/plugins", "tiny" => "lib/editor/tiny/plugins",
+    "availability" => "availability/condition", "assignsubmission" => "mod/assign/submission", "assignfeedback" => "mod/assign/feedback",
+    "gradeexport" => "grade/export", "gradeimport" => "grade/import", "gradereport" => "grade/report", "repository" => "repository",
+    "plagiarism" => "plagiarism", "customfield" => "customfield/field", "profilefield" => "user/profile/field",
+    "quiz" => "mod/quiz/report", "quizaccess" => "mod/quiz/accessrule", "datafield" => "mod/data/field", "booktool" => "mod/book/tool",
+    "message" => "message/output", "media" => "media/player", "contenttype" => "contentbank/contenttype", "paygw" => "payment/gateway",
+    "editor" => "lib/editor", "logstore" => "admin/tool/log/store", "workshopform" => "mod/workshop/form"];
+[$type, $name] = explode("_", $component, 2);
+if (!isset($dirs[$type])) { fwrite(STDERR, "PLUGIN_TYPE_UNSUPPORTED: $type\n"); exit(71); }
+$work = getcwd() . "/cache/plugin-inspect/" . $component;
+if (is_dir($work)) { v8c_delete_tree($work); }
+@mkdir(dirname($work), 0775, true);
+try {
+    v8c_process(["git", "clone", "--no-checkout", $repository, $work]);
+    v8c_process(["git", "-C", $work, "checkout", "--detach", $commit]);
+} catch (V8CatalogException $exception) { fwrite(STDERR, "PLUGIN_CLONE_FAILED\n"); exit(72); }
+if (is_file($work . "/.gitmodules")) { fwrite(STDERR, "PLUGIN_SUBMODULES_UNSUPPORTED\n"); exit(73); }
+$text = (string)@file_get_contents($work . "/version.php");
+$value = static fn(string $field, string $pattern): ?string => preg_match('/\$plugin->' . $field . '\s*=\s*' . $pattern . '\s*;/', $text, $m) ? $m[count($m) - 1] : null;
+if ($value("component", "([\'\"])([^\'\"]+)\\1") !== $component) { fwrite(STDERR, "PLUGIN_COMPONENT_MISMATCH\n"); exit(74); }
+$version = $value("version", "([0-9]+)");
+$requires = $value("requires", "([0-9]+)");
+if ($version === null || $requires === null) { fwrite(STDERR, "PLUGIN_VERSION_MISSING\n"); exit(75); }
+$release = $value("release", "([\'\"])([^\'\"]*)\\1");
+$dependencies = [];
+if (preg_match('/\$plugin->dependencies\s*=\s*(?:array\(|\[)(.*?)(?:\)|\])\s*;/s', $text, $block)) {
+    preg_match_all('/([\'\"])([a-z][a-z0-9]*_[a-z][a-z0-9_]*)\1\s*=>\s*([0-9]+|ANY_VERSION)/', $block[1], $pairs, PREG_SET_ORDER);
+    foreach ($pairs as $pair) { $dependencies[$pair[2]] = $pair[3] === "ANY_VERSION" ? 1 : (int)$pair[3]; }
+}
+$entry = ["status" => "known_good_candidate", "type" => $type, "repository" => $repository, "path" => "public/" . $dirs[$type] . "/" . $name,
+    "commit" => $commit, "version" => (int)$version, "release" => $release, "tree_sha256" => v8c_tree_sha256($work),
+    "requires" => (int)$requires, "supported" => ["5.2"], "incompatible" => null, "dependencies" => $dependencies, "submodules" => [],
+    "validated_from_versions" => [], "provenance" => ["context" => "MoodleWebToolkit", "reviewed_by" => "pendiente"]];
+@mkdir(getcwd() . "/exports/plugin-proposals", 0775, true);
+v8c_atomic_json(getcwd() . "/exports/plugin-proposals/" . $component . ".json", ["component" => $component, "entry" => $entry]);
+v8c_delete_tree($work);
+echo "PLUGIN_INSPECTED component=$component version=$version tree=" . $entry["tree_sha256"] . PHP_EOL;
+MWT_PHP
+)
+readonly PLUGIN_PROMOTE_PHP=$(cat <<'MWT_PHP'
+// Promotes inspected proposals into the catalog with the Consolidator's own promotion rules.
+require getcwd() . "/scripts/v8-plugin-catalog.php";
+[, $components, $approver] = $argv;
+$catalogPath = getcwd() . "/config/plugin-compatibility-catalog.json";
+foreach (explode(",", $components) as $component) {
+    $proposal = v8c_read_json(getcwd() . "/exports/plugin-proposals/" . $component . ".json");
+    $catalog = v8c_read_json($catalogPath);
+    if (isset($catalog["entries"][$component])) { echo "PLUGIN_ALREADY_IN_CATALOG component=$component" . PHP_EOL; continue; }
+    $proposal["entry"]["provenance"]["reviewed_by"] = $approver;
+    $catalog = v8c_promote($catalog, ["component" => $component, "entry" => $proposal["entry"], "approval" => [
+        "approved_by" => $approver, "approved_at" => gmdate("Y-m-d"),
+        "evidence" => "MoodleWebToolkit: inspección del commit " . $proposal["entry"]["commit"]]]);
+    v8c_atomic_json($catalogPath, $catalog);
+    echo "PLUGIN_PROMOTED component=$component" . PHP_EOL;
+}
+MWT_PHP
+)
 readonly UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
 json_escape() {
@@ -253,6 +317,20 @@ engine_intact() {
         | sha256sum --quiet --check - >/dev/null 2>&1)
 }
 
+# The Consolidator resolved its plugin lock and it asks for nothing: no catalog
+# plugin, no unknown component and no compatibility need from the sources.
+plugins_none() {
+    [[ -f $1/exports/plugin-lock.json && ! -L $1/exports/plugin-lock.json ]] || return 1
+    [[ -f $1/exports/phase2/plugin_compatibility_needs.json && ! -L $1/exports/phase2/plugin_compatibility_needs.json ]] || return 1
+    python3 -I - "$1/exports/plugin-lock.json" "$1/exports/phase2/plugin_compatibility_needs.json" <<'PY' >/dev/null 2>&1
+import json, sys
+lock = json.load(open(sys.argv[1], encoding="utf-8-sig"))
+needs = json.load(open(sys.argv[2], encoding="utf-8-sig"))
+empty = lambda value: isinstance(value, list) and len(value) == 0
+sys.exit(0 if empty(lock.get("plugins")) and empty(lock.get("unknown_plugins")) and empty(needs.get("original_compatibility_needs")) else 1)
+PY
+}
+
 # --- Registered operations -------------------------------------------------
 
 # Sets REGISTERED_ARGV to the validated argv of a registered operation.
@@ -312,7 +390,8 @@ registered_argv() {
                 "${params[package]}.zip" "$SRC_MOODLE_CONFIG")
             ;;
         consolidator.prepare)
-            [[ ${#params[@]} == 2 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE ]] || fail invalid_parameter
+            [[ ${#params[@]} == 3 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE
+                && ${params[reset]:-} =~ ^[01]$ ]] || fail invalid_parameter
             load_destination "${params[destination]}"
             [[ $DST_TOOL_TREE == "${params[distribution]}" ]] || fail tool_tree_mismatch
             local store
@@ -320,12 +399,20 @@ registered_argv() {
             # The stored tree is re-verified on every launch, like the Collector's.
             (($(unsafe_entries "$store") == 0)) && [[ $(tree_hash "$store") == "${params[distribution]}" ]] || fail tool_hash_mismatch
             [[ -d $DST_RUNTIME_DIR && ! -L $DST_RUNTIME_DIR && -f $DST_RUNTIME_DIR/.env && -f $DST_RUNTIME_DIR/FILES.sha256 ]] || fail destination_runtime_missing
-            # Preparing again after the Consolidator wrote to the site would recreate its services mid-migration.
-            [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
-            engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
-            destination_owned || fail destination_owner_mismatch
-            # shellcheck disable=SC2016
-            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh preparar' consolidator-prepare "$DST_RUNTIME_DIR")
+            if [[ ${params[reset]} == 1 ]]; then
+                # The Consolidator's Compose project name is fixed: one runtime per server, so a
+                # reset never takes down another profile's services.
+                (($(find "$DESTINATIONS_DIR" -maxdepth 1 -type f -name '*.conf' | wc -l) == 1)) || fail destination_shared_server
+                [[ $(id -u) == 0 ]] || fail reset_requires_root
+                REGISTERED_ARGV=(bash "$SELF_PATH" __destination-prepare "${params[destination]}" "${params[distribution]}" "$OP_DIR")
+            else
+                # Preparing again after the Consolidator wrote to the site would recreate its services mid-migration.
+                [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+                engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
+                destination_owned || fail destination_owner_mismatch
+                # shellcheck disable=SC2016
+                REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh preparar' consolidator-prepare "$DST_RUNTIME_DIR")
+            fi
             ;;
         consolidator.run)
             [[ ${#params[@]} == 3 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE
@@ -339,8 +426,10 @@ registered_argv() {
             engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
             destination_owned || fail destination_owner_mismatch
             # The assistant resumes from its own checkpoints; it is never run twice at once (flock inside).
+            # The fuzzy identity candidates are reviewed in the platform: from rc13 on, the automatic
+            # mode stops for them instead of skipping them.
             # shellcheck disable=SC2016
-            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh ejecutar-automatico "--workers=$2"' consolidator-run
+            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'cd "$1" && export CONSOLIDATION_FUZZY_REVIEW=required && exec bash ./moodle-consolidation.sh ejecutar-automatico "--workers=$2"' consolidator-run
                 "$DST_RUNTIME_DIR" "${params[workers]}")
             ;;
         consolidator.plugins-approve)
@@ -371,6 +460,131 @@ registered_argv() {
                 "${compose[@]}" run --rm --no-deps -T assistant-runtime pwsh -NoLogo -NoProfile -File scripts/audit-package-plugins.ps1 -Mode Approve
                 "${compose[@]}" run --rm --no-deps -T assistant-runtime pwsh -NoLogo -NoProfile -File scripts/v8-plugin-resolver.ps1 -Mode Seal
                 echo PLUGIN_INTERVENTION_APPROVED' consolidator-plugins-approve "$DST_RUNTIME_DIR")
+            ;;
+        consolidator.plugins-none)
+            [[ ${#params[@]} == 2 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE ]] || fail invalid_parameter
+            load_destination "${params[destination]}"
+            [[ $DST_TOOL_TREE == "${params[distribution]}" ]] || fail tool_tree_mismatch
+            local sealer
+            sealer=$(compgen -G "$TOOLS_DIR/moodle-consolidador-*/${params[distribution]}" | head -n 1) || fail tool_not_installed
+            (($(unsafe_entries "$sealer") == 0)) && [[ $(tree_hash "$sealer") == "${params[distribution]}" ]] || fail tool_hash_mismatch
+            [[ -d $DST_RUNTIME_DIR && ! -L $DST_RUNTIME_DIR && -f $DST_RUNTIME_DIR/.env ]] || fail destination_runtime_missing
+            engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
+            [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+            destination_owned || fail destination_owner_mismatch
+            command -v python3 >/dev/null 2>&1 || fail python3_missing
+            # Only when the Consolidator's own lock and needs ask for no plugin at all.
+            plugins_none "$DST_RUNTIME_DIR" || fail plugins_required
+            # Consolidator rc12 rewrites the pin manifest even with nothing to install and then
+            # skips the image rebuild and the seal; this runs the steps it would have run with
+            # plugins, inside its runtime and under its run lock.
+            # shellcheck disable=SC2016
+            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'set -euo pipefail; cd "$1"
+                socket=/var/run/docker.sock
+                export ASSISTANT_PROJECT_ROOT="$1" ASSISTANT_UID="$(id -u)" ASSISTANT_GID="$(id -g)" DOCKER_SOCKET_PATH=$socket
+                export DOCKER_GID="$(stat -c %g "$socket")" COMPOSE_PROJECT_NAME=moodle-consolidation-production
+                set -a; . ./.env; set +a
+                export MOODLE_MANAGED_CONFIG_DIR="${MOODLE_MANAGED_CONFIG_DIR:-$1/managed-config}"
+                exec {lock}>reports/assistant-run.lock
+                flock -n "$lock" || { echo "ASSISTANT_RUNNING" >&2; exit 61; }
+                compose=(docker compose --project-name moodle-consolidation-production)
+                pins=$(sha256sum docker/custom-plugins/approved-plugins.json | cut -c1-64)
+                image=$("${compose[@]}" exec -T moodle-target sha256sum /opt/approved-plugins.json 2>/dev/null | cut -c1-64) || image=""
+                if [[ $pins != "$image" ]]; then
+                    echo "PLUGIN_PINS_REBUILD"
+                    "${compose[@]}" build moodle-target
+                    "${compose[@]}" up -d --force-recreate moodle-target
+                    container=$("${compose[@]}" ps -q moodle-target)
+                    for _ in $(seq 1 72); do
+                        [[ $(docker inspect -f "{{.State.Health.Status}}" "$container") == healthy ]] && break
+                        sleep 5
+                    done
+                    [[ $(docker inspect -f "{{.State.Health.Status}}" "$container") == healthy ]] || { echo "TARGET_NOT_HEALTHY" >&2; exit 62; }
+                fi
+                "${compose[@]}" run --rm --no-deps -T assistant-runtime pwsh -NoLogo -NoProfile -File scripts/audit-package-plugins.ps1 -Mode Revalidate
+                "${compose[@]}" run --rm --no-deps -T assistant-runtime pwsh -NoLogo -NoProfile -File scripts/v8-plugin-resolver.ps1 -Mode Seal
+                python3 -I -c "import json,sys; d=json.load(open(sys.argv[1], encoding=\"utf-8-sig\")); sys.exit(0 if d.get(\"lock_status\") == \"SEALED\" and d.get(\"plugin_lock_valid\") is True else 1)" exports/plugin-lock.json \
+                    || { echo "PLUGIN_LOCK_NOT_SEALED" >&2; exit 63; }
+                echo PLUGINS_NONE_SEALED' consolidator-plugins-none "$DST_RUNTIME_DIR")
+            ;;
+        consolidator.identity-apply)
+            [[ ${#params[@]} == 2 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE ]] || fail invalid_parameter
+            load_destination "${params[destination]}"
+            [[ $DST_TOOL_TREE == "${params[distribution]}" ]] || fail tool_tree_mismatch
+            local reviewer
+            reviewer=$(compgen -G "$TOOLS_DIR/moodle-consolidador-*/${params[distribution]}" | head -n 1) || fail tool_not_installed
+            (($(unsafe_entries "$reviewer") == 0)) && [[ $(tree_hash "$reviewer") == "${params[distribution]}" ]] || fail tool_hash_mismatch
+            [[ -d $DST_RUNTIME_DIR && ! -L $DST_RUNTIME_DIR && -f $DST_RUNTIME_DIR/.env ]] || fail destination_runtime_missing
+            engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
+            [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+            [[ -f $DST_RUNTIME_DIR/exports/identity_candidate_review.csv ]] || fail identity_review_missing
+            destination_owned || fail destination_owner_mismatch
+            # The same step as [I] of the interactive mode, in the assistant's container and under its lock.
+            # shellcheck disable=SC2016
+            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'set -euo pipefail; cd "$1"
+                socket=/var/run/docker.sock
+                export ASSISTANT_PROJECT_ROOT="$1" ASSISTANT_UID="$(id -u)" ASSISTANT_GID="$(id -g)" DOCKER_SOCKET_PATH=$socket
+                export DOCKER_GID="$(stat -c %g "$socket")" COMPOSE_PROJECT_NAME=moodle-consolidation-production
+                set -a; . ./.env; set +a
+                export MOODLE_MANAGED_CONFIG_DIR="${MOODLE_MANAGED_CONFIG_DIR:-$1/managed-config}"
+                exec {lock}>reports/assistant-run.lock
+                flock -n "$lock" || { echo "ASSISTANT_RUNNING" >&2; exit 61; }
+                docker compose --project-name moodle-consolidation-production run --rm --no-deps -T assistant-runtime \
+                    pwsh -NoLogo -NoProfile -File scripts/v8-identity-review.ps1 -Mode Apply
+                echo IDENTITY_REVIEW_APPLIED' consolidator-identity-apply "$DST_RUNTIME_DIR")
+            ;;
+        consolidator.plugin-inspect)
+            [[ ${#params[@]} == 5 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE
+                && ${params[component]:-} =~ ^[a-z][a-z0-9]*_[a-z][a-z0-9_]{0,60}$ && ${params[commit]:-} =~ ^[0-9a-f]{40}$
+                && ${params[repository]:-} =~ ^[A-Za-z0-9_-]{8,160}$ ]] || fail invalid_parameter
+            load_destination "${params[destination]}"
+            [[ $DST_TOOL_TREE == "${params[distribution]}" ]] || fail tool_tree_mismatch
+            local repository
+            repository=$(decode_chunks "${params[repository]}") || fail invalid_parameter
+            # The catalog's own rule: public Git repositories on GitHub or Bitbucket.
+            [[ $repository =~ ^https://(github\.com|bitbucket\.org)/[A-Za-z0-9._/-]{3,120}\.git$ && $repository != *..* ]] || fail invalid_parameter
+            [[ -d $DST_RUNTIME_DIR && ! -L $DST_RUNTIME_DIR && -f $DST_RUNTIME_DIR/.env ]] || fail destination_runtime_missing
+            [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+            engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
+            destination_owned || fail destination_owner_mismatch
+            # shellcheck disable=SC2016
+            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'set -euo pipefail; cd "$1"
+                socket=/var/run/docker.sock
+                export ASSISTANT_PROJECT_ROOT="$1" ASSISTANT_UID="$(id -u)" ASSISTANT_GID="$(id -g)" DOCKER_SOCKET_PATH=$socket
+                export DOCKER_GID="$(stat -c %g "$socket")" COMPOSE_PROJECT_NAME=moodle-consolidation-production
+                set -a; . ./.env; set +a
+                export MOODLE_MANAGED_CONFIG_DIR="${MOODLE_MANAGED_CONFIG_DIR:-$1/managed-config}"
+                exec {lock}>reports/assistant-run.lock
+                flock -n "$lock" || { echo "ASSISTANT_RUNNING" >&2; exit 61; }
+                docker compose --project-name moodle-consolidation-production run --rm --no-deps -T assistant-runtime php -r "$2" -- "$3" "$4" "$5"' \
+                consolidator-plugin-inspect "$DST_RUNTIME_DIR" "$PLUGIN_INSPECT_PHP" "${params[component]}" "$repository" "${params[commit]}")
+            ;;
+        consolidator.plugin-promote)
+            [[ ${#params[@]} == 4 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE
+                && ${params[components]:-} =~ ^[a-z][a-z0-9]*_[a-z][a-z0-9_]{0,60}(,[a-z][a-z0-9]*_[a-z][a-z0-9_]{0,60}){0,9}$
+                && ${params[approver]:-} =~ ^[A-Za-z0-9_-]{4,160}$ ]] || fail invalid_parameter
+            load_destination "${params[destination]}"
+            [[ $DST_TOOL_TREE == "${params[distribution]}" ]] || fail tool_tree_mismatch
+            local approver component
+            approver=$(decode_chunks "${params[approver]}") || fail invalid_parameter
+            [[ $approver =~ ^[[:print:]]{3,120}$ && $approver != *\'* ]] || fail invalid_parameter
+            [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+            engine_intact "$DST_RUNTIME_DIR" || fail engine_modified
+            destination_owned || fail destination_owner_mismatch
+            for component in ${params[components]//,/ }; do
+                [[ -f $DST_RUNTIME_DIR/exports/plugin-proposals/$component.json ]] || fail plugin_proposal_missing
+            done
+            # shellcheck disable=SC2016
+            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'set -euo pipefail; cd "$1"
+                socket=/var/run/docker.sock
+                export ASSISTANT_PROJECT_ROOT="$1" ASSISTANT_UID="$(id -u)" ASSISTANT_GID="$(id -g)" DOCKER_SOCKET_PATH=$socket
+                export DOCKER_GID="$(stat -c %g "$socket")" COMPOSE_PROJECT_NAME=moodle-consolidation-production
+                set -a; . ./.env; set +a
+                export MOODLE_MANAGED_CONFIG_DIR="${MOODLE_MANAGED_CONFIG_DIR:-$1/managed-config}"
+                exec {lock}>reports/assistant-run.lock
+                flock -n "$lock" || { echo "ASSISTANT_RUNNING" >&2; exit 61; }
+                docker compose --project-name moodle-consolidation-production run --rm --no-deps -T assistant-runtime php -r "$2" -- "$3" "$4"' \
+                consolidator-plugin-promote "$DST_RUNTIME_DIR" "$PLUGIN_PROMOTE_PHP" "${params[components]}" "$approver")
             ;;
         consolidator.site-upload)
             [[ ${#params[@]} == 6 && ${params[destination]:-} =~ $SOURCE_RE && ${params[project]:-} =~ $UUID_RE
@@ -752,7 +966,7 @@ cmd_destination_check() {
     (($# == 1)) || fail invalid_arguments
     local runtime env env_present=0 env_protected=0 env_url='' env_complete=0 tool_present=0 engine_intact=0
     local docker_version='' compose_version='' flock_present=0 cpus='' mem_kb='' free='' target_running=0 written=0 required python_present=0
-    local owned=0 docker_group=0
+    local owned=0 docker_group=0 volumes=0 started=0 packages=0 profiles=0
     load_destination "$1"
     runtime=$DST_RUNTIME_DIR
     [[ -d $runtime && ! -L $runtime ]] || fail destination_runtime_missing
@@ -776,6 +990,8 @@ cmd_destination_check() {
         compose_version=$(docker compose version --short 2>/dev/null || true)
         if [[ -n $docker_version && -n $compose_version ]]; then
             docker compose --project-name "$CONSOLIDATOR_COMPOSE_PROJECT" ps --status running --services 2>/dev/null | grep -qx moodle-target && target_running=1
+            # Volumes of a previous site: the database and moodledata survive the containers.
+            volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$CONSOLIDATOR_COMPOSE_PROJECT" 2>/dev/null | wc -l)
         fi
     fi
     command -v flock >/dev/null 2>&1 && flock_present=1
@@ -784,13 +1000,16 @@ cmd_destination_check() {
     [[ -r /proc/meminfo ]] && mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
     free=$(df -PB1 "$runtime" 2>/dev/null | awk 'NR==2 {print $4}') || free=''
     [[ -f $runtime/reports/destination-write.lock.json ]] && written=1
-    respond_ok destination-check "$(printf '{"destination":"%s","public_url":%s,"env_present":%s,"env_protected":%s,"env_matches_url":%s,"env_complete":%s,"tool_tree":"%s","tool_present":%s,"engine_intact":%s,"docker_version":%s,"compose_version":%s,"flock":%s,"python3":%s,"cpus":%s,"memory_bytes":%s,"runtime_free_bytes":%s,"target_running":%s,"destination_written":%s,"run_as":"%s","run_as_docker":%s,"runtime_owned":%s}' \
+    [[ -f $runtime/reports/assistant-state.json ]] && started=1
+    packages=$(find "$runtime/copias" -maxdepth 1 -type f -name '*.zip' 2>/dev/null | wc -l)
+    profiles=$(find "$DESTINATIONS_DIR" -maxdepth 1 -type f -name '*.conf' 2>/dev/null | wc -l)
+    respond_ok destination-check "$(printf '{"destination":"%s","public_url":%s,"env_present":%s,"env_protected":%s,"env_matches_url":%s,"env_complete":%s,"tool_tree":"%s","tool_present":%s,"engine_intact":%s,"docker_version":%s,"compose_version":%s,"flock":%s,"python3":%s,"cpus":%s,"memory_bytes":%s,"runtime_free_bytes":%s,"target_running":%s,"destination_written":%s,"run_as":"%s","run_as_docker":%s,"runtime_owned":%s,"target_volumes":%s,"assistant_started":%s,"copias_packages":%s,"server_profiles":%s}' \
         "$DST_ID" "$(json_escape "$DST_PUBLIC_URL")" "$(bool "$env_present")" "$(bool "$env_protected")" \
         "$(bool "$([[ -n $env_url && $env_url == "$DST_PUBLIC_URL" ]] && echo 1 || echo 0)")" "$(bool "$env_complete")" \
         "$DST_TOOL_TREE" "$(bool "$tool_present")" "$(bool "$engine_intact")" "$(json_or_null "$docker_version")" \
         "$(json_or_null "$compose_version")" "$(bool "$flock_present")" "$(bool "$python_present")" "$(int_or_null "$cpus")" \
         "$(if [[ $mem_kb =~ ^[0-9]+$ ]]; then printf '%s' $((mem_kb * 1024)); else printf 'null'; fi)" \
-        "$(int_or_null "$free")" "$(bool "$target_running")" "$(bool "$written")" "$DST_RUN_AS" "$(bool "$docker_group")" "$(bool "$owned")")"
+        "$(int_or_null "$free")" "$(bool "$target_running")" "$(bool "$written")" "$DST_RUN_AS" "$(bool "$docker_group")" "$(bool "$owned")"         "$volumes" "$(bool "$started")" "$packages" "$profiles")"
 }
 
 # Sets PKG_* for a finished collector.742 operation whose ZIP matches its sidecar.
@@ -925,6 +1144,58 @@ cmd_package_fetch_internal() {
     echo "FETCH_OK name=$name already_present=0"
 }
 
+# Cleans a destination and prepares it again, as one operation: the Compose
+# project and its volumes are removed, the runtime is restored from the verified
+# tree keeping only the administrator's .env, and then the Consolidator's own
+# `preparar` runs as the profile's user. Site packages already backed up in S3
+# are not touched. Runs as root because the containers leave files of their own
+# users inside the runtime.
+cmd_destination_prepare_internal() {
+    local destination=$1 distribution=$2 op_dir=$3 store runtime managed lock
+    [[ $distribution =~ $SHA_RE && $op_dir == "$OPS_DIR/"* ]] || exit 80
+    load_destination "$destination" >/dev/null
+    [[ $DST_TOOL_TREE == "$distribution" ]] || exit 80
+    store=$(compgen -G "$TOOLS_DIR/moodle-consolidador-*/$distribution" | head -n 1) || exit 80
+    (($(unsafe_entries "$store") == 0)) && [[ $(tree_hash "$store") == "$distribution" ]] || { echo "TOOL_HASH_MISMATCH" >&2; exit 81; }
+    runtime=$DST_RUNTIME_DIR
+    # Only something that looks like a Consolidator runtime is ever emptied.
+    [[ -d $runtime && ! -L $runtime && -f $runtime/.env && ! -L $runtime/.env && -f $runtime/FILES.sha256 && -f $runtime/moodle-consolidation.sh ]] \
+        || { echo "DESTINATION_RUNTIME_MISSING" >&2; exit 82; }
+    mkdir -p "$runtime/reports"
+    exec {lock}>"$runtime/reports/assistant-run.lock"
+    flock -n "$lock" || { echo "ASSISTANT_RUNNING" >&2; exit 61; }
+    echo "DESTINATION_RESET_STARTED"
+    if command -v docker >/dev/null 2>&1; then
+        # shellcheck disable=SC2016
+        runuser -u "$DST_RUN_AS" -- bash -c 'set -euo pipefail; cd "$1"
+            socket=/var/run/docker.sock
+            export ASSISTANT_PROJECT_ROOT="$1" ASSISTANT_UID="$(id -u)" ASSISTANT_GID="$(id -g)" DOCKER_SOCKET_PATH=$socket
+            export DOCKER_GID="$(stat -c %g "$socket")" COMPOSE_PROJECT_NAME=moodle-consolidation-production
+            set -a; . ./.env; set +a
+            export MOODLE_MANAGED_CONFIG_DIR="${MOODLE_MANAGED_CONFIG_DIR:-$1/managed-config}"
+            docker compose --project-name moodle-consolidation-production down -v --remove-orphans' destination-reset "$runtime" \
+            || { echo "DESTINATION_SERVICES_NOT_REMOVED" >&2; exit 83; }
+        echo "DESTINATION_SERVICES_REMOVED"
+    fi
+    managed=$(sed -n 's/^MOODLE_MANAGED_CONFIG_DIR=\(.*\)$/\1/p' "$runtime/.env" | head -n 1)
+    find "$runtime" -mindepth 1 -maxdepth 1 ! -name .env -exec rm -rf -- {} +
+    cp -a "$store/." "$runtime/"
+    if [[ -z $managed || $managed == "$runtime/managed-config" ]]; then
+        install -d -m 0700 "$runtime/managed-config"
+    elif safe_path "$managed" && [[ -d $managed && ! -L $managed ]]; then
+        # A managed configuration outside the runtime belongs to the old site as well.
+        find "$managed" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    fi
+    chown -R "$DST_RUN_AS:" "$runtime"
+    [[ -z $managed || ! -d $managed ]] || chown -R "$DST_RUN_AS:" "$managed"
+    chmod 0600 "$runtime/.env"
+    engine_intact "$runtime" || { echo "ENGINE_NOT_RESTORED" >&2; exit 84; }
+    echo "DESTINATION_RESET_DONE"
+    flock -u "$lock"
+    # shellcheck disable=SC2016
+    exec runuser -u "$DST_RUN_AS" -- bash -c 'cd "$1" && exec bash ./moodle-consolidation.sh preparar' consolidator-prepare "$runtime"
+}
+
 # Uploads the Consolidator's sealed site package to the platform's bucket. The
 # ZIP must hash as the platform reviewed and as the Consolidator's own summary
 # declares; S3 receives the SHA-256 both as metadata and as its checksum.
@@ -1044,6 +1315,175 @@ cmd_consolidator_report() {
 
 # The Consolidator's own documents for one kind of intervention, bounded so the
 # answer always fits one call. The platform keeps whitelisted fields only.
+# Decisions travel as base64url chunks of the closed argument alphabet; the agent
+# joins and decodes them, and every field is validated again here and by the
+# Consolidator's own validator when the review is applied.
+decode_chunks() {
+    local joined='' chunk
+    for chunk in "$@"; do
+        [[ $chunk =~ ^[A-Za-z0-9_-]{1,160}$ ]] || return 1
+        joined+=$chunk
+    done
+    ((${#joined} <= 262144)) || return 1
+    python3 -I -c 'import base64,sys; s=sys.argv[1]; sys.stdout.buffer.write(base64.urlsafe_b64decode(s + "=" * (-len(s) % 4)))' "$joined"
+}
+
+# The fuzzy identity candidates the Consolidator prepared for review, a page at a
+# time and with closed fields: the administrator decides them in the platform.
+cmd_identity_candidates() {
+    (($# == 2)) || fail invalid_arguments
+    [[ $2 =~ ^[0-9]{1,5}$ ]] || fail invalid_arguments
+    load_destination "$1"
+    command -v python3 >/dev/null 2>&1 || fail python3_missing
+    local review="$DST_RUNTIME_DIR/exports/identity_candidate_review.csv" out
+    [[ -f $review && ! -L $review ]] || fail identity_review_missing
+    out=$(python3 -I - "$review" "$2" <<'PY'
+import csv, json, sys
+rows = list(csv.DictReader(open(sys.argv[1], encoding="utf-8-sig", newline="")))
+offset = int(sys.argv[2])
+cut = lambda value, size=120: (value or "")[:size]
+side = lambda row, s: {"source": cut(row.get("source_" + s), 64), "user_id": cut(row.get("source_user_id_" + s), 32),
+    "canonical_id": cut(row.get("canonical_id_" + s), 64), "members": [cut(m, 80) for m in (row.get("canonical_members_" + s) or "").split("|") if m][:20],
+    "name": cut(row.get("name_" + s)), "email": cut(row.get("email_" + s)), "google": cut(row.get("google_identity_state_" + s), 40)}
+page = [{"group": cut(row.get("candidate_group"), 80), "type": cut(row.get("candidate_type"), 60),
+    "confidence": cut(row.get("confidence_band"), 30), "name_similarity": cut(row.get("name_similarity"), 12),
+    "email_similarity": cut(row.get("email_similarity"), 12), "identifier_match": cut(row.get("institutional_identifier_match"), 12),
+    "evidence": cut(row.get("other_evidence"), 200), "a": side(row, "a"), "b": side(row, "b"),
+    "resolution": cut(row.get("resolution"), 20)} for row in rows[offset:offset + 20]]
+print(json.dumps({"total": len(rows), "offset": offset, "candidates": page}, ensure_ascii=False, separators=(",", ":")))
+PY
+) || fail identity_review_invalid
+    respond_ok identity-candidates "$out"
+}
+
+# Writes the administrator's decisions into the review the Consolidator prepared,
+# keeping its sealed columns; v8-identity-review.ps1 -Mode Apply validates it.
+cmd_identity_review_submit() {
+    (($# >= 2)) || fail invalid_arguments
+    local destination=$1 review json out
+    shift
+    load_destination "$destination"
+    command -v python3 >/dev/null 2>&1 || fail python3_missing
+    [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+    review="$DST_RUNTIME_DIR/exports/identity_candidate_review.csv"
+    [[ -f $review && ! -L $review ]] || fail identity_review_missing
+    json=$(decode_chunks "$@") || fail invalid_arguments
+    out=$(python3 -I - "$review" "$json" <<'PY'
+import csv, json, os, re, sys
+path, answers = sys.argv[1], json.loads(sys.argv[2])
+with open(path, encoding="utf-8-sig", newline="") as handle:
+    reader = csv.DictReader(handle)
+    headers, rows = reader.fieldnames, list(reader)
+meta = {key: str(answers.get(key) or "")[:200] for key in ("operator", "decision_timestamp_utc", "evidence_reference")}
+if not all(meta.values()) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", meta["decision_timestamp_utc"]):
+    sys.exit(2)
+decisions = {str(d.get("group")): d for d in answers.get("decisions", []) if isinstance(d, dict)}
+if set(decisions) != {row["candidate_group"] for row in rows}:
+    sys.exit(3)
+for row in rows:
+    decision = decisions[row["candidate_group"]]
+    resolution = str(decision.get("resolution") or "")
+    if resolution not in ("MERGE", "KEEP_SEPARATE", "IGNORE"):
+        sys.exit(4)
+    merge = resolution == "MERGE"
+    row.update({"resolution": resolution, "justification": str(decision.get("justification") or "")[:500].replace("\n", " "),
+        "canonical_target": str(decision.get("canonical_target") or "")[:80] if merge else "",
+        "canonical_email": str(decision.get("canonical_email") or "")[:120] if merge else "",
+        "canonical_username": str(decision.get("canonical_username") or "")[:100] if merge else "",
+        "oauth_policy": str(decision.get("oauth_policy") or "")[:20] if merge else "", **meta})
+temporary = path + ".incoming"
+with open(temporary, "w", encoding="utf-8", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=headers, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+os.replace(temporary, path)
+print(len(rows))
+PY
+) || fail identity_review_invalid
+    [[ $(id -u) != 0 ]] || chown "$DST_RUN_AS:" "$review"
+    respond_ok identity-review-submit "{\"destination\":\"$destination\",\"decided\":$out}"
+}
+
+# The themes the destination can use as its global theme, the current selection and
+# the sources whose collection lacks the advanced theme metadata.
+cmd_theme_options() {
+    (($# == 1)) || fail invalid_arguments
+    load_destination "$1"
+    command -v python3 >/dev/null 2>&1 || fail python3_missing
+    local out
+    out=$(python3 -I - "$DST_RUNTIME_DIR" <<'PY'
+import json, os, re, sys
+root = sys.argv[1]
+def read(name):
+    try:
+        return json.load(open(os.path.join(root, name), encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+themes = set()
+for plugin in read("exports/phase2/plugin_inventory_after.json").get("plugins", []) or []:
+    component = str(plugin.get("component", ""))
+    if component.startswith("theme_") and plugin.get("installation_status") != "missing":
+        themes.add(component[6:])
+for plugin in read("exports/plugin-lock.json").get("plugins", []) or []:
+    component = str(plugin.get("component", ""))
+    if component.startswith("theme_") and plugin.get("staging_validation") == "passed":
+        themes.add(component[6:])
+policy = read("config/theme-policy.json")
+legacy = [{"source": str(item.get("source", ""))[:64], "collector_version": str(item.get("collector_version", ""))[:32]}
+    for item in read("exports/theme-inventory-status.json").get("legacy_sources", []) or [] if isinstance(item, dict)]
+print(json.dumps({"themes": sorted(t for t in themes if re.fullmatch(r"[a-z][a-z0-9_]{0,60}", t)),
+    "selected": str(policy.get("global_theme_selection") or "")[:60], "default": str(policy.get("global_theme") or "")[:60],
+    "legacy_sources": legacy[:20], "legacy_accepted": policy.get("theme_inventory_legacy_accepted") is True},
+    separators=(",", ":")))
+PY
+) || fail theme_options_invalid
+    respond_ok theme-options "$out"
+}
+
+# Records the administrator's theme decisions in the Consolidator's own policy, as
+# its interactive mode does (selection_source=operator).
+cmd_theme_policy_set() {
+    (($# == 3)) || fail invalid_arguments
+    [[ $2 =~ ^[a-z][a-z0-9_]{0,60}$ && $3 =~ ^[01]$ ]] || fail invalid_arguments
+    load_destination "$1"
+    command -v python3 >/dev/null 2>&1 || fail python3_missing
+    [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+    local policy="$DST_RUNTIME_DIR/config/theme-policy.json"
+    [[ -f $policy && ! -L $policy ]] || fail theme_policy_missing
+    python3 -I - "$DST_RUNTIME_DIR" "$2" "$3" <<'PY' || fail theme_policy_invalid
+import json, os, sys
+root, theme, legacy = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+path = os.path.join(root, "config/theme-policy.json")
+policy = json.load(open(path, encoding="utf-8-sig"))
+policy["global_theme_selection"] = theme
+policy["selection_source"] = "operator"
+if legacy:
+    try:
+        status = json.load(open(os.path.join(root, "exports/theme-inventory-status.json"), encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        sys.exit(2)
+    policy["theme_inventory_legacy_accepted"] = True
+    policy["legacy_accepted_sources"] = [str(item.get("source")) for item in status.get("legacy_sources", []) if isinstance(item, dict)]
+temporary = path + ".incoming"
+with open(temporary, "w", encoding="utf-8") as handle:
+    handle.write(json.dumps(policy, indent=2, ensure_ascii=False) + "\n")
+os.replace(temporary, path)
+PY
+    [[ $(id -u) != 0 ]] || chown "$DST_RUN_AS:" "$policy"
+    respond_ok theme-policy-set "{\"destination\":\"$1\",\"theme\":\"$2\",\"legacy_accepted\":$(bool "$3")}"
+}
+
+# The proposal an inspection wrote for one component: the catalog entry to confirm.
+cmd_plugin_proposal() {
+    (($# == 2)) || fail invalid_arguments
+    [[ $2 =~ ^[a-z][a-z0-9]*_[a-z][a-z0-9_]{0,60}$ ]] || fail invalid_arguments
+    load_destination "$1"
+    local file="$DST_RUNTIME_DIR/exports/plugin-proposals/$2.json"
+    [[ -f $file && ! -L $file ]] || fail plugin_proposal_missing
+    (($(stat -c %s "$file") <= 8192)) || fail plugin_proposal_invalid
+    respond_ok plugin-proposal "{\"destination\":\"$1\",\"component\":\"$2\",\"proposal_base64\":\"$(base64 -w0 <"$file")\"}"
+}
+
 cmd_consolidator_intervention() {
     (($# == 2)) || fail invalid_arguments
     local runtime kind=$2 name entries='' sep='' file
@@ -1055,7 +1495,8 @@ cmd_consolidator_intervention() {
         oauth2) documents=(oauth2_manual=reports/oauth2-configuracion-manual.txt oauth2_validation=exports/oauth2/validation.json
             oauth2_live=exports/oauth2-live/validation.json) ;;
         plugins) documents=(plugin_needs=exports/phase2/plugin_compatibility_needs.json plugin_diff=exports/phase2/plugin_inventory_diff.json
-            plugin_technical=exports/phase2/plugin_technical_validation.json plugin_checkpoint=exports/phase2/plugin_intervention_checkpoint.json) ;;
+            plugin_technical=exports/phase2/plugin_technical_validation.json plugin_checkpoint=exports/phase2/plugin_intervention_checkpoint.json
+            plugin_lock=exports/plugin-lock.json) ;;
         *) fail invalid_arguments ;;
     esac
     for name in "${documents[@]}"; do
@@ -1179,6 +1620,11 @@ case $COMMAND in
     copias-remove) cmd_copias_remove "$@" ;;
     consolidator-report) cmd_consolidator_report "$@" ;;
     consolidator-intervention) cmd_consolidator_intervention "$@" ;;
+    identity-candidates) cmd_identity_candidates "$@" ;;
+    identity-review-submit) cmd_identity_review_submit "$@" ;;
+    theme-options) cmd_theme_options "$@" ;;
+    theme-policy-set) cmd_theme_policy_set "$@" ;;
+    plugin-proposal) cmd_plugin_proposal "$@" ;;
     site-upload-report) cmd_site_upload_report "$@" ;;
     copias-release) cmd_copias_release "$@" ;;
     collector-report) cmd_collector_report "$@" ;;
@@ -1187,6 +1633,7 @@ case $COMMAND in
     __package-upload) (($# == 5)) || exit 40; cmd_package_upload_internal "$@" ;;
     __package-fetch) (($# == 7)) || exit 50; cmd_package_fetch_internal "$@" ;;
     __site-upload) (($# == 7)) || exit 70; cmd_site_upload_internal "$@" ;;
+    __destination-prepare) (($# == 3)) || exit 80; cmd_destination_prepare_internal "$@" ;;
     __run) (($# == 1)) || exit 3; cmd_run "$1" ;;
     *) fail unknown_subcommand ;;
 esac

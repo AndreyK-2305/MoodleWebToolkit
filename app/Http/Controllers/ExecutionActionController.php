@@ -7,7 +7,9 @@ use App\Domain\Executions\RequestExecutionCancellation;
 use App\Domain\Executions\ResolveExecutionConflict;
 use App\Domain\Executions\ResumeProjectExecution;
 use App\Domain\Remote\RemoteConsolidationBackup;
+use App\Domain\Remote\RemoteConsolidationInterventions;
 use App\Domain\Remote\RemoteConsolidationPreparation;
+use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RetryRemoteConsolidation;
 use App\Exceptions\ExecutionDispatchFailed;
 use App\Exceptions\RemoteAgentUnavailable;
@@ -19,8 +21,10 @@ use App\Models\Project;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 
 class ExecutionActionController extends Controller
@@ -38,6 +42,98 @@ class ExecutionActionController extends Controller
 
         return $this->response($request, $project, $result->execution, $result->created,
             $result->created ? 'Nueva exportación desde cero; la evidencia del intento anterior se conserva.' : 'El nuevo intento ya estaba registrado.', 201);
+    }
+
+    /**
+     * The administrator's answers to a consolidation intervention (identity review, themes):
+     * validated against what the intervention offered, kept on it as evidence, and applied
+     * through the same audited resolution as any other decision.
+     */
+    public function answerIntervention(Request $request, Project $project, Execution $execution, Conflict $conflict, ResolveExecutionConflict $resolver): JsonResponse|RedirectResponse
+    {
+        $this->ensureBelongsToProject($project, $execution);
+        abort_unless($conflict->execution_id === $execution->getKey(), 404);
+        abort_unless(in_array($conflict->type, [RemoteConsolidationInterventions::IDENTITY, RemoteConsolidationInterventions::THEMES,
+            RemoteConsolidationInterventions::PLUGINS], true), 404);
+        Gate::authorize('control', $execution);
+        $request->merge(['idempotency_key' => $request->header('Idempotency-Key')]);
+        $details = $conflict->details ?? [];
+        abort_unless(in_array('APPLY_ANSWERS', is_array($details['allowed_decisions'] ?? null) ? $details['allowed_decisions'] : [], true), 422);
+        $base = ['conflict_version' => ['required', 'integer', 'min:1'], 'idempotency_key' => $this->idempotencyRules()];
+        if ($conflict->type === RemoteConsolidationInterventions::PLUGINS) {
+            // Only components inspected on the destination, whose proposal the administrator reviewed.
+            $proposed = array_keys(is_array($details['proposals'] ?? null) ? $details['proposals'] : []);
+            $input = $request->validate([...$base, 'promote' => ['required', 'array', 'min:1', 'max:10'],
+                'promote.*' => ['required', 'string', 'distinct', Rule::in($proposed)], 'confirm' => ['accepted']]);
+            $answers = ['promote' => array_values($input['promote'])];
+        } elseif ($conflict->type === RemoteConsolidationInterventions::THEMES) {
+            $input = $request->validate([...$base, 'theme' => ['required', 'string', Rule::in($details['themes'] ?? [])],
+                'accept_legacy' => [($details['legacy_sources'] ?? []) !== [] && ($details['legacy_accepted'] ?? false) !== true ? 'accepted' : 'boolean']]);
+            $answers = ['theme' => (string) $input['theme'], 'accept_legacy' => (bool) ($input['accept_legacy'] ?? false)];
+        } else {
+            $candidates = is_array($details['candidates'] ?? null) ? array_values(array_filter($details['candidates'], 'is_array')) : [];
+            $groups = collect($candidates)->keyBy('group');
+            $input = $request->validate([...$base, 'decisions' => ['required', 'array', 'size:'.$groups->count()],
+                'decisions.*.group' => ['required', 'string', 'distinct', Rule::in($groups->keys()->all())],
+                'decisions.*.resolution' => ['required', Rule::in(['MERGE', 'KEEP_SEPARATE', 'IGNORE'])],
+                'decisions.*.justification' => ['required', 'string', 'min:3', 'max:500'],
+                'decisions.*.canonical_target' => ['nullable', 'required_if:decisions.*.resolution,MERGE', 'string', 'max:80'],
+                'decisions.*.canonical_email' => ['nullable', 'required_if:decisions.*.resolution,MERGE', 'email', 'max:120'],
+                'decisions.*.canonical_username' => ['nullable', 'required_if:decisions.*.resolution,MERGE', 'string', 'regex:/^[a-z0-9._@-]{1,100}$/D'],
+                'decisions.*.oauth_policy' => ['nullable', 'required_if:decisions.*.resolution,MERGE', Rule::in(['canonical_account', 'none'])]]);
+            $answers = ['decisions' => []];
+            foreach ($input['decisions'] as $index => $decision) {
+                $merge = $decision['resolution'] === 'MERGE';
+                $candidate = $groups->get($decision['group']);
+                $members = [...($candidate['a']['members'] ?? []), ...($candidate['b']['members'] ?? [])];
+                if ($merge && ! in_array($decision['canonical_target'], $members, true)) {
+                    throw ValidationException::withMessages(["decisions.$index.canonical_target" => 'La cuenta canónica debe ser una de las cuentas del grupo.']);
+                }
+                $answers['decisions'][] = ['group' => $decision['group'], 'resolution' => $decision['resolution'], 'justification' => $decision['justification'],
+                    'canonical_target' => $merge ? $decision['canonical_target'] : null, 'canonical_email' => $merge ? mb_strtolower($decision['canonical_email']) : null,
+                    'canonical_username' => $merge ? $decision['canonical_username'] : null, 'oauth_policy' => $merge ? $decision['oauth_policy'] : null];
+            }
+        }
+        DB::transaction(function () use ($conflict, $input, $answers, $request): void {
+            $locked = Conflict::query()->whereKey($conflict->getKey())->lockForUpdate()->firstOrFail();
+            if ($locked->status->value !== 'OPEN' || $locked->version !== (int) $input['conflict_version']) {
+                throw ValidationException::withMessages(['conflict' => 'La intervención cambió mientras se respondía. Actualice el seguimiento.']);
+            }
+            $locked->details = [...($locked->details ?? []), 'answers' => [...$answers, 'answered_by' => $request->user()->getKey(),
+                'answered_at' => now()->utc()->toIso8601String()]];
+            $locked->save();
+        });
+        try {
+            $result = $resolver->resolve($execution, $conflict->fresh(), $request->user(), 'APPLY_ANSWERS',
+                (int) $input['conflict_version'], (string) $input['idempotency_key']);
+        } catch (ExecutionDispatchFailed $exception) {
+            return $this->dispatchFailure($request, $project, $exception);
+        }
+
+        return $this->response($request, $project, $result->execution, $result->created,
+            $result->created ? 'Respuestas registradas; el destino las aplica y la consolidación continúa.' : 'Las respuestas ya estaban registradas.');
+    }
+
+    /** Inspects on the destination a plugin the sources need and the catalog lacks, from its Git repository and commit. */
+    public function inspectPlugin(Request $request, Project $project, Execution $execution, Conflict $conflict, RemoteConsolidationWorkflow $workflow): RedirectResponse
+    {
+        $this->ensureBelongsToProject($project, $execution);
+        abort_unless($conflict->execution_id === $execution->getKey() && $conflict->type === RemoteConsolidationInterventions::PLUGINS, 404);
+        Gate::authorize('control', $execution);
+        $input = $request->validate([
+            'component' => ['required', 'string', Rule::in(is_array($conflict->details['unknown'] ?? null) ? $conflict->details['unknown'] : [])],
+            // The Consolidator's catalog accepts public repositories on GitHub or Bitbucket.
+            'repository' => ['required', 'string', 'max:100', 'regex:~^https://(github\.com|bitbucket\.org)/[A-Za-z0-9._/-]{3,80}\.git$~D', 'not_regex:/\.\./'],
+            'commit' => ['required', 'string', 'regex:/^[0-9a-f]{40}$/D'],
+        ]);
+        try {
+            $workflow->inspectPlugin($execution, $conflict, $request->user(), (string) $input['component'], (string) $input['repository'], (string) $input['commit']);
+            Inertia::flash('toast', ['type' => 'success', 'message' => 'Inspección iniciada en el destino; el resultado aparece en la intervención.']);
+        } catch (ToolOperationBlocked|RemoteAgentUnavailable $exception) {
+            Inertia::flash('toast', ['type' => 'error', 'message' => $exception->getMessage()]);
+        }
+
+        return to_route('projects.executions.show', [$project->uuid, $execution->uuid]);
     }
 
     /** A new attempt of a failed or cancelled remote consolidation; it continues from the destination's checkpoints. */
@@ -109,7 +205,7 @@ class ExecutionActionController extends Controller
         abort_unless($conflict->execution_id === $execution->getKey(), 404);
         $request->merge(['idempotency_key' => $request->header('Idempotency-Key')]);
         $validated = $request->validate([
-            'decision' => ['required', 'string', Rule::in(['ACCEPT', 'CONFIRM_COMPLETED'])],
+            'decision' => ['required', 'string', Rule::in(['ACCEPT', 'CONFIRM_COMPLETED', 'CONTINUE_WITHOUT_PLUGINS'])],
             'conflict_version' => ['required', 'integer', 'min:1'],
             'idempotency_key' => $this->idempotencyRules(),
         ]);

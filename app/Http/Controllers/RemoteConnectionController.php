@@ -193,11 +193,13 @@ final class RemoteConnectionController extends Controller
     public function prepareDestination(Request $request, Project $project, Server $server, PrepareRemoteDestination $preparations): RedirectResponse
     {
         $this->authorizeDestination($project, $server);
-        $input = $request->validate(['destination' => ['required', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D']]);
+        $input = $request->validate(['destination' => ['required', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D'],
+            'reset' => ['sometimes', 'boolean'], 'confirmation' => ['nullable', 'string', 'max:20']]);
         /** @var User $actor */
         $actor = $request->user();
         try {
-            $result = $preparations->start($server, (string) $input['destination'], $actor);
+            $result = $preparations->start($server, (string) $input['destination'], $actor, (bool) ($input['reset'] ?? false),
+                isset($input['confirmation']) ? (string) $input['confirmation'] : null);
             Inertia::flash('toast', ($result['state'] ?? null) === 'FAILED'
                 ? ['type' => 'error', 'message' => 'El agente rechazó la preparación ('.($result['error_code'] ?? 'error').').']
                 : ['type' => 'success', 'message' => 'Preparación del destino iniciada; continúa en el servidor aunque se cierre esta página.']);

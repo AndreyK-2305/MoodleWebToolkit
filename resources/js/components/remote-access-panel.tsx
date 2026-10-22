@@ -1,4 +1,5 @@
-import { useForm } from '@inertiajs/react';
+import { useForm, usePage } from '@inertiajs/react';
+import { useState } from 'react';
 import {
     AlertCircle,
     CheckCircle2,
@@ -12,6 +13,13 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
@@ -63,6 +71,9 @@ export type RemoteDestinationProfile = {
     runtime_free_bytes: number | null;
     target_running: boolean;
     destination_written: boolean;
+    in_use: boolean;
+    target_volumes: number | null;
+    copias_packages: number | null;
     preparation: {
         state: string | null;
         launched_at: string | null;
@@ -522,6 +533,10 @@ const destinationCodes: Record<string, string> = {
     low_memory: 'menos de 4 GiB de memoria',
     low_disk: 'menos de 20 GiB libres',
     destination_written: 'el destino ya recibió escrituras',
+    destination_in_use:
+        'el destino ya tiene un sitio: se recomienda limpiarlo antes de preparar',
+    shared_server:
+        'hay más de un perfil en este servidor: comparten los servicios del Consolidador',
 };
 
 /** The Consolidator on a destination server: deployment and the administrator's profiles. */
@@ -764,15 +779,22 @@ function Preparation({
     editable: boolean;
 }) {
     const form = useForm({ destination: destination.id });
+    const prepare = useForm({
+        destination: destination.id,
+        reset: destination.in_use,
+        confirmation: '',
+    });
+    const [open, setOpen] = useState(false);
+    const { auth } = usePage<{ auth: { user: { role: string } } }>().props;
+    const admin = auth.user.role === 'ADMIN';
     const preparation = destination.preparation;
     const active =
         preparation !== null &&
         ['STARTING', 'RUNNING', 'CANCELLING'].includes(preparation.state ?? '');
-    const canPrepare =
-        editable &&
-        destination.ready &&
-        !destination.destination_written &&
-        !active;
+    // A destination the Consolidator already wrote to is only prepared again after cleaning it.
+    const canPrepare = editable && destination.ready && !active;
+    const confirmed =
+        !destination.in_use || prepare.data.confirmation === 'CONFIRMAR';
 
     return (
         <div className="space-y-2 border-t pt-2">
@@ -808,12 +830,15 @@ function Preparation({
                         type="button"
                         size="sm"
                         className="ml-auto"
-                        disabled={form.processing}
-                        onClick={() =>
-                            form.post(`${base}/destinations/prepare`, {
-                                preserveScroll: true,
-                            })
-                        }
+                        disabled={prepare.processing}
+                        onClick={() => {
+                            prepare.setData({
+                                destination: destination.id,
+                                reset: destination.in_use,
+                                confirmation: '',
+                            });
+                            setOpen(true);
+                        }}
                     >
                         Preparar destino
                     </Button>
@@ -835,6 +860,149 @@ function Preparation({
                     </Button>
                 )}
             </div>
+            <Dialog open={open} onOpenChange={setOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>
+                            Preparar el destino {destination.id}
+                        </DialogTitle>
+                        <DialogDescription>
+                            El Consolidador instala en el servidor un Moodle
+                            5.2.1 vacío detrás del proxy TLS del administrador.
+                            Se recomienda una instancia limpia, dedicada a esta
+                            consolidación.
+                        </DialogDescription>
+                    </DialogHeader>
+                    {destination.in_use ? (
+                        <div className="space-y-3 text-sm">
+                            <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950/30">
+                                <p className="font-medium">
+                                    Este destino ya tiene un sitio
+                                </p>
+                                <ul className="mt-1 list-disc pl-4">
+                                    {destination.destination_written && (
+                                        <li>
+                                            El Consolidador ya escribió en él
+                                            una consolidación.
+                                        </li>
+                                    )}
+                                    {destination.target_running && (
+                                        <li>
+                                            Moodle destino está en ejecución.
+                                        </li>
+                                    )}
+                                    {(destination.target_volumes ?? 0) > 0 && (
+                                        <li>
+                                            Conserva{' '}
+                                            {destination.target_volumes}{' '}
+                                            volúmenes de datos (base de datos y
+                                            moodledata).
+                                        </li>
+                                    )}
+                                    {(destination.copias_packages ?? 0) > 0 && (
+                                        <li>
+                                            Hay {destination.copias_packages}{' '}
+                                            paquetes en copias/.
+                                        </li>
+                                    )}
+                                </ul>
+                            </div>
+                            <label className="flex gap-2">
+                                <input
+                                    type="radio"
+                                    name={`prepare-${destination.id}`}
+                                    checked={prepare.data.reset}
+                                    onChange={() =>
+                                        prepare.setData('reset', true)
+                                    }
+                                />
+                                <span>
+                                    <span className="font-medium">
+                                        Limpiar el destino y preparar
+                                    </span>
+                                    <span className="text-muted-foreground block text-xs">
+                                        Elimina los servicios, los volúmenes y
+                                        el estado del sitio anterior, y restaura
+                                        el Consolidador verificado. Conserva el
+                                        .env del administrador; las copias ya
+                                        respaldadas en S3 no se tocan.
+                                    </span>
+                                </span>
+                            </label>
+                            <label className="flex gap-2">
+                                <input
+                                    type="radio"
+                                    name={`prepare-${destination.id}`}
+                                    checked={!prepare.data.reset}
+                                    disabled={destination.destination_written}
+                                    onChange={() =>
+                                        prepare.setData('reset', false)
+                                    }
+                                />
+                                <span>
+                                    <span className="font-medium">
+                                        Preparar sobre el destino existente
+                                    </span>
+                                    <span className="text-muted-foreground block text-xs">
+                                        {destination.destination_written
+                                            ? 'No disponible: el destino ya recibió una consolidación.'
+                                            : 'Propenso a colisiones con el sitio anterior si Caddy, el DNS y los servicios relacionados no están configurados correctamente.'}
+                                    </span>
+                                </span>
+                            </label>
+                            {admin ? (
+                                <div className="space-y-1">
+                                    <Label
+                                        htmlFor={`confirm-${destination.id}`}
+                                    >
+                                        Escriba CONFIRMAR para continuar
+                                    </Label>
+                                    <Input
+                                        id={`confirm-${destination.id}`}
+                                        autoComplete="off"
+                                        value={prepare.data.confirmation}
+                                        onChange={(event) =>
+                                            prepare.setData(
+                                                'confirmation',
+                                                event.target.value,
+                                            )
+                                        }
+                                    />
+                                </div>
+                            ) : (
+                                <p className="text-xs text-red-600">
+                                    Solo un administrador de la plataforma puede
+                                    preparar o limpiar un destino que ya está en
+                                    uso.
+                                </p>
+                            )}
+                        </div>
+                    ) : (
+                        <p className="text-muted-foreground text-sm">
+                            El destino está limpio: no tiene servicios,
+                            volúmenes ni paquetes de un sitio anterior.
+                        </p>
+                    )}
+                    <Button
+                        type="button"
+                        disabled={
+                            prepare.processing ||
+                            !confirmed ||
+                            (destination.in_use && !admin)
+                        }
+                        onClick={() =>
+                            prepare.post(`${base}/destinations/prepare`, {
+                                preserveScroll: true,
+                                onSuccess: () => setOpen(false),
+                            })
+                        }
+                    >
+                        {destination.in_use && prepare.data.reset
+                            ? 'Limpiar y preparar'
+                            : 'Preparar destino'}
+                    </Button>
+                </DialogContent>
+            </Dialog>
             {!destination.ready && !preparation && (
                 <p className="text-muted-foreground text-xs">
                     Disponible cuando el perfil supere su comprobación.

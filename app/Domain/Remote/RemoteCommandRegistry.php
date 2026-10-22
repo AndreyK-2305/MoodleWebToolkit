@@ -24,6 +24,7 @@ class RemoteCommandRegistry
         'consolidator.prepare' => ['parameters' => [
             'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
             'distribution' => '/^[0-9a-f]{64}$/D',
+            'reset' => '/^[01]$/D',
         ], 'cancellable' => true],
         'consolidator.run' => ['parameters' => [
             'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
@@ -31,6 +32,27 @@ class RemoteCommandRegistry
             'workers' => '/^(auto|[1-4])$/D',
         ], 'cancellable' => true],
         'consolidator.plugins-approve' => ['parameters' => [
+            'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
+            'distribution' => '/^[0-9a-f]{64}$/D',
+        ], 'cancellable' => false],
+        'consolidator.identity-apply' => ['parameters' => [
+            'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
+            'distribution' => '/^[0-9a-f]{64}$/D',
+        ], 'cancellable' => false],
+        'consolidator.plugin-inspect' => ['parameters' => [
+            'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
+            'distribution' => '/^[0-9a-f]{64}$/D',
+            'component' => '/^[a-z][a-z0-9]*_[a-z][a-z0-9_]{0,60}$/D',
+            'repository' => '/^[A-Za-z0-9_-]{8,140}$/D',
+            'commit' => '/^[0-9a-f]{40}$/D',
+        ], 'cancellable' => true],
+        'consolidator.plugin-promote' => ['parameters' => [
+            'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
+            'distribution' => '/^[0-9a-f]{64}$/D',
+            'components' => '/^[a-z][a-z0-9]*_[a-z][a-z0-9_]{0,60}(,[a-z][a-z0-9]*_[a-z][a-z0-9_]{0,60}){0,9}$/D',
+            'approver' => '/^[A-Za-z0-9_-]{4,140}$/D',
+        ], 'cancellable' => false],
+        'consolidator.plugins-none' => ['parameters' => [
             'destination' => '/^[a-z0-9][a-z0-9-]{1,62}$/D',
             'distribution' => '/^[0-9a-f]{64}$/D',
         ], 'cancellable' => false],

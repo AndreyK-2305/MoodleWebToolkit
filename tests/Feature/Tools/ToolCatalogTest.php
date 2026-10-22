@@ -21,7 +21,7 @@ class ToolCatalogTest extends DomainTestCase
         $this->seed(ToolCatalogSeeder::class);
 
         $recolector = Tool::query()->where('key', 'moodle-recolector')->firstOrFail()->versions()->where('version', '7.4.2-linux')->firstOrFail();
-        $consolidador = Tool::query()->where('key', 'moodle-consolidador')->firstOrFail()->versions()->where('version', '8.0.0-linux-rc12')->firstOrFail();
+        $consolidador = Tool::query()->where('key', 'moodle-consolidador')->firstOrFail()->versions()->where('version', '8.0.0-linux-rc13')->firstOrFail();
         $integrador = Tool::query()->where('key', 'moodle-integrador-incremental')->firstOrFail()->versions()->where('version', '1.1.5-linux')->firstOrFail();
 
         $this->assertFalse($recolector->enabled);

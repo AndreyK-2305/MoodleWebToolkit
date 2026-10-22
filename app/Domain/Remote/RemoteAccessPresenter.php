@@ -124,6 +124,9 @@ class RemoteAccessPresenter
                 'docker_version' => $report['docker_version'] ?? null, 'memory_bytes' => $report['memory_bytes'] ?? null,
                 'runtime_free_bytes' => $report['runtime_free_bytes'] ?? null, 'target_running' => ($report['target_running'] ?? false) === true,
                 'destination_written' => ($report['destination_written'] ?? false) === true,
+                'in_use' => CheckRemoteDestination::used($report),
+                'target_volumes' => is_int($report['target_volumes'] ?? null) ? $report['target_volumes'] : null,
+                'copias_packages' => is_int($report['copias_packages'] ?? null) ? $report['copias_packages'] : null,
                 'preparation' => $this->preparation($server, $id),
                 'copias' => $this->copias($server, $id),
                 'fetches' => $this->fetches($server, $id)];

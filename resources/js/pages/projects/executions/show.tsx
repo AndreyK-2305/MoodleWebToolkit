@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import InputError from '@/components/input-error';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -189,7 +190,69 @@ type ConflictData = {
         removed_plugins?: string[];
         technical_issues?: string[];
         checkpoint_status?: string | null;
+        plugins_none?: boolean;
+        candidates?: IdentityCandidate[];
+        candidate_total?: number | null;
+        candidates_complete?: boolean;
+        themes?: string[];
+        theme_selected?: string | null;
+        theme_default?: string | null;
+        legacy_sources?: { source: string; collector_version: string | null }[];
+        legacy_accepted?: boolean;
+        unknown?: string[];
+        inspections?: Record<
+            string,
+            {
+                state: string;
+                repository: string;
+                commit: string;
+                message: string | null;
+            }
+        >;
+        proposals?: Record<
+            string,
+            {
+                version: number;
+                requires: number | null;
+                release: string | null;
+                path: string | null;
+                tree_sha256: string | null;
+                dependencies: string[];
+            }
+        >;
     } | null;
+};
+
+type IdentityAccount = {
+    source: string | null;
+    user_id: string | null;
+    canonical_id: string | null;
+    name: string | null;
+    email: string | null;
+    google: string | null;
+    members: string[];
+};
+
+type IdentityCandidate = {
+    group: string;
+    type: string | null;
+    confidence: string | null;
+    name_similarity: string | null;
+    email_similarity: string | null;
+    identifier_match: string | null;
+    evidence: string | null;
+    a: IdentityAccount;
+    b: IdentityAccount;
+};
+
+type IdentityDecision = {
+    group: string;
+    resolution: '' | 'MERGE' | 'KEEP_SEPARATE' | 'IGNORE';
+    canonical_target: string;
+    canonical_email: string;
+    canonical_username: string;
+    oauth_policy: 'canonical_account' | 'none';
+    justification: string;
 };
 
 type CheckpointData = {
@@ -1985,6 +2048,28 @@ function ConflictAction({
         conflict_version: conflict.version,
     });
 
+    if (
+        conflict.intervention &&
+        conflict.allowed_decisions.includes('APPLY_ANSWERS') &&
+        ['IDENTITY_REVIEW', 'THEME_SELECTION'].includes(conflict.type)
+    ) {
+        return conflict.type === 'IDENTITY_REVIEW' ? (
+            <IdentityReview
+                projectUuid={projectUuid}
+                executionUuid={executionUuid}
+                conflict={conflict}
+                disabled={disabled}
+            />
+        ) : (
+            <ThemeSelection
+                projectUuid={projectUuid}
+                executionUuid={executionUuid}
+                conflict={conflict}
+                disabled={disabled}
+            />
+        );
+    }
+
     if (conflict.intervention) {
         return (
             <ConsolidationIntervention
@@ -2030,6 +2115,8 @@ function ConflictAction({
 const interventionTitles: Record<string, string> = {
     OAUTH2_CONFIGURATION: 'Configurar Google OAuth2 en el Moodle destino',
     PLUGIN_INTERVENTION: 'Plugins requeridos por los orígenes',
+    IDENTITY_REVIEW: 'Revisar posibles identidades duplicadas',
+    THEME_SELECTION: 'Elegir el theme del Moodle consolidado',
     CONSOLIDATOR_INTERVENTION: 'Intervención solicitada por el Consolidador',
 };
 
@@ -2126,6 +2213,29 @@ function ConsolidationIntervention({
             {list('Actualizados', details.updated_plugins)}
             {list('Eliminados', details.removed_plugins)}
             {list('Errores de la validación técnica', details.technical_issues)}
+            {(details.unknown ?? []).length > 0 && (
+                <UnknownPlugins
+                    projectUuid={projectUuid}
+                    executionUuid={executionUuid}
+                    conflict={conflict}
+                    disabled={disabled}
+                />
+            )}
+            {details.plugins_none && (
+                <Alert>
+                    <ShieldAlert />
+                    <AlertTitle>
+                        Los orígenes no requieren plugins adicionales
+                    </AlertTitle>
+                    <AlertDescription>
+                        El Consolidador 8.0.0 no completa por sí solo esta etapa
+                        cuando no hay plugins que instalar. «Continuar sin
+                        plugins» reconstruye Moodle en el destino si hace falta,
+                        revalida y sella el inventario vacío; después la
+                        consolidación sigue automáticamente.
+                    </AlertDescription>
+                </Alert>
+            )}
             {details.review_paths && details.review_paths.length > 0 && (
                 <p className="text-muted-foreground text-xs">
                     En el servidor: {details.review_paths.join(', ')}
@@ -2137,11 +2247,23 @@ function ConsolidationIntervention({
                     checked={confirmed}
                     onChange={(event) => setConfirmed(event.target.checked)}
                 />
-                {plugins
-                    ? 'Revisé que los plugins instalados cubren los datos de los orígenes'
-                    : 'Completé la intervención indicada en el Moodle destino'}
+                {details.plugins_none
+                    ? 'Entiendo que el destino continuará sin plugins adicionales'
+                    : plugins
+                      ? 'Revisé que los plugins instalados cubren los datos de los orígenes'
+                      : 'Completé la intervención indicada en el Moodle destino'}
             </label>
             <div className="flex flex-wrap gap-2">
+                {conflict.allowed_decisions.includes(
+                    'CONTINUE_WITHOUT_PLUGINS',
+                ) && (
+                    <Button
+                        disabled={disabled || processing || !confirmed}
+                        onClick={() => decide('CONTINUE_WITHOUT_PLUGINS')}
+                    >
+                        Continuar sin plugins
+                    </Button>
+                )}
                 {conflict.allowed_decisions.includes('ACCEPT') && (
                     <Button
                         disabled={disabled || processing || !confirmed}
@@ -2162,6 +2284,616 @@ function ConsolidationIntervention({
                     </Button>
                 )}
             </div>
+        </div>
+    );
+}
+
+function ProposalFact({ label, value }: { label: string; value: string }) {
+    return (
+        <div className="flex gap-1">
+            <dt className="text-muted-foreground">{label}:</dt>
+            <dd className="font-mono break-all">{value}</dd>
+        </div>
+    );
+}
+
+/**
+ * Components the sources need and the Consolidator's catalog lacks: each one is
+ * inspected on the destination from its Git repository and commit, and the
+ * confirmed proposals are added to the catalog before revalidating.
+ */
+function UnknownPlugins({
+    projectUuid,
+    executionUuid,
+    conflict,
+    disabled,
+}: {
+    projectUuid: string;
+    executionUuid: string;
+    conflict: ConflictData;
+    disabled: boolean;
+}) {
+    const details = conflict.intervention ?? {};
+    const unknown = details.unknown ?? [];
+    const proposals = details.proposals ?? {};
+    const [sources, setSources] = useState<
+        Record<string, { repository: string; commit: string }>
+    >(() =>
+        Object.fromEntries(
+            unknown.map((component) => [
+                component,
+                {
+                    repository:
+                        details.inspections?.[component]?.repository ?? '',
+                    commit: details.inspections?.[component]?.commit ?? '',
+                },
+            ]),
+        ),
+    );
+    const [inspecting, setInspecting] = useState<string | null>(null);
+    const [confirmed, setConfirmed] = useState(false);
+    const { send, processing, errors } = useInterventionAnswers(
+        projectUuid,
+        executionUuid,
+        conflict,
+    );
+    const ready = Object.keys(proposals);
+
+    return (
+        <div className="bg-background space-y-3 rounded-md border p-3">
+            <p className="text-xs font-medium">
+                Plugins que el catálogo del Consolidador no conoce
+            </p>
+            <p className="text-muted-foreground text-xs">
+                Indique el repositorio Git público (GitHub o Bitbucket) y el
+                commit exacto de cada uno. El destino lo inspecciona (versión,
+                requisitos y huella del árbol). Si confirma la propuesta, se
+                agrega al catálogo; el Consolidador lo instala y lo valida en
+                staging, y después usted aprueba el inventario.
+            </p>
+            {unknown.map((component) => {
+                const inspection = details.inspections?.[component];
+                const proposal = proposals[component];
+                return (
+                    <div
+                        key={component}
+                        className="space-y-2 border-t pt-2 text-xs"
+                    >
+                        <p className="font-mono font-medium">{component}</p>
+                        <div className="grid gap-2 sm:grid-cols-[2fr_1fr_auto]">
+                            <Input
+                                placeholder="https://github.com/organizacion/moodle-plugin.git"
+                                value={sources[component]?.repository ?? ''}
+                                onChange={(event) =>
+                                    setSources((current) => ({
+                                        ...current,
+                                        [component]: {
+                                            ...current[component],
+                                            repository:
+                                                event.target.value.trim(),
+                                        },
+                                    }))
+                                }
+                            />
+                            <Input
+                                placeholder="commit (40 caracteres)"
+                                value={sources[component]?.commit ?? ''}
+                                onChange={(event) =>
+                                    setSources((current) => ({
+                                        ...current,
+                                        [component]: {
+                                            ...current[component],
+                                            commit: event.target.value
+                                                .trim()
+                                                .toLowerCase(),
+                                        },
+                                    }))
+                                }
+                            />
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={
+                                    disabled ||
+                                    inspecting !== null ||
+                                    inspection?.state === 'RUNNING' ||
+                                    !/^[0-9a-f]{40}$/.test(
+                                        sources[component]?.commit ?? '',
+                                    )
+                                }
+                                onClick={() =>
+                                    router.post(
+                                        `/projects/${projectUuid}/executions/${executionUuid}/conflicts/${conflict.id}/plugin-inspect`,
+                                        {
+                                            component,
+                                            ...sources[component],
+                                        },
+                                        {
+                                            preserveScroll: true,
+                                            onStart: () =>
+                                                setInspecting(component),
+                                            onFinish: () => setInspecting(null),
+                                        },
+                                    )
+                                }
+                            >
+                                Inspeccionar
+                            </Button>
+                        </div>
+                        {inspection && (
+                            <p
+                                className={
+                                    inspection.state === 'FAILED'
+                                        ? 'text-red-600'
+                                        : 'text-muted-foreground'
+                                }
+                            >
+                                {inspection.state === 'RUNNING'
+                                    ? 'Inspeccionando en el destino…'
+                                    : (inspection.message ??
+                                      (inspection.state === 'SUCCEEDED'
+                                          ? 'Inspección completada.'
+                                          : inspection.state))}
+                            </p>
+                        )}
+                        {proposal && (
+                            <dl className="grid gap-x-4 sm:grid-cols-2">
+                                <ProposalFact
+                                    label="Versión"
+                                    value={String(proposal.version)}
+                                />
+                                <ProposalFact
+                                    label="Release"
+                                    value={proposal.release ?? '—'}
+                                />
+                                <ProposalFact
+                                    label="Requiere Moodle"
+                                    value={String(proposal.requires ?? '—')}
+                                />
+                                <ProposalFact
+                                    label="Ruta"
+                                    value={proposal.path ?? '—'}
+                                />
+                                <ProposalFact
+                                    label="Huella del árbol"
+                                    value={(proposal.tree_sha256 ?? '').slice(
+                                        0,
+                                        16,
+                                    )}
+                                />
+                                <ProposalFact
+                                    label="Dependencias"
+                                    value={
+                                        proposal.dependencies.join(', ') ||
+                                        'ninguna'
+                                    }
+                                />
+                            </dl>
+                        )}
+                    </div>
+                );
+            })}
+            {ready.length > 0 && (
+                <div className="space-y-2 border-t pt-2">
+                    <label className="flex gap-2 text-xs">
+                        <input
+                            type="checkbox"
+                            checked={confirmed}
+                            onChange={(event) =>
+                                setConfirmed(event.target.checked)
+                            }
+                        />
+                        Revisé las propuestas: provienen del repositorio y
+                        commit que indiqué
+                    </label>
+                    <InputError message={errors.promote ?? errors.conflict} />
+                    <Button
+                        size="sm"
+                        disabled={disabled || processing || !confirmed}
+                        onClick={() => send({ promote: ready, confirm: true })}
+                    >
+                        Agregar al catálogo y revalidar ({ready.length})
+                    </Button>
+                </div>
+            )}
+        </div>
+    );
+}
+
+/** Sends the administrator's answers to a consolidation intervention. */
+function useInterventionAnswers(
+    projectUuid: string,
+    executionUuid: string,
+    conflict: ConflictData,
+) {
+    const [key] = useState(() => crypto.randomUUID());
+    const [processing, setProcessing] = useState(false);
+    const [errors, setErrors] = useState<Record<string, string>>({});
+    const send = (data: Record<string, unknown>) =>
+        router.post(
+            `/projects/${projectUuid}/executions/${executionUuid}/conflicts/${conflict.id}/answers`,
+            { ...data, conflict_version: conflict.version } as never,
+            {
+                headers: { 'Idempotency-Key': `${key}-answers` },
+                preserveScroll: true,
+                onStart: () => setProcessing(true),
+                onFinish: () => setProcessing(false),
+                onError: (found) => setErrors(found),
+            },
+        );
+
+    return { send, processing, errors };
+}
+
+function AccountFacts({
+    label,
+    account,
+}: {
+    label: string;
+    account: IdentityAccount;
+}) {
+    return (
+        <div className="space-y-0.5 text-xs">
+            <p className="font-medium">{label}</p>
+            <p>{account.name ?? 'Sin nombre'}</p>
+            <p className="text-muted-foreground break-all">
+                {account.email ?? 'Sin correo'}
+            </p>
+            <p className="text-muted-foreground font-mono">
+                {account.source}:{account.user_id}
+                {account.google && ` · Google ${account.google}`}
+            </p>
+        </div>
+    );
+}
+
+/** The fuzzy identity candidates: each group is merged, kept apart or ignored, with a reason. */
+function IdentityReview({
+    projectUuid,
+    executionUuid,
+    conflict,
+    disabled,
+}: {
+    projectUuid: string;
+    executionUuid: string;
+    conflict: ConflictData;
+    disabled: boolean;
+}) {
+    const candidates = conflict.intervention?.candidates ?? [];
+    const [decisions, setDecisions] = useState<IdentityDecision[]>(() =>
+        candidates.map((candidate) => ({
+            group: candidate.group,
+            resolution: '',
+            canonical_target: candidate.a.members[0] ?? '',
+            canonical_email: candidate.a.email ?? '',
+            canonical_username: (candidate.a.email ?? '').toLowerCase(),
+            oauth_policy: 'canonical_account',
+            justification: '',
+        })),
+    );
+    const { send, processing, errors } = useInterventionAnswers(
+        projectUuid,
+        executionUuid,
+        conflict,
+    );
+    const update = (index: number, changes: Partial<IdentityDecision>) =>
+        setDecisions((current) =>
+            current.map((decision, position) =>
+                position === index ? { ...decision, ...changes } : decision,
+            ),
+        );
+    const complete = decisions.every(
+        (decision) =>
+            decision.resolution !== '' &&
+            decision.justification.trim().length >= 3 &&
+            (decision.resolution !== 'MERGE' ||
+                (decision.canonical_target !== '' &&
+                    decision.canonical_email !== '' &&
+                    decision.canonical_username !== '')),
+    );
+
+    return (
+        <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-900 dark:bg-amber-950/30">
+            <p className="font-medium">{interventionTitles[conflict.type]}</p>
+            <p className="text-muted-foreground">
+                El Consolidador encontró {candidates.length} grupos de cuentas
+                que podrían ser la misma persona. Decida cada uno antes de crear
+                los usuarios en el destino: fusionar en una cuenta canónica,
+                mantenerlas separadas o ignorar la coincidencia. El Consolidador
+                valida la revisión completa antes de aplicarla.
+            </p>
+            {candidates.map((candidate, index) => {
+                const decision = decisions[index];
+                const accounts = [
+                    ...new Set([
+                        ...candidate.a.members,
+                        ...candidate.b.members,
+                    ]),
+                ];
+                const prefix = `decisions.${index}`;
+                return (
+                    <div
+                        key={candidate.group}
+                        className="bg-background space-y-2 rounded-md border p-3"
+                    >
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="font-mono">{candidate.group}</span>
+                            {candidate.confidence && (
+                                <Badge variant="outline">
+                                    confianza {candidate.confidence}
+                                </Badge>
+                            )}
+                            <span className="text-muted-foreground">
+                                nombre {candidate.name_similarity ?? '—'} ·
+                                correo {candidate.email_similarity ?? '—'}
+                                {candidate.identifier_match &&
+                                    ` · identificador ${candidate.identifier_match}`}
+                            </span>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <AccountFacts
+                                label="Cuenta A"
+                                account={candidate.a}
+                            />
+                            <AccountFacts
+                                label="Cuenta B"
+                                account={candidate.b}
+                            />
+                        </div>
+                        {candidate.evidence && (
+                            <p className="text-muted-foreground text-xs">
+                                Evidencia: {candidate.evidence}
+                            </p>
+                        )}
+                        <div className="flex flex-wrap gap-3 text-xs">
+                            {(
+                                [
+                                    ['MERGE', 'Fusionar'],
+                                    ['KEEP_SEPARATE', 'Mantener separadas'],
+                                    ['IGNORE', 'Ignorar coincidencia'],
+                                ] as const
+                            ).map(([value, label]) => (
+                                <label key={value} className="flex gap-1">
+                                    <input
+                                        type="radio"
+                                        name={`resolution-${candidate.group}`}
+                                        checked={decision.resolution === value}
+                                        onChange={() =>
+                                            update(index, { resolution: value })
+                                        }
+                                    />
+                                    {label}
+                                </label>
+                            ))}
+                        </div>
+                        {decision.resolution === 'MERGE' && (
+                            <div className="grid gap-2 text-xs sm:grid-cols-2">
+                                <label className="space-y-1">
+                                    <span>Cuenta canónica</span>
+                                    <select
+                                        className="border-input bg-background w-full rounded-md border px-2 py-1"
+                                        value={decision.canonical_target}
+                                        onChange={(event) =>
+                                            update(index, {
+                                                canonical_target:
+                                                    event.target.value,
+                                            })
+                                        }
+                                    >
+                                        {accounts.map((account) => (
+                                            <option
+                                                key={account}
+                                                value={account}
+                                            >
+                                                {account}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <label className="space-y-1">
+                                    <span>Vínculo con Google</span>
+                                    <select
+                                        className="border-input bg-background w-full rounded-md border px-2 py-1"
+                                        value={decision.oauth_policy}
+                                        onChange={(event) =>
+                                            update(index, {
+                                                oauth_policy: event.target
+                                                    .value as IdentityDecision['oauth_policy'],
+                                            })
+                                        }
+                                    >
+                                        <option value="canonical_account">
+                                            Vincular a la cuenta canónica
+                                        </option>
+                                        <option value="none">
+                                            Sin vínculo
+                                        </option>
+                                    </select>
+                                </label>
+                                <label className="space-y-1">
+                                    <span>Correo canónico</span>
+                                    <Input
+                                        value={decision.canonical_email}
+                                        onChange={(event) =>
+                                            update(index, {
+                                                canonical_email:
+                                                    event.target.value,
+                                            })
+                                        }
+                                    />
+                                    <InputError
+                                        message={
+                                            errors[`${prefix}.canonical_email`]
+                                        }
+                                    />
+                                </label>
+                                <label className="space-y-1">
+                                    <span>Usuario canónico</span>
+                                    <Input
+                                        value={decision.canonical_username}
+                                        onChange={(event) =>
+                                            update(index, {
+                                                canonical_username:
+                                                    event.target.value.toLowerCase(),
+                                            })
+                                        }
+                                    />
+                                    <InputError
+                                        message={
+                                            errors[
+                                                `${prefix}.canonical_username`
+                                            ] ??
+                                            errors[`${prefix}.canonical_target`]
+                                        }
+                                    />
+                                </label>
+                            </div>
+                        )}
+                        <label className="block space-y-1 text-xs">
+                            <span>Justificación</span>
+                            <Input
+                                value={decision.justification}
+                                placeholder="Por qué se decide así (queda en la auditoría)"
+                                onChange={(event) =>
+                                    update(index, {
+                                        justification: event.target.value,
+                                    })
+                                }
+                            />
+                            <InputError
+                                message={errors[`${prefix}.justification`]}
+                            />
+                        </label>
+                    </div>
+                );
+            })}
+            <InputError message={errors.decisions ?? errors.conflict} />
+            <Button
+                disabled={disabled || processing || !complete}
+                onClick={() =>
+                    send({
+                        decisions: decisions.map((decision) =>
+                            decision.resolution === 'MERGE'
+                                ? decision
+                                : {
+                                      group: decision.group,
+                                      resolution: decision.resolution,
+                                      justification: decision.justification,
+                                  },
+                        ),
+                    })
+                }
+            >
+                Aplicar revisión y continuar
+            </Button>
+        </div>
+    );
+}
+
+/** The destination's global theme and, when a source lacks theme metadata, the legacy decision. */
+function ThemeSelection({
+    projectUuid,
+    executionUuid,
+    conflict,
+    disabled,
+}: {
+    projectUuid: string;
+    executionUuid: string;
+    conflict: ConflictData;
+    disabled: boolean;
+}) {
+    const details = conflict.intervention ?? {};
+    const themes = details.themes ?? [];
+    const legacy =
+        (details.legacy_sources ?? []).length > 0 && !details.legacy_accepted;
+    const [theme, setTheme] = useState(
+        details.theme_selected && themes.includes(details.theme_selected)
+            ? details.theme_selected
+            : details.theme_default && themes.includes(details.theme_default)
+              ? details.theme_default
+              : (themes[0] ?? ''),
+    );
+    const [acceptLegacy, setAcceptLegacy] = useState(false);
+    const { send, processing, errors } = useInterventionAnswers(
+        projectUuid,
+        executionUuid,
+        conflict,
+    );
+
+    return (
+        <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-900 dark:bg-amber-950/30">
+            <p className="font-medium">{interventionTitles[conflict.type]}</p>
+            {details.message && (
+                <p className="text-muted-foreground text-xs">
+                    {details.message}
+                </p>
+            )}
+            <label className="block space-y-1">
+                <span className="text-xs font-medium">
+                    Theme global del destino
+                </span>
+                <select
+                    className="border-input bg-background w-full rounded-md border px-2 py-1 text-sm"
+                    value={theme}
+                    onChange={(event) => setTheme(event.target.value)}
+                >
+                    {themes.map((name) => (
+                        <option key={name} value={name}>
+                            {name}
+                            {name === details.theme_default
+                                ? ' (predeterminado de la política)'
+                                : ''}
+                        </option>
+                    ))}
+                </select>
+                <span className="text-muted-foreground block text-xs">
+                    Los cursos conservan los themes que traen de sus orígenes
+                    cuando el destino los tiene instalados.
+                </span>
+            </label>
+            {legacy && (
+                <div className="space-y-1 text-xs">
+                    <p>
+                        Estas fuentes se recolectaron sin la metadata avanzada
+                        de themes:{' '}
+                        {(details.legacy_sources ?? [])
+                            .map(
+                                (source) =>
+                                    `${source.source} (${source.collector_version ?? '?'})`,
+                            )
+                            .join(', ')}
+                        . Puede continuar en modo compatible, con advertencia, o
+                        cancelar y recolectarlas de nuevo con el Recolector
+                        7.4.2.
+                    </p>
+                    <label className="flex gap-2">
+                        <input
+                            type="checkbox"
+                            checked={acceptLegacy}
+                            onChange={(event) =>
+                                setAcceptLegacy(event.target.checked)
+                            }
+                        />
+                        Continuar con compatibilidad legacy
+                    </label>
+                </div>
+            )}
+            <InputError
+                message={
+                    errors.theme ?? errors.accept_legacy ?? errors.conflict
+                }
+            />
+            <Button
+                disabled={
+                    disabled ||
+                    processing ||
+                    theme === '' ||
+                    (legacy && !acceptLegacy)
+                }
+                onClick={() => send({ theme, accept_legacy: acceptLegacy })}
+            >
+                Aplicar y continuar
+            </Button>
         </div>
     );
 }
