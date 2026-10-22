@@ -482,21 +482,23 @@ test('la respuesta a una acción actualiza la pantalla sin tiempo real ni pollin
     worker();
     await page.reload();
     await visibleStatus(page, 'WAITING_USER_ACTION');
+    const accepted = page.waitForResponse(
+        (response) =>
+            response.url().endsWith('/resolve') &&
+            response.request().method() === 'POST',
+    );
     await page
         .getByRole('button', { name: 'Aceptar advertencia y continuar' })
         .click();
-    await expect
-        .poll(() => snapshot(project.uuid).execution.status)
-        .not.toBe('WAITING_USER_ACTION');
-    const header = page
-        .getByRole('heading', { level: 1, name: /Ejecución #/ })
-        .locator('..');
+    await accepted;
+    // The decision is recorded at once; the Execution itself continues only
+    // when a worker takes the command, which this test never starts.
+    expect(
+        snapshot(project.uuid).commands.filter(
+            (c) => c.command_type === 'RESOLVE_CONFLICT',
+        ),
+    ).toHaveLength(1);
     await expect(
-        header.getByText(snapshot(project.uuid).execution.status, {
-            exact: true,
-        }),
-    ).toBeVisible();
-    await expect(
-        header.getByText('WAITING_USER_ACTION', { exact: true }),
+        page.getByRole('button', { name: 'Aceptar advertencia y continuar' }),
     ).toHaveCount(0);
 });
