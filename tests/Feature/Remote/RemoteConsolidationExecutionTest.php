@@ -197,10 +197,41 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->getJson(route('projects.executions.events', [$this->project, $execution]))->assertOk()
             ->assertJsonPath('execution.consolidation.site_package_sha256', str_repeat('e', 64))
             ->assertJsonPath('execution.consolidation.closure.total_courses_verified', 15);
-        // The academic closing of a consolidation is a later stage.
-        $this->post(route('projects.executions.finalize', [$this->project, $execution]), [], ['Idempotency-Key' => 'finalize-consolidation'])
-            ->assertSessionHasErrors('finalization');
         $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_review_is_confirmed_with_the_closing_reports_after_a_live_check(): void
+    {
+        $execution = $this->reviewedConsolidation();
+        $this->queueLiveReports(str_repeat('e', 64));
+
+        $this->post(route('projects.executions.finalize', [$this->project, $execution]), [], ['Idempotency-Key' => 'finalize-consolidation'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $execution->refresh();
+        $this->assertSame(ExecutionStatus::COMPLETED, $execution->status);
+        $this->assertSame(ProjectStatus::COMPLETED, $this->project->fresh()->status);
+        $this->assertSame(RemoteConsolidationPreparation::ADAPTER_KEY, $execution->completion_summary['adapter']);
+        $this->assertSame(4, $execution->artifacts()->count(), 'Los cuatro informes de cierre; la copia integral queda en el destino.');
+        $this->assertSame(ExecutionStepStatus::SUCCESS, $this->stepStatus($execution, 'finalization'));
+        $json = $execution->artifacts()->where('type', 'JSON_REPORT')->sole();
+        $report = json_decode((string) Storage::disk($json->disk)->get($json->path), true);
+        $this->assertSame(['REMOTE_CONSOLIDATION', 'campus', str_repeat('e', 64), 'DESTINATION'], [$report['mode'], $report['destination']['profile'],
+            $report['site_package']['sha256'], $report['site_package']['location']]);
+        $this->assertEqualsCanonicalizing(collect($this->packages)->pluck('sha256')->all(), array_column($report['source_packages'], 'sha256'));
+        $this->assertSame('evidence_consolidated', $report['closure']['closure_status']);
+        $this->assertSame(0, $this->transport->pending(), 'El destino se lee en vivo solo al iniciar y al cerrar la finalización.');
+    }
+
+    public function test_a_destination_that_changed_after_review_is_never_confirmed(): void
+    {
+        $execution = $this->reviewedConsolidation();
+        $this->queueLiveReports(str_repeat('f', 64));
+
+        $this->post(route('projects.executions.finalize', [$this->project, $execution]), [], ['Idempotency-Key' => 'finalize-changed']);
+
+        $this->assertNotSame(ExecutionStatus::COMPLETED, $execution->fresh()->status);
+        $this->assertSame(0, $execution->artifacts()->where('type', 'FINAL_SUMMARY')->count());
     }
 
     public function test_a_blocked_assistant_fails_the_execution_with_its_message(): void
@@ -286,6 +317,34 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame('PLUGIN_INTERVENTION', $open->type);
         $this->assertStringContainsString('código 61', (string) $open->details['message']);
         $this->assertSame(0, $this->transport->pending());
+    }
+
+    /** A consolidation the assistant closed in a single run, now in REVIEW. */
+    private function reviewedConsolidation(): Execution
+    {
+        [$execution, $run] = $this->startExecution();
+        $this->queueStatus(alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T13:00:00Z']);
+        $this->queueReport(...$this->closedReport(str_repeat('e', 64)));
+        dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
+        $this->assertSame(ExecutionStatus::REVIEW, $execution->fresh()->status);
+
+        return $execution->fresh();
+    }
+
+    /** The destination as read live while confirming: when finalization starts and before it closes. */
+    private function queueLiveReports(string $site): void
+    {
+        for ($read = 0; $read < 2; $read++) {
+            $this->queueReport(...$this->closedReport($site));
+        }
+    }
+
+    /** @return array{0: array<string, mixed>, 1: list<string>, 2: array<string, mixed>, 3: array<string, mixed>, 4: bool} */
+    private function closedReport(string $site): array
+    {
+        return [['stage' => 'completed', 'status' => 'completed', 'message' => 'Consolidación verificada y cerrada.'], [],
+            ['closure_status' => 'evidence_consolidated', 'courses_verified' => 14, 'total_courses_verified' => 15, 'failed_courses' => 0,
+                'sources' => [['id' => 'pregrado'], ['id' => 'posgrado']]], ['package_sha256' => $site], true];
     }
 
     private function stopAtPlugins(RemoteOperation $run, string $checkpoint): void

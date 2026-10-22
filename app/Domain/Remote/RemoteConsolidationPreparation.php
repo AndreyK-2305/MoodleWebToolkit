@@ -62,7 +62,7 @@ final class RemoteConsolidationPreparation
         foreach (self::STAGES as $key => $name) {
             $steps[] = new ExecutionStepDefinition($key, $name, $position++);
         }
-        $steps[] = new ExecutionStepDefinition('review', 'Revisar la consolidación', $position);
+        $steps[] = new ExecutionStepDefinition('finalization', 'Confirmar la consolidación', $position);
 
         return $steps;
     }

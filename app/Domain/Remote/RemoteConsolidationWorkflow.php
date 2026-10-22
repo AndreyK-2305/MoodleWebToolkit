@@ -133,6 +133,45 @@ class RemoteConsolidationWorkflow
         return $operation;
     }
 
+    /**
+     * The consolidation can be confirmed only while what was reviewed still holds: the last
+     * run closed it, the packages and the sealed site package match the review fingerprint, and
+     * the destination, read live, still reports the same closure and site package.
+     *
+     * @return array<string, mixed> the live report, or the reviewed one between the boundary passes
+     */
+    public function assertFinalizable(Execution $execution, bool $live = true): array
+    {
+        $settings = $this->settings($execution);
+        $run = $this->runs($execution)->last();
+        $report = is_array($run?->evidence['consolidator'] ?? null) ? $run->evidence['consolidator'] : [];
+        if ($run === null || $run->functional_state !== RemoteFunctionalState::SUCCEEDED || $run->exit_code !== 0
+            || ($report['state']['stage'] ?? null) !== 'completed' || ($report['state']['status'] ?? null) !== 'completed') {
+            throw new ToolOperationBlocked('La confirmación requiere que el Consolidador haya cerrado la consolidación.');
+        }
+        $site = $report['site_package']['package_sha256'] ?? null;
+        if (! is_string($execution->review_fingerprint) || ! hash_equals($this->fingerprint($execution, $settings, $site), $execution->review_fingerprint)) {
+            throw new ToolOperationBlocked('Lo revisado cambió después de la revisión.');
+        }
+        if (! $live) {
+            return $report;
+        }
+        $server = $this->server($execution, $settings);
+        try {
+            $response = $this->agent->call($this->connections->target($server), 'consolidator-report', [(string) $settings['destination_profile']], 30);
+        } catch (RemoteAgentUnavailable $exception) {
+            throw new ToolOperationBlocked('No se pudo leer el destino para confirmar la consolidación ('.$exception->errorCode.').');
+        }
+        $live = $response->ok ? $this->report($response->data) : null;
+        if ($live === null || ($live['state']['stage'] ?? null) !== 'completed' || ($live['state']['status'] ?? null) !== 'completed'
+            || ($live['closure']['closure_status'] ?? null) !== ($report['closure']['closure_status'] ?? false)
+            || ($live['site_package']['package_sha256'] ?? null) !== $site) {
+            throw new ToolOperationBlocked('El destino ya no reporta el mismo cierre y la misma copia integral que se revisaron.');
+        }
+
+        return $live;
+    }
+
     /** Requests cancellation of the active run; a waiting Execution closes at once. */
     public function cancel(Execution $execution): void
     {
@@ -404,7 +443,7 @@ class RemoteConsolidationWorkflow
             $verifying->forceFill(['progress' => null, 'review_fingerprint' => $fingerprint, 'validated_proposal_version' => 0,
                 'validated_fingerprint' => $fingerprint])->save();
             $review = $this->lifecycle->transitionForWorker($verifying, ExecutionStatus::REVIEW);
-            $this->events->record($review, 'consolidator.closed', 'review',
+            $this->events->record($review, 'consolidator.closed', 'finalization',
                 message: 'Consolidación verificada y cerrada por el Consolidador: '.($closure['total_courses_verified'] ?? $closure['courses_verified'] ?? '?')
                     .' cursos verificados, '.($closure['failed_courses'] ?? '?').' diferencias.',
                 payload: ['closure' => $closure, 'site_package_sha256' => $site['package_sha256'] ?? null], operation: $run);

@@ -267,3 +267,32 @@ comando `RESOLVE_CONFLICT` durable que el provider de la consolidación procesa.
 - **Continuación bloqueada.** Si el destino no está listo para continuar (conexión, perfil,
   `copias/`), la decisión queda registrada y la Ejecución sigue esperando con el evento
   `consolidator.continue_blocked`.
+
+## E6a: cierre `REVIEW` → `COMPLETED`
+
+E6 se divide en tres cortes:
+
+- **E6a.** La confirmación: es este corte.
+- **E6b.** El respaldo de la copia integral en S3 y la limpieza del disco del destino.
+- **E6c.** La publicación (`PUBLICAR-SITIO.sh`), como operación aparte.
+
+Lo que cambia en E6a:
+
+- **Paso de cierre.** El último paso de la Ejecución pasa a llamarse `finalization`
+  («Confirmar la consolidación») y «Finalizar» queda habilitado para la consolidación remota. El
+  provider procesa `FINALIZE` con la misma finalización por etapas que el resto de las
+  herramientas.
+- **Comprobación de lo revisado.** `RemoteConsolidationWorkflow::assertFinalizable` exige que la
+  última corrida haya cerrado la consolidación (`completed/completed`) y que la huella de
+  revisión (paquetes + SHA-256 de la copia integral) siga igual.
+- **Lectura en vivo.** Al iniciar la finalización y justo antes de cerrarla, se lee el destino
+  en vivo: el mismo cierre y la misma copia integral. Las pasadas intermedias no llaman al
+  servidor.
+- **Informes.** Son los cuatro de cierre. El JSON registra:
+    - el destino y el perfil;
+    - los paquetes consolidados;
+    - el cierre del Consolidador;
+    - el SHA-256 de la copia integral, con su ubicación (`DESTINATION`);
+    - cada intervención, con su decisión, quién decidió y cuándo.
+
+    La copia integral no sale del destino en este corte.
