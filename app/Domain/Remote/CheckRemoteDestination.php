@@ -26,7 +26,7 @@ class CheckRemoteDestination
 
     private const FIELDS = ['destination', 'public_url', 'env_present', 'env_protected', 'env_matches_url', 'env_complete', 'tool_tree',
         'tool_present', 'engine_intact', 'docker_version', 'compose_version', 'flock', 'python3', 'cpus', 'memory_bytes', 'runtime_free_bytes',
-        'target_running', 'destination_written'];
+        'target_running', 'destination_written', 'run_as', 'run_as_docker', 'runtime_owned'];
 
     public function __construct(
         private readonly RemoteServerConnections $connections,
@@ -79,7 +79,9 @@ class CheckRemoteDestination
     {
         $blockers = [];
         $required = ['env_present' => 'env_missing', 'env_protected' => 'env_unprotected', 'env_complete' => 'env_incomplete',
-            'env_matches_url' => 'env_url_mismatch', 'tool_present' => 'tool_missing', 'flock' => 'flock_missing', 'python3' => 'python3_missing'];
+            'env_matches_url' => 'env_url_mismatch', 'tool_present' => 'tool_missing', 'flock' => 'flock_missing', 'python3' => 'python3_missing',
+            // The Consolidator runs as the runtime's unprivileged owner, which reaches Docker through its group.
+            'runtime_owned' => 'runtime_not_owned', 'run_as_docker' => 'run_as_not_docker'];
         foreach ($required as $field => $code) {
             if (($report[$field] ?? false) !== true) {
                 $blockers[] = $code;

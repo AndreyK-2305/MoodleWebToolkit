@@ -115,7 +115,9 @@ class RemoteDestinationTest extends DomainTestCase
         $this->assertSame('0600', substr(sprintf('%o', fileperms($runtime.'/.env')), -4));
         $this->assertStringContainsString('MOODLE_PUBLIC_URL='.self::URL."\n", $env);
         $this->assertStringContainsString("MOODLE_REVERSE_PROXY=1\nMOODLE_SSL_PROXY=1\n", $env);
-        $this->assertDirectoryExists($runtime.'-managed-config');
+        $this->assertDirectoryExists($runtime.'/managed-config');
+        // Inside the runtime: the assistant's container writes only there.
+        $this->assertStringContainsString('MOODLE_MANAGED_CONFIG_DIR='.$runtime."/managed-config\n", $env);
         preg_match('/^MOODLE_ADMIN_PASSWORD=(.+)$/m', $env, $password);
         $this->assertStringContainsString($password[1], $created->getOutput(), 'La clave se muestra una vez al administrador.');
 
@@ -132,7 +134,10 @@ class RemoteDestinationTest extends DomainTestCase
         $this->assertSame($this->distribution->distribution_sha256, $report['tool_tree']);
         $this->assertFalse($report['destination_written']);
         // This test host has no Docker daemon: only the Docker facts may block.
-        $this->assertSame([], array_diff($check['blockers'], ['docker_unavailable', 'compose_v2_missing', 'flock_missing', 'python3_missing']));
+        $this->assertSame([], array_diff($check['blockers'], ['docker_unavailable', 'compose_v2_missing', 'flock_missing', 'python3_missing', 'run_as_not_docker']));
+        // The runtime belongs to the unprivileged user the helper created; the Consolidator refuses root.
+        $this->assertSame(['mwt-campus', true], [$report['run_as'], $report['runtime_owned']]);
+        $this->assertSame('mwt-campus', posix_getpwuid(fileowner($runtime.'/.env'))['name']);
         $this->assertSame($check['blockers'] === [], $check['ready']);
         foreach (['MOODLE_ADMIN_PASSWORD', 'MOODLE_DB_PASSWORD', 'MARIADB_ROOT_PASSWORD'] as $secret) {
             preg_match('/^'.$secret.'=(.+)$/m', $env, $value);
@@ -163,9 +168,19 @@ class RemoteDestinationTest extends DomainTestCase
         $this->assertSame([], array_diff(['engine_modified', 'env_unprotected', 'env_url_mismatch'], $check['blockers']));
 
         // A profile that names another tree than the deployed one.
-        file_put_contents($this->root.'/destinations/campus.conf', "RUNTIME_DIR={$runtime}\nPUBLIC_URL=".self::URL."\nTOOL_TREE=".str_repeat('a', 64)."\n");
+        file_put_contents($this->root.'/destinations/campus.conf', "RUNTIME_DIR={$runtime}\nPUBLIC_URL=".self::URL."\nTOOL_TREE=".str_repeat('a', 64)."\nRUN_AS=mwt-campus\n");
         $check = app(CheckRemoteDestination::class)->handle($this->server, 'campus', null);
         $this->assertSame([], array_diff(['tool_missing', 'tool_tree_mismatch'], $check['blockers']));
+
+        // A runtime file left to root keeps the Consolidator from running as its user.
+        touch($runtime.'/de-root');
+        $this->assertContains('runtime_not_owned', app(CheckRemoteDestination::class)->handle($this->server, 'campus', null)['blockers']);
+        unlink($runtime.'/de-root');
+        // Neither root nor a missing user can run the Consolidator.
+        foreach (['root' => 'destination_user_invalid', 'mwt-nadie' => 'destination_user_missing'] as $user => $code) {
+            file_put_contents($this->root.'/destinations/campus.conf', "RUNTIME_DIR={$runtime}\nPUBLIC_URL=".self::URL."\nTOOL_TREE=".str_repeat('a', 64)."\nRUN_AS={$user}\n");
+            $this->assertSame($code, app(CheckRemoteDestination::class)->handle($this->server, 'campus', null)['error_code']);
+        }
 
         chmod($this->root.'/destinations/campus.conf', 0666);
         $this->assertSame('destination_profile_unsafe', app(CheckRemoteDestination::class)->handle($this->server, 'campus', null)['error_code']);
@@ -239,6 +254,8 @@ class RemoteDestinationTest extends DomainTestCase
             $this->assertSame($zip, file_get_contents($runtime.'/copias/pregrado.zip'));
             $this->assertSame("{$sha}  pregrado.zip\n", file_get_contents($runtime.'/copias/pregrado.zip.sha256'));
             $this->assertSame([], glob($runtime.'/copias/.incoming-*') ?: [], 'El staging no queda en copias/.');
+            // The Consolidator moves and extracts it as the profile's user.
+            $this->assertSame('mwt-campus', posix_getpwuid(fileowner($runtime.'/copias/pregrado.zip'))['name']);
             $report = json_decode((string) base64_decode((string) $this->agent()->call($this->target(), 'fetch-report', [$first['operation_uuid']])->data['result_base64']), true);
             $this->assertSame(['pregrado.zip', $sha, false], [$report['name'], $report['sha256'], $report['already_present']]);
             $this->assertTrue(json_decode((string) base64_decode((string) $this->agent()->call($this->target(), 'fetch-report',
@@ -277,9 +294,12 @@ class RemoteDestinationTest extends DomainTestCase
         $tree = str_repeat('b', 64);
         $report = ['public_url' => self::URL, 'env_present' => true, 'env_protected' => true, 'env_complete' => true, 'env_matches_url' => true,
             'tool_tree' => $tree, 'tool_present' => true, 'engine_intact' => true, 'docker_version' => '27.3.1', 'compose_version' => '2.29.7',
-            'flock' => true, 'python3' => true, 'memory_bytes' => 2_000_000_000, 'runtime_free_bytes' => 10 * 1073741824, 'destination_written' => false];
+            'flock' => true, 'python3' => true, 'memory_bytes' => 2_000_000_000, 'runtime_free_bytes' => 10 * 1073741824, 'destination_written' => false,
+            'run_as' => 'mwt-campus', 'run_as_docker' => true, 'runtime_owned' => true];
 
         $this->assertSame([[], ['low_memory', 'low_disk']], CheckRemoteDestination::assess($report, $tree));
+        $this->assertSame([['runtime_not_owned', 'run_as_not_docker'], ['low_memory', 'low_disk']],
+            CheckRemoteDestination::assess([...$report, 'runtime_owned' => false, 'run_as_docker' => false], $tree));
         $this->assertSame([['tool_tree_mismatch'], ['low_memory', 'low_disk']], CheckRemoteDestination::assess($report, null));
         [$blockers] = CheckRemoteDestination::assess([...$report, 'compose_version' => '1.29.2', 'engine_intact' => false], $tree);
         $this->assertSame(['engine_modified', 'compose_v2_missing'], $blockers);

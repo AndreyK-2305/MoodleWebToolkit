@@ -513,6 +513,8 @@ const destinationCodes: Record<string, string> = {
     tool_tree_mismatch: 'el perfil usa otro árbol que el desplegado',
     flock_missing: 'falta flock',
     python3_missing: 'falta python3',
+    runtime_not_owned: 'el runtime no pertenece al usuario RUN_AS del perfil',
+    run_as_not_docker: 'el usuario RUN_AS no está en el grupo docker',
     public_url_not_https: 'la URL pública no es HTTPS',
     engine_modified: 'el motor del runtime fue modificado',
     docker_unavailable: 'Docker no responde',

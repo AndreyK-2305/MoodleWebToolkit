@@ -8,6 +8,7 @@ use App\Domain\Executions\ResolveExecutionConflict;
 use App\Domain\Executions\ResumeProjectExecution;
 use App\Domain\Remote\RemoteConsolidationBackup;
 use App\Domain\Remote\RemoteConsolidationPreparation;
+use App\Domain\Remote\RetryRemoteConsolidation;
 use App\Exceptions\ExecutionDispatchFailed;
 use App\Exceptions\RemoteAgentUnavailable;
 use App\Exceptions\ToolOperationBlocked;
@@ -37,6 +38,22 @@ class ExecutionActionController extends Controller
 
         return $this->response($request, $project, $result->execution, $result->created,
             $result->created ? 'Nueva exportación desde cero; la evidencia del intento anterior se conserva.' : 'El nuevo intento ya estaba registrado.', 201);
+    }
+
+    /** A new attempt of a failed or cancelled remote consolidation; it continues from the destination's checkpoints. */
+    public function retryConsolidation(Request $request, Project $project, Execution $execution, RetryRemoteConsolidation $retry): JsonResponse|RedirectResponse
+    {
+        $this->ensureBelongsToProject($project, $execution);
+        $key = $this->idempotencyKey($request);
+        $input = $request->validate(['configuration_version' => ['required', 'integer', 'min:1']]);
+        try {
+            $result = $retry->retry($execution, $request->user(), $key, (int) $input['configuration_version']);
+        } catch (ExecutionDispatchFailed $exception) {
+            return $this->dispatchFailure($request, $project, $exception);
+        }
+
+        return $this->response($request, $project, $result->execution, $result->created,
+            $result->created ? 'Nuevo intento: el Consolidador continúa desde sus checkpoints; el intento anterior se conserva.' : 'El nuevo intento ya estaba registrado.', 201);
     }
 
     /** Back up the consolidation's sealed site package to S3 while it is in review. */

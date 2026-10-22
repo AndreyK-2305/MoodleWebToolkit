@@ -20,6 +20,7 @@ use App\Enums\ServerRole;
 use App\Enums\UserRole;
 use App\Jobs\ReconcileRemoteAgentOperation;
 use App\Models\Artifact;
+use App\Models\AuditLog;
 use App\Models\Conflict;
 use App\Models\Execution;
 use App\Models\Project;
@@ -302,16 +303,58 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame(0, $execution->artifacts()->where('type', 'FINAL_SUMMARY')->count());
     }
 
-    public function test_a_blocked_assistant_fails_the_execution_with_its_message(): void
+    public function test_a_blocked_stage_waits_for_the_administrator_and_continues_on_the_same_execution(): void
     {
         [$execution, $run] = $this->startExecution();
+        // Blocked on a configuration decision (exit 20): the assistant keeps its checkpoints.
         $this->queueStatus(alive: false, exit: ['exit_code' => 20, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
-        $this->queueReport(['stage' => '01-importar-paquetes', 'status' => 'blocked', 'message' => 'El paquete pregrado.zip no declara package_status=sealed.']);
+        $this->queueReport(['stage' => '05b-readiness', 'status' => 'blocked',
+            'message' => 'V8_THEME_SELECTION_REQUIRED: defina global_theme_selection; selection_source se registrará como config.']);
+        dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
+        $execution->refresh();
+        $this->assertSame(ExecutionStatus::WAITING_USER_ACTION, $execution->status);
+        $this->assertSame(ExecutionStepStatus::WAITING_USER, $this->stepStatus($execution, '05b-readiness'));
+        $conflict = $execution->conflicts()->sole();
+        $this->assertSame(['CONSOLIDATOR_INTERVENTION', ['CONFIRM_COMPLETED']], [$conflict->type, $conflict->details['allowed_decisions']]);
+
+        // Once the administrator set the policy, Continue resumes the assistant.
+        $this->transport->ok('copias-list', ['write_locked' => true, 'packages' => []]);
+        $this->queueLaunch();
+        $this->resolve($execution, $conflict, 'CONFIRM_COMPLETED', 'theme-set')->assertSessionHasNoErrors();
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertSame('consolidator-run-2', $execution->remoteOperations()->orderByDesc('id')->value('idempotency_key'));
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_a_failed_consolidation_gets_a_new_attempt_that_continues_on_the_written_destination(): void
+    {
+        [$execution, $run] = $this->startExecution();
+        $this->queueStatus(alive: false, exit: ['exit_code' => 74, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:00:00Z']);
+        $this->queueReport(['stage' => '06-aplicar-usuarios', 'status' => 'failed', 'message' => 'Fallo inesperado del runtime.'], written: true);
         dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
         $execution->refresh();
         $this->assertSame(ExecutionStatus::FAILED, $execution->status);
-        $this->assertSame(ExecutionStepStatus::FAILED, $this->stepStatus($execution, '01-importar-paquetes'));
-        $this->assertStringContainsString('package_status=sealed', (string) $execution->events()->where('type', 'consolidator.failed')->value('message'));
+        $this->getJson(route('projects.executions.events', [$this->project, $execution]))->assertOk()
+            ->assertJsonPath('execution.consolidation.can_retry', true);
+        // The destination now holds this consolidation's writes.
+        $metadata = $this->server->refresh()->metadata;
+        $metadata['remote_destination_copias']['campus'] = ['write_locked' => true, 'packages' => []];
+        $this->server->update(['metadata' => $metadata]);
+        $url = route('projects.executions.consolidation.retry', [$this->project, $execution]);
+        $this->postJson($url, ['configuration_version' => 1], ['Idempotency-Key' => 'consolidation-retry-stale-version'])->assertJsonValidationErrors('configuration_version');
+
+        $this->transport->ok('copias-list', ['write_locked' => true, 'packages' => []]);
+        $this->queueLaunch();
+        $this->postJson($url, ['configuration_version' => 2], ['Idempotency-Key' => 'consolidation-retry-first-attempt'])->assertCreated();
+        $retry = $this->project->executions()->where('id', '!=', $execution->id)->sole();
+        $this->assertSame([$execution->id, ExecutionStatus::RUNNING], [$retry->retried_from_execution_id, $retry->status]);
+        $this->assertSame(1, $retry->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)->count());
+        $this->assertSame(ExecutionStatus::FAILED, $execution->fresh()->status);
+        $this->assertSame(1, AuditLog::query()->where('action', 'CONSOLIDATION_RETRY_APPROVED')->count());
+        // The same request again, and an older attempt, add nothing.
+        $this->postJson($url, ['configuration_version' => 2], ['Idempotency-Key' => 'consolidation-retry-first-attempt'])->assertOk();
+        $this->postJson($url, ['configuration_version' => 2], ['Idempotency-Key' => 'consolidation-retry-second-attempt'])->assertJsonValidationErrors('execution');
+        $this->assertSame(2, $this->project->executions()->count());
         $this->assertSame(0, $this->transport->pending());
     }
 
@@ -480,6 +523,9 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame(ExecutionStatus::FAILED, $execution->status);
         $this->assertSame(0, RemoteOperation::query()->count());
         $this->assertStringContainsString('posgrado', (string) $execution->events()->where('type', 'consolidator.failed')->value('message'));
+        // Without any run the destination's writes, if any, are not this consolidation's.
+        $this->postJson(route('projects.executions.consolidation.retry', [$this->project, $execution]), ['configuration_version' => 2],
+            ['Idempotency-Key' => 'consolidation-retry-without-runs'])->assertJsonValidationErrors('execution');
     }
 
     public function test_the_report_keeps_whitelisted_fields_only(): void

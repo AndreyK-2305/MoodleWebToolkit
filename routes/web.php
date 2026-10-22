@@ -47,6 +47,7 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::get('projects/{project:uuid}/executions/{execution:uuid}/events', [ExecutionEventController::class, 'index'])->name('projects.executions.events');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/cancel', [ExecutionActionController::class, 'cancel'])->middleware('action.confirmed')->name('projects.executions.cancel');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/resume', [ExecutionActionController::class, 'resume'])->middleware('action.confirmed')->name('projects.executions.resume');
+    Route::post('projects/{project:uuid}/executions/{execution:uuid}/consolidation/retry', [ExecutionActionController::class, 'retryConsolidation'])->middleware('action.confirmed')->name('projects.executions.consolidation.retry');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/consolidation/backup', [ExecutionActionController::class, 'backupConsolidation'])->middleware('action.confirmed')->name('projects.executions.consolidation.backup');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/fresh-export', [ExecutionActionController::class, 'freshExport'])->middleware('action.confirmed')->name('projects.executions.fresh-export');
     Route::post('projects/{project:uuid}/executions/{execution:uuid}/proposals', [AcademicProposalController::class, 'store'])->middleware('action.confirmed')->name('projects.executions.proposals.store');

@@ -30,9 +30,11 @@ use Illuminate\Support\Facades\DB;
  * Drives an Execution through a remote consolidation: the Consolidator's
  * assistant runs in automatic mode on the destination and resumes from its
  * own checkpoints. Each run is a durable agent operation; when the assistant
- * stops for the administrator (exit 22) the Execution waits, and Continue
- * launches the next run on the same Execution. Each pass is bounded and
- * idempotent; the scheduler repeats it while a run is active.
+ * stops for the administrator (exit 22) or is blocked on a decision of its
+ * configuration (exit 20) the Execution waits, and Continue launches the next
+ * run on the same Execution. A new attempt after a failure resumes from the
+ * same checkpoints. Each pass is bounded and idempotent; the scheduler repeats
+ * it while a run is active.
  */
 class RemoteConsolidationWorkflow
 {
@@ -44,6 +46,9 @@ class RemoteConsolidationWorkflow
 
     /** The assistant's exit code when it waits for the administrator. */
     public const EXIT_WAITING = 22;
+
+    /** The assistant's exit code when a stage is blocked until its configuration or evidence is corrected. */
+    public const EXIT_BLOCKED = 20;
 
     private const LOCK = 80012;
 
@@ -83,7 +88,8 @@ class RemoteConsolidationWorkflow
         }
         try {
             $server = $this->server($execution, $settings);
-            $distribution = $this->assertLaunchable($server, $settings, false);
+            // A new attempt continues the consolidation the failed one left on the destination.
+            $distribution = $this->assertLaunchable($server, $settings, $execution->retried_from_execution_id !== null);
             $operation = $this->launch($execution, $server, $settings, $distribution, 1, $execution->creator);
         } catch (ToolOperationBlocked $exception) {
             $this->close($execution, null, false, $exception->getMessage());
@@ -276,7 +282,9 @@ class RemoteConsolidationWorkflow
 
             return;
         }
-        if ($run->exit_code === self::EXIT_WAITING && $run->functional_state !== RemoteFunctionalState::CANCELLED) {
+        // A blocked stage is a decision for the administrator too: the assistant keeps its
+        // checkpoints, and after the correction Continue resumes it; Cancel stays available.
+        if (in_array($run->exit_code, [self::EXIT_WAITING, self::EXIT_BLOCKED], true) && $run->functional_state !== RemoteFunctionalState::CANCELLED) {
             $this->wait($execution, $run, $report);
 
             return;
