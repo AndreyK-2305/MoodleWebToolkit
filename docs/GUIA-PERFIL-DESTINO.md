@@ -4,18 +4,18 @@ Para el administrador del servidor de destino. La plataforma despliega el Consol
 
 ## 1. Requisitos del servidor
 
-| Requisito     | Detalle                                                                                                                          |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Sistema       | Linux/Ubuntu de 64 bits con systemd, Bash 4 o superior y `flock` (`util-linux`)                                                  |
-| Acceso        | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                                     |
-| Docker        | Docker Engine en marcha y Docker Compose v2 (`docker compose`)                                                                   |
-| AWS CLI v2    | Instalado en el servidor: trae los paquetes de S3 con el rol de la instancia                                                     |
-| Rol IAM (EC2) | `AmazonSSMManagedInstanceCore` y lectura **solo** del prefijo `mwt/` del bucket de paquetes (`s3:GetObject`)                     |
+| Requisito     | Detalle                                                                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sistema       | Linux/Ubuntu de 64 bits con systemd, Bash 4 o superior y `flock` (`util-linux`)                                                             |
+| Acceso        | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                                                |
+| Docker        | Docker Engine en marcha y Docker Compose v2 (`docker compose`)                                                                              |
+| AWS CLI v2    | Instalado en el servidor: trae los paquetes de S3 con el rol de la instancia                                                                |
+| Rol IAM (EC2) | `AmazonSSMManagedInstanceCore` y lectura **solo** del prefijo `mwt/` del bucket de paquetes (`s3:GetObject`)                                |
 | Dominio y TLS | El dominio definitivo del sitio con su certificado y un proxy TLS hacia `127.0.0.1:<puerto>` (8090 por defecto). Lo monta usted (ver § 1.1) |
-| Internet      | Salida a Internet durante la primera preparación: se construyen las imágenes de Moodle 5.2.1, MariaDB y el runtime del asistente |
-| Memoria       | 4 GiB o más; con menos, la comprobación lo advierte                                                                              |
-| Disco         | 20 GiB libres como mínimo en el runtime, más el tamaño de los paquetes, de la base de datos y de la copia integral final         |
-| Google OAuth2 | Un cliente OAuth de Google con la URI `https://<dominio>/admin/oauth2callback.php`. Se configura en Moodle durante la ejecución  |
+| Internet      | Salida a Internet durante la primera preparación: se construyen las imágenes de Moodle 5.2.1, MariaDB y el runtime del asistente            |
+| Memoria       | 4 GiB o más; con menos, la comprobación lo advierte                                                                                         |
+| Disco         | 20 GiB libres como mínimo en el runtime, más el tamaño de los paquetes, de la base de datos y de la copia integral final                    |
+| Google OAuth2 | Un cliente OAuth de Google con la URI `https://<dominio>/admin/oauth2callback.php`. Se configura en Moodle durante la ejecución             |
 
 ### 1.1 Proxy TLS
 
