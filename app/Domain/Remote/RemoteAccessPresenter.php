@@ -22,12 +22,14 @@ class RemoteAccessPresenter
 
     public function __construct(private readonly RemoteAgent $agent) {}
 
-    /** @return array{enabled: bool, agent_version: string|null, available_packages: list<array<string, mixed>>, servers: list<array<string, mixed>>} */
+    /** @return array{enabled: bool, agent_version: string|null, default_region: string, available_packages: list<array<string, mixed>>, servers: list<array<string, mixed>>} */
     public function present(Project $project): array
     {
         $enabled = (bool) config('toolkit.features.remote_agent.enabled', false);
+        $region = config('toolkit.remote.default_region');
+        $region = is_string($region) && $region !== '' ? $region : 'us-east-2';
         if (! $enabled) {
-            return ['enabled' => false, 'agent_version' => null, 'available_packages' => [], 'servers' => []];
+            return ['enabled' => false, 'agent_version' => null, 'default_region' => $region, 'available_packages' => [], 'servers' => []];
         }
         $servers = $project->servers()->with('connections')->orderBy('role')->orderBy('name')->get();
         $operations = RemoteOperation::query()->where('provider_key', RemoteAgentOperations::PROVIDER)
@@ -36,6 +38,7 @@ class RemoteAccessPresenter
         return [
             'enabled' => true,
             'agent_version' => $this->agent->distribution()['version'],
+            'default_region' => $region,
             'available_packages' => $servers->contains(fn (Server $server): bool => $server->role === ServerRole::DESTINATION) ? $this->availablePackages() : [],
             'servers' => array_values($servers->map(fn (Server $server): array => [
                 'uuid' => $server->uuid,

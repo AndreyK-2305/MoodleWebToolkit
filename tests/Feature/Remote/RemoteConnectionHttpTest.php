@@ -108,6 +108,14 @@ class RemoteConnectionHttpTest extends DomainTestCase
         $this->assertSame(['install'], $this->transport->subcommands());
     }
 
+    public function test_a_new_connection_suggests_the_configured_region(): void
+    {
+        config(['toolkit.remote.default_region' => 'sa-east-1']);
+
+        $this->actingAs($this->admin)->get(route('projects.show', $this->project->uuid))
+            ->assertInertia(fn (Assert $page) => $page->where('remoteAccess.default_region', 'sa-east-1'));
+    }
+
     public function test_panel_is_hidden_while_the_flag_is_closed(): void
     {
         $this->actingAs($this->admin)->get(route('projects.show', $this->project->uuid))

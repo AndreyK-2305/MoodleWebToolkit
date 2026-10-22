@@ -203,21 +203,38 @@ agente 1.13.1 durante la prueba.
 - **Textos:** se tradujeron al español, se quitaron las etiquetas de desarrollo y los textos
   «simulados» en los modos remotos.
 
-### Hallazgos pendientes
+### Hallazgos corregidos en E7b
 
 - **Página de la Ejecución:**
-    - no pasa sola a REVIEW ni a COMPLETED aunque diga «Tiempo real conectado»;
-    - recargar la misma URL mostró el estado anterior hasta cambiar la URL;
-    - en REVIEW, el progreso dice «Indeterminado».
-- **«Finalizar»:** deja el proyecto en solo lectura sin pedir confirmación.
-- **«Respaldar en S3»:** el botón desaparece pero el estado sigue en «Sin respaldo» hasta
-  recargar.
-- **Textos de intervención:** muestran rutas del servidor y scripts (`./INICIAR-…`) que el
-  usuario web no usa.
-- **Editor de instancias:** marcar casillas rápido deja estado viejo.
-- **Consolidación:** pide instancias o conexiones de origen que no usa y muestra opciones
-  simuladas de «Configuración funcional».
-- **Valores por defecto:** la región es `us-east-1` y no se toma de la configuración.
-- **Transferencias:** solo una a la vez, y el error de la segunda dura poco.
+    - Inertia 3 conserva el estado del componente en `router.post` y `router.reload`, así que
+      las props nuevas de la misma Ejecución se ignoraban hasta el siguiente sondeo. Ahora el
+      seguimiento las adopta y vuelve a consultar;
+    - la página y `/events` se sirven con `Cache-Control: no-store`. La consulta tiene un
+      límite de 30 s (una petición colgada ya no bloquea las siguientes) y se repite al volver
+      a la pestaña o al restaurar desde la caché del navegador;
+    - en REVIEW el progreso dice «Terminada · en revisión», y en COMPLETED, «Finalizada».
+- **«Finalizar»:** abre un diálogo que explica que el proyecto queda en sólo lectura y avisa
+  si la copia integral no está respaldada.
+- **«Respaldar en S3»:** muestra «Respaldando…» al instante y consulta cada 5 s hasta que el
+  respaldo queda registrado o falla.
+- **Textos de intervención:** ocultan los scripts (`./INICIAR-…sh`) y las rutas del
+  servidor. Un paso de consola se reemplaza por «Vuelva a esta página y confirme la
+  intervención». El texto original queda en «Detalles técnicos para el administrador del
+  servidor».
+- **Editor de instancias:** los cambios se aplican sobre los datos más recientes del
+  formulario, no sobre una copia vieja.
+- **Consolidación:** con servidores reales, el paso 3 ya no muestra las opciones simuladas
+  de «Configuración funcional».
+- **Valores por defecto:** la región de una conexión nueva sale de
+  `TOOL_REMOTE_DEFAULT_REGION` (por defecto, la región del bucket, `us-east-2`).
+- **Transferencias:** mientras una está en curso, el formulario lo indica. El rechazo de una
+  segunda transferencia queda junto al formulario hasta el siguiente intento.
+- **Accesibilidad:** los radios del diálogo de preparación tienen nombre y descripción
+  accesibles, agrupados en un `fieldset`.
+
+### Hallazgos pendientes
+
+- **Consolidación remota:** el proyecto sigue pidiendo dos instancias de origen que no
+  usa, porque los paquetes vienen de S3. Quitarlas cambia la cardinalidad del asistente y
+  del preflight.
 - **Agente:** no se puede actualizar desde la web mientras un proyecto está en curso.
-- **Accesibilidad:** los radios del diálogo no tienen nombre accesible.

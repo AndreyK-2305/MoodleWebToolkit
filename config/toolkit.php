@@ -22,6 +22,8 @@ return [
         // Source packages uploaded by the source server's own role, under mwt/<project>/<source>/<sha256>.
         'package_bucket' => env('TOOL_REMOTE_PACKAGE_BUCKET'),
         'package_region' => env('TOOL_REMOTE_PACKAGE_REGION', 'us-east-2'),
+        // Suggested for a new AWS SSM connection; the lab's instances live with the bucket.
+        'default_region' => env('TOOL_REMOTE_DEFAULT_REGION', env('TOOL_REMOTE_PACKAGE_REGION', 'us-east-2')),
         'call_timeout_seconds' => (int) env('TOOL_REMOTE_CALL_TIMEOUT_SECONDS', 60),
         'max_output_bytes' => (int) env('TOOL_REMOTE_MAX_OUTPUT_BYTES', 65536),
         'minimum_free_bytes' => (int) env('TOOL_REMOTE_MINIMUM_FREE_BYTES', 10 * 1024 * 1024 * 1024),

@@ -243,7 +243,8 @@ final class RemoteConnectionController extends Controller
                 ? ['type' => 'error', 'message' => 'El agente rechazó la transferencia ('.($result['error_code'] ?? 'error').').']
                 : ['type' => 'success', 'message' => 'Transferencia del paquete '.$package->name.' iniciada en el servidor.']);
         } catch (ToolOperationBlocked $exception) {
-            Inertia::flash('toast', ['type' => 'error', 'message' => $exception->getMessage()]);
+            // Next to the form, not a passing toast: it stays until the next attempt.
+            return to_route('projects.show', $project->uuid)->withErrors(['source_package' => $exception->getMessage()]);
         }
 
         return to_route('projects.show', $project->uuid);

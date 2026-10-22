@@ -78,7 +78,7 @@ final class RemoteConnectionConfiguration
             $errors['instance_id'] = 'Indique un ID de instancia administrada válido, por ejemplo i-0123456789abcdef0.';
         }
         if ($region === null || preg_match(self::REGION, $region) !== 1) {
-            $errors['region'] = 'Indique una región AWS válida, por ejemplo us-east-1.';
+            $errors['region'] = 'Indique una región AWS válida, por ejemplo us-east-2.';
         }
         if ($errors !== []) {
             throw ValidationException::withMessages($errors);
