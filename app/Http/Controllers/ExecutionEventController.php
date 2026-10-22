@@ -40,6 +40,6 @@ class ExecutionEventController extends Controller
             'has_more' => $events->count() === 200
                 && (int) $events->last()?->sequence < $execution->last_event_sequence,
             'realtime_channel' => $channels->current($project, $request->session()->getId()),
-        ]);
+        ])->header('Cache-Control', 'no-store, private');
     }
 }

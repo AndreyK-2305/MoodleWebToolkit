@@ -336,6 +336,27 @@ class ExecutionEngineTest extends TestCase
             ->assertJsonPath('events.0.progress', null);
     }
 
+    public function test_tracking_page_and_catch_up_are_never_served_from_the_browser_cache(): void
+    {
+        Queue::fake();
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->readyProject($operator);
+        $response = $this->actingAs($operator)->postJson(
+            route('projects.executions.store', $project->uuid),
+            ['configuration_version' => $project->configuration->version],
+            ['Idempotency-Key' => 'no-store-0001'],
+        )->assertCreated();
+        $execution = $response->json('execution_uuid');
+
+        foreach ([
+            $this->actingAs($operator)->get(route('projects.executions.show', [$project->uuid, $execution])),
+            $this->actingAs($operator)->getJson(route('projects.executions.events', [$project->uuid, $execution]).'?after=0'),
+        ] as $page) {
+            $page->assertOk();
+            $this->assertStringContainsString('no-store', (string) $page->headers->get('Cache-Control'));
+        }
+    }
+
     public function test_reload_pages_persisted_events_in_sequence_order(): void
     {
         Queue::fake();

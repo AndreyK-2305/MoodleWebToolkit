@@ -3,6 +3,7 @@ import {
     executionScopeReplacement,
     initialTrackingCursor,
     mergeSequencedEvents,
+    progressDisplay,
     realtimeLiveState,
     responseBelongsToExecution,
     resumePayload,
@@ -68,5 +69,33 @@ describe('execution tracking isolation', () => {
         expect(realtimeLiveState(true, 'unavailable')).toBe(false);
         expect(realtimeLiveState(true, 'failed')).toBe(false);
         expect(realtimeLiveState(false, 'subscribed')).toBe(true);
+    });
+});
+
+describe('progress display', () => {
+    it('reports a finished run in review instead of an indeterminate bar', () => {
+        expect(progressDisplay('REVIEW', null)).toEqual({
+            label: 'Terminada · en revisión',
+            value: 100,
+            active: false,
+        });
+        expect(progressDisplay('COMPLETED', null).value).toBe(100);
+    });
+
+    it('keeps the measured percentage while the tool runs', () => {
+        expect(progressDisplay('RUNNING', 40)).toEqual({
+            label: '40 %',
+            value: 40,
+            active: false,
+        });
+    });
+
+    it('names unmeasured states without animating stopped ones', () => {
+        expect(progressDisplay('RUNNING', null).active).toBe(true);
+        expect(progressDisplay('WAITING_USER_ACTION', null)).toMatchObject({
+            value: null,
+            active: false,
+        });
+        expect(progressDisplay('FAILED', null).active).toBe(false);
     });
 });

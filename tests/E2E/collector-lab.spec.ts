@@ -194,6 +194,9 @@ test.describe('Recolector 7.4.2 real en Moodle sintético', () => {
         await observer
             .getByRole('button', { name: 'Finalizar', exact: true })
             .click();
+        await observer
+            .getByRole('button', { name: 'Sí, cerrar en sólo lectura' })
+            .click();
         await expect(
             observer.locator('#action-confirmation-password'),
         ).toBeVisible();

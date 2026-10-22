@@ -5,6 +5,7 @@ namespace App\Domain\Executions;
 use App\Domain\Academic\AcademicPreview;
 use App\Domain\Artifacts\SensitiveValueRedactor;
 use App\Domain\Collector\CollectorExecutionPreparation;
+use App\Domain\Remote\OperatorText;
 use App\Domain\Remote\RemoteCollectionConfiguration;
 use App\Domain\Remote\RemoteCollectionPreparation;
 use App\Domain\Remote\RemoteCollectorExport;
@@ -129,7 +130,8 @@ class ExecutionPresenter
                 'manual_intervention_required' => $run->manual_intervention_required],
             'stage' => $report['state']['stage'] ?? null,
             'stage_status' => $report['state']['status'] ?? null,
-            'message' => $report['message'] ?? null,
+            'message' => OperatorText::forWebUser(is_string($report['message'] ?? null) ? $report['message'] : null),
+            'server_message' => OperatorText::technical(is_string($report['message'] ?? null) ? $report['message'] : null),
             'review_paths' => $report['review_paths'] ?? [],
             'workers_status' => $report['workers'] ?? null,
             'closure' => $report['closure'] ?? null,
