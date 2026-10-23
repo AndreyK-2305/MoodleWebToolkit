@@ -132,10 +132,20 @@ class RemoteConsolidationInterventions
      */
     public static function present(array $details): array
     {
-        return array_intersect_key($details, array_flip(['kind', 'stage', 'message', 'review_paths', 'instructions', 'callback_uri', 'issues',
+        $presented = array_intersect_key($details, array_flip(['kind', 'stage', 'message', 'review_paths', 'instructions', 'callback_uri', 'issues',
             'needs', 'new_plugins', 'updated_plugins', 'removed_plugins', 'technical_issues', 'checkpoint_status', 'plugins_none',
             'candidates', 'candidate_total', 'candidates_complete', 'themes', 'theme_selected', 'theme_default', 'legacy_sources', 'legacy_accepted',
             'unknown', 'inspections', 'proposals']));
+        // The web user answers in the platform; the console wording goes to the technical details.
+        foreach (['message', 'instructions'] as $field) {
+            if (array_key_exists($field, $presented)) {
+                $original = is_string($presented[$field]) ? $presented[$field] : null;
+                $presented[$field] = OperatorText::forWebUser($original);
+                $presented['server_'.$field] = OperatorText::technical($original);
+            }
+        }
+
+        return $presented;
     }
 
     /**

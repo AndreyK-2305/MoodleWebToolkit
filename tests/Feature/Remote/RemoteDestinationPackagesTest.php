@@ -174,6 +174,13 @@ class RemoteDestinationPackagesTest extends DomainTestCase
         $this->actingAs($this->admin)->get(route('projects.show', $this->project->uuid))->assertInertia(fn (Assert $page) => $page
             ->where('remoteAccess.available_packages', fn ($packages): bool => collect($packages)->pluck('uuid')->contains($mine->uuid))
             ->where('remoteAccess.servers.0.destinations.0.fetches.0.state', 'RUNNING'));
+
+        // A second transfer while one runs is refused next to the form, not in a passing toast.
+        $other = $this->package('posgrado');
+        $this->actingAs($this->admin)->post($url, ['destination' => 'campus', 'source_package' => $other->uuid])
+            ->assertRedirect(route('projects.show', $this->project->uuid))
+            ->assertSessionHasErrors(['source_package' => 'Ya hay una transferencia en curso hacia este destino; espere a que termine.']);
+        $this->assertArrayNotHasKey($other->uuid, $this->server->refresh()->metadata['remote_destination_fetches']['campus']);
     }
 
     /** @return array{string, string|null} */

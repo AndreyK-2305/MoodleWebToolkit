@@ -28,6 +28,7 @@ import {
     Dialog,
     DialogContent,
     DialogDescription,
+    DialogFooter,
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog';
@@ -36,6 +37,7 @@ import {
     executionScopeReplacement,
     initialTrackingCursor,
     mergeSequencedEvents,
+    progressDisplay,
     realtimeLiveState,
     responseBelongsToExecution,
     resumePayload,
@@ -73,6 +75,7 @@ type ConsolidationData = {
     stage: string | null;
     stage_status: string | null;
     message: string | null;
+    server_message: string | null;
     review_paths: string[];
     workers_status: {
         completed?: number;
@@ -176,8 +179,10 @@ type ConflictData = {
         kind?: string;
         stage?: string | null;
         message?: string | null;
+        server_message?: string | null;
         review_paths?: string[];
         instructions?: string | null;
+        server_instructions?: string | null;
         callback_uri?: string | null;
         issues?: string[];
         needs?: {
@@ -380,6 +385,8 @@ type CatchUpResponse = {
     realtime_channel: string;
 };
 
+const CATCH_UP_TIMEOUT_MS = 30_000;
+
 export default function ExecutionShow(props: Props) {
     return <ExecutionTracker key={props.execution.uuid} {...props} />;
 }
@@ -409,6 +416,7 @@ function ExecutionTracker({
     const requestGeneration = useRef(0);
     const inFlightRequest = useRef<AbortController | null>(null);
     const trackedExecutionUuid = useRef(initialExecution.uuid);
+    const adoptedSnapshot = useRef(initialExecution);
 
     useEffect(() => {
         const replacement = executionScopeReplacement(
@@ -422,6 +430,7 @@ function ExecutionTracker({
         }
 
         trackedExecutionUuid.current = replacement.uuid;
+        adoptedSnapshot.current = initialExecution;
         requestGeneration.current += 1;
         inFlightRequest.current?.abort();
         inFlightRequest.current = null;
@@ -477,8 +486,14 @@ function ExecutionTracker({
                     `/projects/${project.uuid}/executions/${initialExecution.uuid}/events?after=${lastSequence.current}`,
                     {
                         credentials: 'same-origin',
+                        cache: 'no-store',
                         headers: { Accept: 'application/json' },
-                        signal: controller.signal,
+                        // A request that never settles would otherwise hold
+                        // catchingUp and silence every later notification.
+                        signal: AbortSignal.any([
+                            controller.signal,
+                            AbortSignal.timeout(CATCH_UP_TIMEOUT_MS),
+                        ]),
                     },
                 );
 
@@ -529,10 +544,19 @@ function ExecutionTracker({
                     (data.has_more && data.events.length > 0) ||
                     catchUpPending.current;
             }
-        } catch {
+        } catch (error) {
             if (
-                !controller.signal.aborted &&
-                generation === requestGeneration.current
+                controller.signal.aborted ||
+                generation !== requestGeneration.current
+            ) {
+                return;
+            }
+
+            // A slow server is not an expired session: release the slot and
+            // let the next notification or poll try again.
+            if (
+                !(error instanceof DOMException) ||
+                error.name !== 'TimeoutError'
             ) {
                 setUpdatesPaused(true);
                 setLive(false);
@@ -545,6 +569,36 @@ function ExecutionTracker({
             }
         }
     }, [initialExecution.uuid, mergeEvents, project.uuid]);
+
+    useEffect(() => {
+        if (adoptedSnapshot.current === initialExecution) {
+            return;
+        }
+
+        adoptedSnapshot.current = initialExecution;
+
+        if (trackedExecutionUuid.current !== initialExecution.uuid) {
+            return;
+        }
+
+        // Inertia 3 keeps component state on router.post/router.reload, so a
+        // redirect back here brings fresh props that useState would ignore.
+        if (initialExecution.last_event_sequence >= lastSequence.current) {
+            setExecution(initialExecution);
+            setReview(initialReview);
+            setRealtimeChannel(initialRealtimeChannel);
+            mergeEvents(initialEvents);
+        }
+
+        void catchUp();
+    }, [
+        catchUp,
+        initialEvents,
+        initialExecution,
+        initialRealtimeChannel,
+        initialReview,
+        mergeEvents,
+    ]);
 
     useEffect(() => {
         const channel = echo.private(realtimeChannel);
@@ -585,9 +639,28 @@ function ExecutionTracker({
 
         void catchUp();
         const fallback = window.setInterval(() => void catchUp(), 15_000);
+        // Hidden tabs throttle timers and a back/forward cache restore keeps
+        // the old screen: both must ask the server again when shown.
+        const refreshWhenVisible = () => {
+            if (document.visibilityState === 'visible') {
+                void catchUp();
+            }
+        };
+        const refreshOnRestore = (event: PageTransitionEvent) => {
+            if (event.persisted) {
+                void catchUp();
+            }
+        };
+        document.addEventListener('visibilitychange', refreshWhenVisible);
+        window.addEventListener('pageshow', refreshOnRestore);
 
         return () => {
             window.clearInterval(fallback);
+            document.removeEventListener(
+                'visibilitychange',
+                refreshWhenVisible,
+            );
+            window.removeEventListener('pageshow', refreshOnRestore);
             requestGeneration.current += 1;
             inFlightRequest.current?.abort();
             inFlightRequest.current = null;
@@ -604,6 +677,22 @@ function ExecutionTracker({
             setReauthOpen(false);
         }
     }, [updatesPaused]);
+
+    const backupRunning = execution.consolidation?.backup.state === 'RUNNING';
+
+    useEffect(() => {
+        if (!backupRunning) {
+            return;
+        }
+
+        // The upload ends on the destination; follow it closely until the
+        // platform registers (or rejects) the copy.
+        const follow = window.setInterval(() => void catchUp(), 5_000);
+
+        return () => window.clearInterval(follow);
+    }, [backupRunning, catchUp]);
+
+    const progress = progressDisplay(execution.status, execution.progress);
 
     return (
         <>
@@ -772,9 +861,7 @@ function ExecutionTracker({
                                         Progreso
                                     </span>
                                     <span className="font-medium">
-                                        {execution.progress === null
-                                            ? 'Indeterminado'
-                                            : `${execution.progress} %`}
+                                        {progress.label}
                                     </span>
                                 </div>
                                 <div
@@ -782,26 +869,22 @@ function ExecutionTracker({
                                     role="progressbar"
                                     aria-valuemin={0}
                                     aria-valuemax={100}
-                                    aria-valuenow={
-                                        execution.progress ?? undefined
-                                    }
-                                    aria-valuetext={
-                                        execution.progress === null
-                                            ? 'Progreso indeterminado'
-                                            : `${execution.progress} por ciento`
-                                    }
+                                    aria-valuenow={progress.value ?? undefined}
+                                    aria-valuetext={progress.label}
                                 >
                                     <div
                                         className={cn(
                                             'bg-primary h-full rounded-full transition-[width]',
-                                            execution.progress === null &&
-                                                'w-1/3 animate-pulse',
+                                            progress.value === null &&
+                                                (progress.active
+                                                    ? 'w-1/3 animate-pulse'
+                                                    : 'w-0'),
                                         )}
                                         style={
-                                            execution.progress === null
+                                            progress.value === null
                                                 ? undefined
                                                 : {
-                                                      width: `${execution.progress}%`,
+                                                      width: `${progress.value}%`,
                                                   }
                                         }
                                     />
@@ -1402,6 +1485,7 @@ function ExecutionActions({
     const [finalizeKey] = useState(() => crypto.randomUUID());
     const [freshKey] = useState(() => crypto.randomUUID());
     const [freshOpen, setFreshOpen] = useState(false);
+    const [finalizeOpen, setFinalizeOpen] = useState(false);
     const [resumeProcessing, setResumeProcessing] = useState(false);
     const cancelForm = useForm({});
     const validateForm = useForm({});
@@ -1531,17 +1615,7 @@ function ExecutionActions({
                         review.validation_current && (
                             <Button
                                 disabled={disabled || finalizeForm.processing}
-                                onClick={() =>
-                                    finalizeForm.post(
-                                        `/projects/${projectUuid}/executions/${execution.uuid}/finalize`,
-                                        {
-                                            headers: {
-                                                'Idempotency-Key': finalizeKey,
-                                            },
-                                            preserveScroll: true,
-                                        },
-                                    )
-                                }
+                                onClick={() => setFinalizeOpen(true)}
                             >
                                 <ShieldCheck /> Finalizar
                             </Button>
@@ -1556,6 +1630,60 @@ function ExecutionActions({
                         {error}
                     </p>
                 ))}
+                <Dialog open={finalizeOpen} onOpenChange={setFinalizeOpen}>
+                    <DialogContent>
+                        <DialogHeader>
+                            <DialogTitle>¿Finalizar el proyecto?</DialogTitle>
+                            <DialogDescription>
+                                El cierre es definitivo: el proyecto queda en
+                                sólo lectura y ya no admite cambios, nuevos
+                                intentos ni respaldos. Los artefactos
+                                verificados siguen disponibles para consulta y
+                                descarga.
+                            </DialogDescription>
+                        </DialogHeader>
+                        {execution.consolidation &&
+                            execution.consolidation.backup.state !==
+                                'SUCCEEDED' && (
+                                <Alert variant="destructive">
+                                    <ShieldAlert />
+                                    <AlertTitle>
+                                        La copia integral no está respaldada
+                                    </AlertTitle>
+                                    <AlertDescription>
+                                        Después del cierre ya no podrá
+                                        respaldarla en S3 desde la plataforma.
+                                    </AlertDescription>
+                                </Alert>
+                            )}
+                        <DialogFooter>
+                            <Button
+                                variant="outline"
+                                onClick={() => setFinalizeOpen(false)}
+                            >
+                                Volver a la revisión
+                            </Button>
+                            <Button
+                                disabled={disabled || finalizeForm.processing}
+                                onClick={() =>
+                                    finalizeForm.post(
+                                        `/projects/${projectUuid}/executions/${execution.uuid}/finalize`,
+                                        {
+                                            headers: {
+                                                'Idempotency-Key': finalizeKey,
+                                            },
+                                            preserveScroll: true,
+                                            onFinish: () =>
+                                                setFinalizeOpen(false),
+                                        },
+                                    )
+                                }
+                            >
+                                <ShieldCheck /> Sí, cerrar en sólo lectura
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
                 <Dialog open={freshOpen} onOpenChange={setFreshOpen}>
                     <DialogContent>
                         <DialogHeader>
@@ -1661,6 +1789,11 @@ function ConsolidationStatus({
     const [retryKey] = useState(() => crypto.randomUUID());
     const workers = consolidation.workers_status;
     const closure = consolidation.closure;
+    // The request itself already means «in progress»; the server state
+    // confirms it once the redirect or the next catch-up arrives.
+    const backupState = backupForm.processing
+        ? 'RUNNING'
+        : consolidation.backup.state;
 
     return (
         <Card>
@@ -1700,18 +1833,16 @@ function ConsolidationStatus({
                         </AlertTitle>
                         <AlertDescription className="space-y-2">
                             <p>
-                                {consolidation.message ?? 'Revise el destino.'}
+                                {consolidation.message ??
+                                    'El Consolidador espera una decisión.'}
                             </p>
-                            {consolidation.review_paths.length > 0 && (
-                                <p className="text-xs">
-                                    En el servidor, revise:{' '}
-                                    {consolidation.review_paths.join(', ')}
-                                </p>
-                            )}
                             <p className="text-xs">
-                                Cuando termine, confirme la intervención en
-                                «Acciones controladas».
+                                Respóndala en «Acciones controladas».
                             </p>
+                            <ServerDetails
+                                message={consolidation.server_message}
+                                paths={consolidation.review_paths}
+                            />
                         </AlertDescription>
                     </Alert>
                 )}
@@ -1783,7 +1914,7 @@ function ConsolidationStatus({
                         {consolidation.site_package_sha256}
                     </p>
                 )}
-                {(consolidation.can_backup || consolidation.backup.state) && (
+                {(consolidation.can_backup || backupState) && (
                     <div className="space-y-2 rounded-md border p-3">
                         <div className="flex flex-wrap items-center gap-2">
                             <span className="font-medium">
@@ -1791,37 +1922,37 @@ function ConsolidationStatus({
                             </span>
                             <Badge
                                 variant={
-                                    consolidation.backup.state === 'SUCCEEDED'
+                                    backupState === 'SUCCEEDED'
                                         ? 'default'
-                                        : consolidation.backup.state ===
-                                            'FAILED'
+                                        : backupState === 'FAILED'
                                           ? 'destructive'
                                           : 'secondary'
                                 }
                             >
-                                {consolidation.backup.state === 'SUCCEEDED'
+                                {backupState === 'SUCCEEDED'
                                     ? 'Respaldada y verificada'
-                                    : consolidation.backup.state === 'RUNNING'
-                                      ? 'Subiendo desde el destino'
-                                      : consolidation.backup.state === 'FAILED'
+                                    : backupState === 'RUNNING'
+                                      ? 'Respaldando… el destino sube la copia'
+                                      : backupState === 'FAILED'
                                         ? 'Fallida'
                                         : 'Sin respaldo'}
                             </Badge>
-                            {canControl && consolidation.can_backup && (
-                                <Button
-                                    size="sm"
-                                    className="ml-auto"
-                                    disabled={backupForm.processing}
-                                    onClick={() =>
-                                        backupForm.post(
-                                            `/projects/${projectUuid}/executions/${executionUuid}/consolidation/backup`,
-                                            { preserveScroll: true },
-                                        )
-                                    }
-                                >
-                                    Respaldar en S3
-                                </Button>
-                            )}
+                            {canControl &&
+                                consolidation.can_backup &&
+                                backupState !== 'RUNNING' && (
+                                    <Button
+                                        size="sm"
+                                        className="ml-auto"
+                                        onClick={() =>
+                                            backupForm.post(
+                                                `/projects/${projectUuid}/executions/${executionUuid}/consolidation/backup`,
+                                                { preserveScroll: true },
+                                            )
+                                        }
+                                    >
+                                        Respaldar en S3
+                                    </Button>
+                                )}
                         </div>
                         {consolidation.backup.location && (
                             <p className="font-mono text-xs break-all">
@@ -2112,6 +2243,42 @@ function ConflictAction({
     );
 }
 
+/** What the Consolidator wrote for the server's console, out of the way of the web user. */
+function ServerDetails({
+    message,
+    instructions,
+    paths,
+}: {
+    message?: string | null;
+    instructions?: string | null;
+    paths?: string[];
+}) {
+    if (!message && !instructions && (paths ?? []).length === 0) {
+        return null;
+    }
+
+    return (
+        <details className="text-muted-foreground text-xs">
+            <summary className="cursor-pointer">
+                Detalles técnicos para el administrador del servidor
+            </summary>
+            <div className="mt-1 space-y-1">
+                {message && <p className="break-words">{message}</p>}
+                {instructions && (
+                    <pre className="bg-background max-h-48 overflow-auto rounded p-2 whitespace-pre-wrap">
+                        {instructions}
+                    </pre>
+                )}
+                {paths && paths.length > 0 && (
+                    <p className="font-mono break-all">
+                        Archivos en el destino: {paths.join(', ')}
+                    </p>
+                )}
+            </div>
+        </details>
+    );
+}
+
 const interventionTitles: Record<string, string> = {
     OAUTH2_CONFIGURATION: 'Configurar Google OAuth2 en el Moodle destino',
     PLUGIN_INTERVENTION: 'Plugins requeridos por los orígenes',
@@ -2236,11 +2403,11 @@ function ConsolidationIntervention({
                     </AlertDescription>
                 </Alert>
             )}
-            {details.review_paths && details.review_paths.length > 0 && (
-                <p className="text-muted-foreground text-xs">
-                    En el servidor: {details.review_paths.join(', ')}
-                </p>
-            )}
+            <ServerDetails
+                message={details.server_message}
+                instructions={details.server_instructions}
+                paths={details.review_paths}
+            />
             <label className="flex gap-2 text-xs">
                 <input
                     type="checkbox"

@@ -103,6 +103,18 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
         await page
             .getByRole('button', { name: 'Finalizar', exact: true })
             .click();
+        const finalizeDialog = page.getByRole('dialog', {
+            name: '¿Finalizar el proyecto?',
+        });
+        await expect(finalizeDialog).toContainText('sólo lectura');
+        expect(
+            snapshot(project).commands.filter(
+                (c) => c.command_type === 'FINALIZE',
+            ),
+        ).toHaveLength(0);
+        await finalizeDialog
+            .getByRole('button', { name: 'Sí, cerrar en sólo lectura' })
+            .click();
         expect((await finalizationAccepted).status()).toBe(302);
         expect(
             snapshot(project).commands.filter(
@@ -440,4 +452,53 @@ test('polling recupera progreso sin un canal WebSocket disponible', async ({
     await expect(page.getByText('Recuperación activa')).toBeVisible();
     worker();
     await visibleStatus(page, 'REVIEW');
+});
+
+test('la respuesta a una acción actualiza la pantalla sin tiempo real ni polling', async ({
+    page,
+    password,
+}) => {
+    // Inertia 3 keeps component state on router.post: the redirect's props
+    // must still reach the tracker without waiting for Reverb or a poll.
+    await page.addInitScript(() => {
+        const interval = window.setInterval.bind(window);
+        window.setInterval = ((
+            handler: TimerHandler,
+            timeout?: number,
+            ...args: unknown[]
+        ) =>
+            timeout === 15_000
+                ? 0
+                : interval(
+                      handler,
+                      timeout,
+                      ...args,
+                  )) as typeof window.setInterval;
+    });
+    await page.routeWebSocket(/\/app\//, (socket) => socket.close());
+    await login(page, password);
+    const project = ready('COLLECT', 'WARNING');
+    await start(page, project);
+    worker();
+    await page.reload();
+    await visibleStatus(page, 'WAITING_USER_ACTION');
+    const accepted = page.waitForResponse(
+        (response) =>
+            response.url().endsWith('/resolve') &&
+            response.request().method() === 'POST',
+    );
+    await page
+        .getByRole('button', { name: 'Aceptar advertencia y continuar' })
+        .click();
+    await accepted;
+    // The decision is recorded at once; the Execution itself continues only
+    // when a worker takes the command, which this test never starts.
+    expect(
+        snapshot(project.uuid).commands.filter(
+            (c) => c.command_type === 'RESOLVE_CONFLICT',
+        ),
+    ).toHaveLength(1);
+    await expect(
+        page.getByRole('button', { name: 'Aceptar advertencia y continuar' }),
+    ).toHaveCount(0);
 });

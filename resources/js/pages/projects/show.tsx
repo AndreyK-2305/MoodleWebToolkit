@@ -178,8 +178,20 @@ export default function ProjectShow({
     // With remote access the servers are real; REMOTE mode is configured in its own card.
     const simulated = !remoteAccess?.enabled;
     const mode = project.options.mode;
-    const remoteMode = mode === 'REMOTE' || mode === 'REMOTE_CONSOLIDATION';
-    const steps = wizardSteps(simulated, remoteMode ? (mode ?? null) : null);
+    // With real servers a consolidation is always remote: its simulated
+    // functional options would only mislead, even before the card is saved.
+    const remoteConsolidation =
+        mode === 'REMOTE_CONSOLIDATION' ||
+        (!simulated && project.type === 'CONSOLIDATE');
+    const remoteMode = mode === 'REMOTE' || remoteConsolidation;
+    const steps = wizardSteps(
+        simulated,
+        remoteConsolidation
+            ? 'REMOTE_CONSOLIDATION'
+            : remoteMode
+              ? 'REMOTE'
+              : null,
+    );
 
     useEffect(() => {
         setActiveStep(project.current_step);
@@ -327,7 +339,7 @@ export default function ProjectShow({
                 )}
                 {activeStep === 3 && remoteMode && (
                     <RemoteOptionsStep
-                        consolidation={mode === 'REMOTE_CONSOLIDATION'}
+                        consolidation={remoteConsolidation}
                         onBack={() => setActiveStep(2)}
                         onNext={() => setActiveStep(4)}
                     />
@@ -482,12 +494,14 @@ function InstancesStep({
         field: K,
         value: InstanceDraft[K],
     ) => {
-        form.setData(
-            'instances',
-            form.data.instances.map((instance, current) =>
+        // From the latest data, not this render's: quick clicks on several
+        // fields would otherwise overwrite each other with a stale copy.
+        form.setData((data) => ({
+            ...data,
+            instances: data.instances.map((instance, current) =>
                 current === index ? { ...instance, [field]: value } : instance,
             ),
-        );
+        }));
     };
 
     return (
@@ -543,13 +557,15 @@ function InstancesStep({
                                             variant="ghost"
                                             size="sm"
                                             onClick={() =>
-                                                form.setData(
-                                                    'instances',
-                                                    form.data.instances.filter(
-                                                        (_, current) =>
-                                                            current !== index,
-                                                    ),
-                                                )
+                                                form.setData((data) => ({
+                                                    ...data,
+                                                    instances:
+                                                        data.instances.filter(
+                                                            (_, current) =>
+                                                                current !==
+                                                                index,
+                                                        ),
+                                                }))
                                             }
                                         >
                                             <Trash2 /> Quitar
@@ -688,14 +704,17 @@ function InstancesStep({
                             type="button"
                             variant="outline"
                             onClick={() =>
-                                form.setData('instances', [
-                                    ...form.data.instances,
-                                    blankInstance(
-                                        'SOURCE',
-                                        project.type,
-                                        sourceCount + 1,
-                                    ),
-                                ])
+                                form.setData((data) => ({
+                                    ...data,
+                                    instances: [
+                                        ...data.instances,
+                                        blankInstance(
+                                            'SOURCE',
+                                            project.type,
+                                            sourceCount + 1,
+                                        ),
+                                    ],
+                                }))
                             }
                         >
                             <Plus /> Agregar origen

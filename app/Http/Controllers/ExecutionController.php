@@ -14,7 +14,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Inertia\Inertia;
-use Inertia\Response;
+use Symfony\Component\HttpFoundation\Response;
 
 class ExecutionController extends Controller
 {
@@ -76,7 +76,7 @@ class ExecutionController extends Controller
         $execution->load(['steps', 'conflicts', 'checkpoints', 'resumedFromExecution']);
         $events = $execution->events()->orderBy('sequence')->limit(200)->get();
 
-        return Inertia::render('projects/executions/show', [
+        $response = Inertia::render('projects/executions/show', [
             'project' => [
                 'uuid' => $project->uuid,
                 'name' => $project->name,
@@ -89,7 +89,12 @@ class ExecutionController extends Controller
             'events' => $events->map(fn ($event): array => $presenter->event($event))->values(),
             'canControl' => $request->user()->can('control', $execution),
             'realtimeChannel' => $channels->current($project, $request->session()->getId()),
-        ]);
+        ])->toResponse($request);
+        // A tracking screen must never come back from the browser cache: a
+        // reload has to show the status the server holds now.
+        $response->headers->set('Cache-Control', 'no-store, private');
+
+        return $response;
     }
 
     private function ensureBelongsToProject(Project $project, Execution $execution): void

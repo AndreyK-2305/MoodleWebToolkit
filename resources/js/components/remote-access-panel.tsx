@@ -169,6 +169,7 @@ export type AvailablePackage = {
 export type RemoteAccess = {
     enabled: boolean;
     agent_version: string | null;
+    default_region: string;
     available_packages: AvailablePackage[];
     servers: RemoteServer[];
 };
@@ -248,6 +249,7 @@ export default function RemoteAccessPanel({
                             projectUuid={projectUuid}
                             server={server}
                             agentVersion={access.agent_version}
+                            defaultRegion={access.default_region}
                             availablePackages={access.available_packages}
                             editable={editable}
                         />
@@ -262,12 +264,14 @@ function ServerConnection({
     projectUuid,
     server,
     agentVersion,
+    defaultRegion,
     availablePackages,
     editable,
 }: {
     projectUuid: string;
     server: RemoteServer;
     agentVersion: string | null;
+    defaultRegion: string;
     availablePackages: AvailablePackage[];
     editable: boolean;
 }) {
@@ -276,7 +280,7 @@ function ServerConnection({
     const form = useForm({
         type: (connection?.type ?? 'aws-ssm') as ConnectionType,
         instance_id: connection?.instance_id ?? '',
-        region: connection?.region ?? 'us-east-1',
+        region: connection?.region ?? defaultRegion,
         host: connection?.host ?? server.host ?? '',
         port: connection?.port ?? 22,
         user: connection?.user ?? 'ubuntu',
@@ -963,52 +967,76 @@ function Preparation({
                                     )}
                                 </ul>
                             </div>
-                            <label className="flex gap-2">
-                                <input
-                                    type="radio"
-                                    name={`prepare-${destination.id}`}
-                                    checked={prepare.data.reset}
-                                    onChange={() =>
-                                        prepare.setData('reset', true)
-                                    }
-                                />
-                                <span>
-                                    <span className="font-medium">
-                                        Limpiar el destino y preparar
+                            <fieldset className="space-y-3">
+                                <legend className="sr-only">
+                                    Cómo preparar el destino
+                                </legend>
+                                <label className="flex gap-2">
+                                    <input
+                                        type="radio"
+                                        name={`prepare-${destination.id}`}
+                                        checked={prepare.data.reset}
+                                        aria-labelledby={`prepare-reset-${destination.id}`}
+                                        aria-describedby={`prepare-reset-${destination.id}-detail`}
+                                        onChange={() =>
+                                            prepare.setData('reset', true)
+                                        }
+                                    />
+                                    <span>
+                                        <span
+                                            id={`prepare-reset-${destination.id}`}
+                                            className="font-medium"
+                                        >
+                                            Limpiar el destino y preparar
+                                        </span>
+                                        <span
+                                            id={`prepare-reset-${destination.id}-detail`}
+                                            className="text-muted-foreground block text-xs"
+                                        >
+                                            Elimina los servicios, los volúmenes
+                                            y el estado del sitio anterior, y
+                                            restaura el Consolidador verificado.
+                                            Conserva el .env del administrador;
+                                            las copias ya respaldadas en S3 no
+                                            se tocan. El Moodle queda nuevo: el
+                                            servicio Google OAuth2 se configura
+                                            de nuevo cuando la Ejecución lo
+                                            pida.
+                                        </span>
                                     </span>
-                                    <span className="text-muted-foreground block text-xs">
-                                        Elimina los servicios, los volúmenes y
-                                        el estado del sitio anterior, y restaura
-                                        el Consolidador verificado. Conserva el
-                                        .env del administrador; las copias ya
-                                        respaldadas en S3 no se tocan. El Moodle
-                                        queda nuevo: el servicio Google OAuth2
-                                        se configura de nuevo cuando la
-                                        Ejecución lo pida.
+                                </label>
+                                <label className="flex gap-2">
+                                    <input
+                                        type="radio"
+                                        name={`prepare-${destination.id}`}
+                                        checked={!prepare.data.reset}
+                                        disabled={
+                                            destination.destination_written
+                                        }
+                                        aria-labelledby={`prepare-keep-${destination.id}`}
+                                        aria-describedby={`prepare-keep-${destination.id}-detail`}
+                                        onChange={() =>
+                                            prepare.setData('reset', false)
+                                        }
+                                    />
+                                    <span>
+                                        <span
+                                            id={`prepare-keep-${destination.id}`}
+                                            className="font-medium"
+                                        >
+                                            Preparar sobre el destino existente
+                                        </span>
+                                        <span
+                                            id={`prepare-keep-${destination.id}-detail`}
+                                            className="text-muted-foreground block text-xs"
+                                        >
+                                            {destination.destination_written
+                                                ? 'No disponible: el destino ya recibió una consolidación.'
+                                                : 'Propenso a colisiones con el sitio anterior si Caddy, el DNS y los servicios relacionados no están configurados correctamente.'}
+                                        </span>
                                     </span>
-                                </span>
-                            </label>
-                            <label className="flex gap-2">
-                                <input
-                                    type="radio"
-                                    name={`prepare-${destination.id}`}
-                                    checked={!prepare.data.reset}
-                                    disabled={destination.destination_written}
-                                    onChange={() =>
-                                        prepare.setData('reset', false)
-                                    }
-                                />
-                                <span>
-                                    <span className="font-medium">
-                                        Preparar sobre el destino existente
-                                    </span>
-                                    <span className="text-muted-foreground block text-xs">
-                                        {destination.destination_written
-                                            ? 'No disponible: el destino ya recibió una consolidación.'
-                                            : 'Propenso a colisiones con el sitio anterior si Caddy, el DNS y los servicios relacionados no están configurados correctamente.'}
-                                    </span>
-                                </span>
-                            </label>
+                                </label>
+                            </fieldset>
                             {admin ? (
                                 <div className="space-y-1">
                                     <Label
@@ -1283,6 +1311,20 @@ function DestinationPackages({
                     >
                         Transferir
                     </Button>
+                    {active && (
+                        <p className="text-muted-foreground basis-full text-xs">
+                            Hay una transferencia en curso hacia este destino;
+                            podrá traer otro paquete cuando termine.
+                        </p>
+                    )}
+                    {fetch.errors.source_package && (
+                        <p
+                            role="alert"
+                            className="text-destructive basis-full text-xs"
+                        >
+                            {fetch.errors.source_package}
+                        </p>
+                    )}
                 </form>
             )}
             {destination.fetches.length > 0 && (

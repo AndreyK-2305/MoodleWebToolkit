@@ -149,7 +149,8 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->queueReport(['stage' => '02-oauth2', 'status' => 'waiting_manual',
             'message' => 'Google OAuth2 aún no está listo. MOODLE_DB_PASSWORD=supersecreto123'], ['reports\\oauth2-configuracion-manual.txt']);
         $this->queueIntervention('oauth2', [
-            'oauth2_manual' => "1. Registre en Google Cloud la URI https://campus.example.edu/admin/oauth2callback.php\nclient_secret=no-debe-salir\n",
+            'oauth2_manual' => "1. Registre en Google Cloud la URI https://campus.example.edu/admin/oauth2callback.php\nclient_secret=no-debe-salir\n\n"
+                ."5. Regrese al asistente y use reintentar/continuar. Si la ejecución\nestaba en segundo plano, ejecute de nuevo\n./INICIAR-SEGUNDO-PLANO.sh.\n",
             'oauth2_validation' => (string) json_encode(['callback_uri' => 'https://campus.example.edu/admin/oauth2callback.php',
                 'issues' => ['No existe un servicio Google habilitado.', ['message' => 'Falta mostrarlo en la página de acceso.']]]),
             'oauth2_live' => null,
@@ -168,6 +169,10 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
             ->assertJsonPath('execution.conflicts.0.intervention.callback_uri', 'https://campus.example.edu/admin/oauth2callback.php')
             ->assertJsonPath('execution.conflicts.0.intervention.issues', ['No existe un servicio Google habilitado.', 'Falta mostrarlo en la página de acceso.']);
         $this->assertStringContainsString('Registre en Google Cloud', (string) $page->json('execution.conflicts.0.intervention.instructions'));
+        // The console steps are for the server's administrator, not for the web user.
+        $this->assertStringContainsString('5. Vuelva a esta página y confirme la intervención.', (string) $page->json('execution.conflicts.0.intervention.instructions'));
+        $this->assertStringNotContainsString('INICIAR-SEGUNDO-PLANO', (string) $page->json('execution.conflicts.0.intervention.instructions'));
+        $this->assertStringContainsString('./INICIAR-SEGUNDO-PLANO.sh', (string) $page->json('execution.conflicts.0.intervention.server_instructions'));
         $this->assertStringNotContainsString('no-debe-salir', (string) json_encode($conflict->details));
         // Waiting is a resting state: the scheduler does not call the server.
         $this->artisan('executions:reconcile-remote-operations')->assertSuccessful();

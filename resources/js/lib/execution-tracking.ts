@@ -85,3 +85,51 @@ export function resumePayload(
 
     return checkpointId === null ? null : { checkpoint_id: checkpointId };
 }
+
+export type ProgressDisplay = {
+    label: string;
+    value: number | null;
+    active: boolean;
+};
+
+/**
+ * What the progress card says. Tools report a percentage only while they run;
+ * outside that window the execution status is the meaningful answer.
+ */
+export function progressDisplay(
+    status: string,
+    progress: number | null,
+): ProgressDisplay {
+    if (status === 'REVIEW') {
+        return { label: 'Terminada · en revisión', value: 100, active: false };
+    }
+
+    if (status === 'COMPLETED') {
+        return { label: 'Finalizada', value: 100, active: false };
+    }
+
+    if (progress !== null) {
+        return { label: `${progress} %`, value: progress, active: false };
+    }
+
+    switch (status) {
+        case 'QUEUED':
+            return { label: 'En cola', value: null, active: false };
+        case 'WAITING_USER_ACTION':
+            return {
+                label: 'En pausa · requiere su intervención',
+                value: null,
+                active: false,
+            };
+        case 'FAILED':
+            return {
+                label: 'Detenida por un error',
+                value: null,
+                active: false,
+            };
+        case 'CANCELLED':
+            return { label: 'Cancelada', value: null, active: false };
+        default:
+            return { label: 'En curso', value: null, active: true };
+    }
+}
