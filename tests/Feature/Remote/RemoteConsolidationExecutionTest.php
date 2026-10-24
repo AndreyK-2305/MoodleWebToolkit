@@ -474,7 +474,8 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $conflict = $execution->conflicts()->sole();
         $this->assertSame(['IDENTITY_REVIEW', ['APPLY_ANSWERS', 'CONFIRM_COMPLETED']], [$conflict->type, $conflict->details['allowed_decisions']]);
         $this->assertSame(['FUZZ-0001', 'FUZZ-0002'], array_column($conflict->details['candidates'], 'group'));
-        $this->assertSame([['key' => 'pregrado:12', 'name' => 'Ana María Pérez', 'email' => 'ana.perez@ufps.edu.co', 'username' => 'u12', 'document' => '…1234']],
+        // jsonb stores keys by length, then bytes: document before username.
+        $this->assertSame([['key' => 'pregrado:12', 'name' => 'Ana María Pérez', 'email' => 'ana.perez@ufps.edu.co', 'document' => '…1234', 'username' => 'u12']],
             $conflict->details['candidates'][0]['a']['accounts']);
         // The personal data reaches the administrator's review only, never the events.
         $this->assertStringNotContainsString('ana.perez@ufps.edu.co', (string) json_encode($execution->events()->get()));
