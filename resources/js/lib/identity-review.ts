@@ -281,6 +281,37 @@ export function isEvidentMatch(candidate: IdentityCandidate): boolean {
 
 export const MIN_JUSTIFICATION = 3;
 
+/**
+ * The evident groups still undecided, offered to merge at once. A single one
+ * qualifies too: in the 2026-10-24 test the action asked for two and never
+ * appeared for the one evident case.
+ */
+export function evidentCases(
+    candidates: IdentityCandidate[],
+    decisions: IdentityDecision[],
+): { candidate: IdentityCandidate; index: number }[] {
+    return candidates
+        .map((candidate, index) => ({ candidate, index }))
+        .filter(
+            ({ candidate, index }) =>
+                isEvidentMatch(candidate) &&
+                decisions[index]?.resolution === '',
+        );
+}
+
+/** Merges the evident groups with one reason; the kept account and its defaults stay as they are. */
+export function mergeEvident(
+    decisions: IdentityDecision[],
+    evident: { index: number }[],
+    reason: string,
+): IdentityDecision[] {
+    return decisions.map((decision, position) =>
+        evident.some(({ index }) => index === position)
+            ? { ...decision, resolution: 'MERGE', justification: reason.trim() }
+            : decision,
+    );
+}
+
 /** What a decision still lacks, or null when it is complete. */
 export function decisionGap(decision: IdentityDecision): string | null {
     if (decision.resolution === '') {

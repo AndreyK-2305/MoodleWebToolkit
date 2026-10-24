@@ -49,10 +49,11 @@ import {
     identityFacts,
     identityMembers,
     initialDecision,
-    isEvidentMatch,
+    evidentCases,
     keepsDuplicateEmail,
     matchReasons,
     memberLabel,
+    mergeEvident,
     MIN_JUSTIFICATION,
     resolutionLabels,
 } from '@/lib/identity-review';
@@ -60,6 +61,15 @@ import type {
     IdentityCandidate,
     IdentityDecision,
 } from '@/lib/identity-review';
+import {
+    answersSentFor,
+    conflictSignature,
+    interventionPanel,
+} from '@/lib/intervention-state';
+import type {
+    AnsweredConflict,
+    InterventionPanel,
+} from '@/lib/intervention-state';
 import { cn } from '@/lib/utils';
 
 type Step = {
@@ -705,6 +715,51 @@ function ExecutionTracker({
         };
     }, [backupRunning, catchUp]);
 
+    const panel = interventionPanel(execution, events);
+    const preparing = panel.kind === 'preparing';
+
+    useEffect(() => {
+        if (!preparing) {
+            return;
+        }
+
+        // The next intervention is read from the destination after the Execution
+        // waits; follow closely until its form arrives.
+        const follow = window.setInterval(() => void catchUp(), 3_000);
+
+        return () => window.clearInterval(follow);
+    }, [preparing, catchUp]);
+
+    const syncedSignature = useRef(
+        conflictSignature(initialExecution.conflicts),
+    );
+    const signature = conflictSignature(execution.conflicts);
+
+    useEffect(() => {
+        // In the 2026-10-24 test the page props (history.state) still held only the
+        // answered conflict: read them again once the tracking brings a newer set,
+        // so a back/forward restore or a remount shows the same form.
+        if (
+            signature === syncedSignature.current ||
+            signature === conflictSignature(initialExecution.conflicts) ||
+            execution.last_event_sequence <=
+                initialExecution.last_event_sequence
+        ) {
+            return;
+        }
+
+        syncedSignature.current = signature;
+        router.reload({
+            only: ['execution', 'review', 'events'],
+            async: true,
+        });
+    }, [
+        signature,
+        execution.last_event_sequence,
+        initialExecution.conflicts,
+        initialExecution.last_event_sequence,
+    ]);
+
     const progress = progressDisplay(execution.status, execution.progress);
 
     return (
@@ -827,6 +882,7 @@ function ExecutionTracker({
                         projectUuid={project.uuid}
                         execution={execution}
                         review={review}
+                        panel={panel}
                         disabled={updatesPaused}
                     />
                 )}
@@ -837,9 +893,7 @@ function ExecutionTracker({
                         executionUuid={execution.uuid}
                         consolidation={execution.consolidation}
                         status={execution.status}
-                        awaitingAnswer={execution.conflicts.some(
-                            (conflict) => conflict.status === 'OPEN',
-                        )}
+                        panel={panel.kind}
                         canControl={canControl && !updatesPaused}
                     />
                 )}
@@ -1488,11 +1542,13 @@ function ExecutionActions({
     projectUuid,
     execution,
     review,
+    panel,
     disabled,
 }: {
     projectUuid: string;
     execution: ExecutionData;
     review: ReviewData;
+    panel: InterventionPanel<ConflictData>;
     disabled: boolean;
 }) {
     const [cancelKey] = useState(() => crypto.randomUUID());
@@ -1520,8 +1576,6 @@ function ExecutionActions({
         'WAITING_USER_ACTION',
         'VERIFYING',
     ].includes(execution.status);
-    const answered = answeredIntervention(execution);
-
     if (execution.status === 'COMPLETED') {
         return null;
     }
@@ -1536,22 +1590,22 @@ function ExecutionActions({
                 </p>
             </CardHeader>
             <CardContent className="space-y-4">
-                {execution.conflicts
-                    .filter((conflict) => conflict.status === 'OPEN')
-                    .map((conflict) => (
+                {panel.kind === 'open' &&
+                    panel.conflicts.map((conflict) => (
                         <ConflictAction
-                            key={conflict.id}
+                            key={`${conflict.id}:${conflict.version}`}
                             projectUuid={projectUuid}
                             executionUuid={execution.uuid}
                             conflict={conflict}
                             disabled={disabled}
                         />
                     ))}
-                {answered && (
+                {panel.kind === 'answered' && (
                     <AnswersSent
-                        summary={answered.intervention?.answer_summary}
+                        summary={panel.conflict.intervention?.answer_summary}
                     />
                 )}
+                {panel.kind === 'preparing' && <NextInterventionPending />}
 
                 <div className="flex flex-wrap gap-2">
                     {execution.collector?.can_fresh_export && (
@@ -1768,25 +1822,24 @@ function ExecutionActions({
     );
 }
 
-/**
- * The intervention answered last, while the Consolidator is still on its stage:
- * its confirmation stays visible until the destination moves on.
- */
-function answeredIntervention(execution: ExecutionData): ConflictData | null {
-    if (execution.conflicts.some((conflict) => conflict.status === 'OPEN')) {
-        return null;
-    }
-    const last = [...execution.conflicts]
-        .reverse()
-        .find((conflict) => conflict.intervention?.answer_summary);
-    return last &&
-        ['QUEUED', 'RUNNING', 'WAITING_USER_ACTION'].includes(
-            execution.status,
-        ) &&
-        (execution.consolidation?.stage ?? null) ===
-            (last.intervention?.stage ?? null)
-        ? last
-        : null;
+/** The Execution waits again and its next intervention is still being read from the destination. */
+function NextInterventionPending() {
+    return (
+        <div
+            role="status"
+            className="flex items-start gap-2 rounded-lg border p-4 text-sm"
+        >
+            <CircleDashed className="mt-0.5 size-4 shrink-0 animate-spin" />
+            <div>
+                <p className="font-medium">
+                    El Consolidador prepara la siguiente decisión
+                </p>
+                <p className="text-muted-foreground">
+                    Aparecerá aquí en unos segundos, sin recargar la página.
+                </p>
+            </div>
+        </div>
+    );
 }
 
 const consolidationStages: Record<string, string> = {
@@ -1819,14 +1872,14 @@ function ConsolidationStatus({
     executionUuid,
     consolidation,
     status,
-    awaitingAnswer,
+    panel,
     canControl,
 }: {
     projectUuid: string;
     executionUuid: string;
     consolidation: ConsolidationData;
     status: string;
-    awaitingAnswer: boolean;
+    panel: InterventionPanel<ConflictData>['kind'];
     canControl: boolean;
 }) {
     const backupForm = useForm({});
@@ -1882,9 +1935,11 @@ function ConsolidationStatus({
                                     'El Consolidador espera una decisión.'}
                             </p>
                             <p className="text-xs">
-                                {awaitingAnswer
+                                {panel === 'open'
                                     ? 'Respóndala más abajo, en «Acciones controladas».'
-                                    : 'Su respuesta quedó registrada; el destino la está aplicando.'}
+                                    : panel === 'preparing'
+                                      ? 'La decisión aparecerá más abajo en unos segundos.'
+                                      : 'Su respuesta quedó registrada; el destino la está aplicando.'}
                             </p>
                             <ServerDetails
                                 message={consolidation.server_message}
@@ -2732,7 +2787,7 @@ function useInterventionAnswers(
 ) {
     const [key] = useState(() => crypto.randomUUID());
     const [processing, setProcessing] = useState(false);
-    const [sent, setSent] = useState(false);
+    const [answered, setAnswered] = useState<AnsweredConflict | null>(null);
     const [errors, setErrors] = useState<Record<string, string>>({});
     const send = (data: Record<string, unknown>) =>
         router.post(
@@ -2745,13 +2800,18 @@ function useInterventionAnswers(
                 onFinish: () => setProcessing(false),
                 onSuccess: () => {
                     setErrors({});
-                    setSent(true);
+                    setAnswered({ id: conflict.id, version: conflict.version });
                 },
                 onError: (found) => setErrors(found),
             },
         );
 
-    return { send, processing, errors, sent };
+    return {
+        send,
+        processing,
+        errors,
+        sent: answersSentFor(answered, conflict),
+    };
 }
 
 /** Shown once the answers are sent, and kept while the destination applies them. */
@@ -2879,12 +2939,7 @@ function IdentityReview({
     const gaps = decisions.map(decisionGap);
     const decided = gaps.filter((gap) => gap === null).length;
     const complete = decided === decisions.length;
-    const evident = candidates
-        .map((candidate, index) => ({ candidate, index }))
-        .filter(
-            ({ candidate, index }) =>
-                isEvidentMatch(candidate) && decisions[index].resolution === '',
-        );
+    const evident = evidentCases(candidates, decisions);
 
     return (
         <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-900 dark:bg-amber-950/30">
@@ -2914,15 +2969,19 @@ function IdentityReview({
             <p className="font-medium" aria-live="polite">
                 {decided} de {decisions.length} decididos
             </p>
-            {evident.length > 1 && (
+            {evident.length > 0 && (
                 <div className="bg-background space-y-2 rounded-md border p-3 text-xs">
                     <p className="font-medium">
-                        {evident.length} casos tienen el mismo correo y el mismo
-                        documento
+                        {evident.length === 1
+                            ? '1 caso tiene'
+                            : `${evident.length} casos tienen`}{' '}
+                        el mismo correo y el mismo documento
                     </p>
                     <p className="text-muted-foreground">
-                        Puede unirlos todos de una vez. Cada uno conserva la
-                        cuenta, el correo y el usuario de la primera cuenta;
+                        {evident.length === 1
+                            ? 'Puede unirlo de una vez. Conserva'
+                            : 'Puede unirlos todos de una vez. Cada uno conserva'}{' '}
+                        la cuenta, el correo y el usuario de la primera cuenta;
                         después puede revisar o cambiar cualquiera.
                     </p>
                     <div className="flex flex-wrap gap-2">
@@ -2944,22 +3003,13 @@ function IdentityReview({
                             }
                             onClick={() =>
                                 setDecisions((current) =>
-                                    current.map((decision, position) =>
-                                        evident.some(
-                                            ({ index }) => index === position,
-                                        )
-                                            ? {
-                                                  ...decision,
-                                                  resolution: 'MERGE',
-                                                  justification:
-                                                      bulkReason.trim(),
-                                              }
-                                            : decision,
-                                    ),
+                                    mergeEvident(current, evident, bulkReason),
                                 )
                             }
                         >
-                            Unir los {evident.length} casos evidentes
+                            {evident.length === 1
+                                ? 'Unir el caso evidente'
+                                : `Unir los ${evident.length} casos evidentes`}
                         </Button>
                     </div>
                 </div>

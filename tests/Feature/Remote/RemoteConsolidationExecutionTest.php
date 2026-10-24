@@ -515,6 +515,24 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame('consolidator-run-2', $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)
             ->orderByDesc('id')->value('idempotency_key'));
         $this->assertSame(0, $this->transport->pending());
+
+        // 2026-10-24: the next stop (themes) reached the page only after a manual reload. Its
+        // conflict is announced with its own event, so the tracking poll brings the new form.
+        $resolved = (int) $execution->events()->where('type', 'conflict.resolved')->value('sequence');
+        $next = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)->orderByDesc('id')->firstOrFail();
+        $this->queueStatus(alive: false, exit: ['exit_code' => 20, 'cancel_requested' => false, 'finished_at' => '2026-10-21T13:00:00Z']);
+        $this->queueReport(['stage' => '05b-readiness', 'status' => 'blocked', 'message' => 'V8_THEME_SELECTION_REQUIRED: defina global_theme_selection.']);
+        $this->transport->ok('theme-options', ['themes' => ['boost'], 'selected' => '', 'default' => 'boost', 'legacy_sources' => [], 'legacy_accepted' => false]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($next->id));
+        $theme = $execution->conflicts()->where('status', 'OPEN')->sole();
+        $opened = $execution->events()->where('type', 'consolidator.intervention_opened')->orderByDesc('sequence')->firstOrFail();
+        $this->assertSame([$theme->key, 'THEME_SELECTION'], [$opened->payload['conflict_key'], $opened->payload['conflict_type']]);
+        $this->assertGreaterThan($execution->events()->where('type', 'consolidator.waiting_user_action')->max('sequence'), $opened->sequence);
+        $poll = $this->getJson(route('projects.executions.events', [$this->project, $execution]).'?after='.$resolved)->assertOk();
+        $this->assertSame('WAITING_USER_ACTION', $poll->json('execution.status'));
+        $this->assertSame([[$conflict->id, 'RESOLVED'], [$theme->id, 'OPEN']],
+            array_map(fn (array $item): array => [$item['id'], $item['status']], $poll->json('execution.conflicts')));
+        $this->assertContains('consolidator.intervention_opened', array_column($poll->json('events'), 'type'));
     }
 
     public function test_the_global_theme_is_chosen_in_the_platform_and_a_rejected_answer_opens_the_intervention_again(): void
