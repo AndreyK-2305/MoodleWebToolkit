@@ -532,6 +532,7 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertGreaterThan($execution->events()->where('type', 'consolidator.waiting_user_action')->max('sequence'), $opened->last()->sequence);
         $poll = $this->getJson(route('projects.executions.events', [$this->project, $execution]).'?after='.$resolved)->assertOk();
         $this->assertSame('WAITING_USER_ACTION', $poll->json('execution.status'));
+        // The presenter lists the conflicts in the order they were opened (id ascending).
         $this->assertSame([[$conflict->id, 'RESOLVED'], [$theme->id, 'OPEN']],
             array_map(fn (array $item): array => [$item['id'], $item['status']], $poll->json('execution.conflicts')));
         $this->assertContains('consolidator.intervention_opened', array_column($poll->json('events'), 'type'));

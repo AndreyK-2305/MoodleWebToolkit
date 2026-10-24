@@ -185,5 +185,8 @@ describe('conflictSignature', () => {
         expect(conflictSignature([identity(), theme()])).not.toBe(before);
         expect(conflictSignature([identity({ version: 3 })])).not.toBe(before);
         expect(conflictSignature([identity()])).toBe(before);
+        expect(conflictSignature([theme(), identity()])).toBe(
+            conflictSignature([identity(), theme()]),
+        );
     });
 });

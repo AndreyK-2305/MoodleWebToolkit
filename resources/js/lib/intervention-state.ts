@@ -156,7 +156,9 @@ export function interventionPanel<C extends InterventionConflict>(
 export function conflictSignature(
     conflicts: Pick<InterventionConflict, 'id' | 'status' | 'version'>[],
 ): string {
-    return conflicts
+    // Independent of the order the snapshot lists them in.
+    return [...conflicts]
+        .sort((left, right) => left.id - right.id)
         .map(
             (conflict) =>
                 `${conflict.id}:${conflict.status}:${conflict.version}`,
