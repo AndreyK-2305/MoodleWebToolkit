@@ -72,7 +72,9 @@ class ExecutionPresenter
                 ])
                 ->values()
                 ->all(),
+            // In the order they were opened: Postgres returns an updated row anywhere.
             'conflicts' => $execution->conflicts
+                ->sortBy('id')
                 ->map(fn (Conflict $conflict): array => [
                     'id' => $conflict->getKey(),
                     'key' => $conflict->key,

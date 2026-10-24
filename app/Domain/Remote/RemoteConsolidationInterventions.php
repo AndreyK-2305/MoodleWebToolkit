@@ -3,13 +3,16 @@
 namespace App\Domain\Remote;
 
 use App\Domain\Artifacts\SensitiveValueRedactor;
+use App\Domain\Executions\ExecutionEventRecorder;
 use App\Domain\Remote\DTOs\RemoteTarget;
 use App\Enums\ConflictStatus;
+use App\Enums\EventSeverity;
 use App\Exceptions\RemoteAgentUnavailable;
 use App\Models\Conflict;
 use App\Models\Execution;
 use App\Models\ExecutionStep;
 use App\Models\Server;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Typed interventions of a remote consolidation. When the assistant waits for
@@ -55,10 +58,16 @@ class RemoteConsolidationInterventions
 
     private const OAUTH2_STAGES = ['02-oauth2', '03b-oauth2-final'];
 
+    /** How the timeline names each intervention. */
+    private const TITLES = [self::OAUTH2 => 'configurar Google OAuth2', self::PLUGINS => 'plugins requeridos por los orígenes',
+        self::IDENTITY => 'revisar posibles identidades duplicadas', self::THEMES => 'elegir la apariencia del Moodle consolidado',
+        self::GENERIC => 'el Consolidador necesita una decisión'];
+
     public function __construct(
         private readonly RemoteServerConnections $connections,
         private readonly RemoteAgent $agent,
         private readonly SensitiveValueRedactor $redactor,
+        private readonly ExecutionEventRecorder $events,
     ) {}
 
     /**
@@ -121,8 +130,20 @@ class RemoteConsolidationInterventions
     {
         $step = ExecutionStep::query()->where('execution_id', $execution->id)->where('step_key', $stage ?? '01-importar-paquetes')->first();
 
-        return Conflict::query()->firstOrCreate(['execution_id' => $execution->id, 'key' => $key],
-            ['execution_step_id' => $step?->id, 'type' => $type, 'status' => ConflictStatus::OPEN, 'version' => 1, 'details' => $details]);
+        // The Execution already waits when its intervention is read from the destination: the
+        // conflict is announced with its own event, in the same commit, so the tracking screen
+        // (realtime or polling) brings the new form without a reload.
+        return DB::transaction(function () use ($execution, $key, $type, $stage, $step, $details): Conflict {
+            $conflict = Conflict::query()->firstOrCreate(['execution_id' => $execution->id, 'key' => $key],
+                ['execution_step_id' => $step?->id, 'type' => $type, 'status' => ConflictStatus::OPEN, 'version' => 1, 'details' => $details]);
+            if ($conflict->wasRecentlyCreated) {
+                $this->events->record($execution, 'consolidator.intervention_opened', $stage, EventSeverity::WARNING,
+                    message: 'Nueva intervención: '.(self::TITLES[$type] ?? 'revise la decisión pendiente').'.',
+                    payload: ['conflict_key' => $key, 'conflict_type' => $type]);
+            }
+
+            return $conflict;
+        }, attempts: 3);
     }
 
     /**

@@ -515,6 +515,27 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame('consolidator-run-2', $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)
             ->orderByDesc('id')->value('idempotency_key'));
         $this->assertSame(0, $this->transport->pending());
+
+        // 2026-10-24: the next stop (themes) reached the page only after a manual reload. Its
+        // conflict is announced with its own event, so the tracking poll brings the new form.
+        $resolved = (int) $execution->events()->where('type', 'conflict.resolved')->value('sequence');
+        $next = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::COMMAND)->orderByDesc('id')->firstOrFail();
+        $this->queueStatus(alive: false, exit: ['exit_code' => 20, 'cancel_requested' => false, 'finished_at' => '2026-10-21T13:00:00Z']);
+        $this->queueReport(['stage' => '05b-readiness', 'status' => 'blocked', 'message' => 'V8_THEME_SELECTION_REQUIRED: defina global_theme_selection.']);
+        $this->transport->ok('theme-options', ['themes' => ['boost'], 'selected' => '', 'default' => 'boost', 'legacy_sources' => [], 'legacy_accepted' => false]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($next->id));
+        $theme = $execution->conflicts()->where('status', 'OPEN')->sole();
+        // Every conflict announces itself once, after the stop that opened it (events() is ordered ascending).
+        $opened = $execution->events()->where('type', 'consolidator.intervention_opened')->get();
+        $this->assertSame([[$conflict->key, 'IDENTITY_REVIEW'], [$theme->key, 'THEME_SELECTION']],
+            $opened->map(fn ($event): array => [$event->payload['conflict_key'], $event->payload['conflict_type']])->all());
+        $this->assertGreaterThan($execution->events()->where('type', 'consolidator.waiting_user_action')->max('sequence'), $opened->last()->sequence);
+        $poll = $this->getJson(route('projects.executions.events', [$this->project, $execution]).'?after='.$resolved)->assertOk();
+        $this->assertSame('WAITING_USER_ACTION', $poll->json('execution.status'));
+        // The presenter lists the conflicts in the order they were opened (id ascending).
+        $this->assertSame([[$conflict->id, 'RESOLVED'], [$theme->id, 'OPEN']],
+            array_map(fn (array $item): array => [$item['id'], $item['status']], $poll->json('execution.conflicts')));
+        $this->assertContains('consolidator.intervention_opened', array_column($poll->json('events'), 'type'));
     }
 
     public function test_the_global_theme_is_chosen_in_the_platform_and_a_rejected_answer_opens_the_intervention_again(): void
@@ -540,6 +561,11 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame('THEME_SELECTION', $again->type);
         $this->assertStringContainsString('destination_already_written', (string) $again->details['message']);
         $this->assertArrayNotHasKey('answers', $again->details);
+        // The reopened intervention is announced too, after the rejection, so the page shows its form.
+        $this->assertSame([$conflict->key, $again->key], $execution->events()->where('type', 'consolidator.intervention_opened')->get()
+            ->map(fn ($event): string => $event->payload['conflict_key'])->all());
+        $this->assertGreaterThan($execution->events()->where('type', 'consolidator.continue_blocked')->value('sequence'),
+            $execution->events()->where('type', 'consolidator.intervention_opened')->max('sequence'));
 
         $this->transport->ok('theme-policy-set', ['destination' => 'campus', 'theme' => 'classic', 'legacy_accepted' => false]);
         $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);

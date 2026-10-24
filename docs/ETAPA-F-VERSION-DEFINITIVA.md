@@ -149,3 +149,53 @@ Antes de la próxima prueba hay que actualizar el agente del destino con «Insta
   Playwright (preflight con error) corren en CI.
 - La interfaz de la revisión de identidades no se probó en un navegador contra un destino real. Se
   confirma en la próxima prueba en AWS, con el agente 1.14.0.
+
+## F3: segunda prueba de las intervenciones (2026-10-24)
+
+Una segunda prueba solo desde la web, con el mismo laboratorio, llegó a COMPLETED y confirmó la mayoría
+de las correcciones de F2. Quedaron dos fallas.
+
+### La confirmación tapaba la intervención siguiente
+
+Después de responder la revisión de identidades, el encabezado ya mostraba WAITING_USER_ACTION por la
+elección de apariencia, pero el panel seguía con «Respuestas enviadas». El formulario nuevo solo
+aparecía al recargar la página.
+
+Causas:
+
+1. Las dos intervenciones paran en `05b-readiness`. La confirmación se mostraba mientras la etapa fuera
+   la misma y no hubiera un conflicto abierto.
+2. La Execution pasa a WAITING_USER_ACTION y emite su evento antes de leer la intervención en el
+   destino. El conflicto nuevo se creaba después, sin evento propio. El aviso en tiempo real llegaba
+   antes que el conflicto, y nada volvía a avisar cuando el conflicto existía.
+3. El seguimiento actualiza el estado del componente, pero no los props de Inertia (`history.state`).
+
+Correcciones:
+
+- El backend crea el conflicto y el evento `consolidator.intervention_opened` en la misma transacción
+  (`RemoteConsolidationInterventions::create`). El evento llega por tiempo real y por el sondeo junto
+  con el conflicto abierto.
+- `resources/js/lib/intervention-state.ts` decide qué muestra el panel. La confirmación pertenece al
+  conflicto respondido (id y versión). Desaparece cuando hay un conflicto más nuevo o cuando el
+  Consolidador vuelve a parar después de su `conflict.resolved`.
+- Si la Execution espera y la intervención todavía no llegó, el panel muestra «El Consolidador prepara
+  la siguiente decisión» y consulta cada 3 s hasta que llega el formulario.
+- Cuando el seguimiento trae un conjunto de conflictos que los props no tienen, la página relee sus
+  props (`router.reload` asíncrono). Así una restauración o un remontaje muestran el mismo formulario.
+- Cada formulario se identifica por el id y la versión del conflicto.
+
+### «Unir de una vez los casos evidentes» no apareció
+
+Un solo caso cumplía la regla: Laura Gómez, coincidencia alta, mismo correo y documentos terminados en 1006. Los datos llegaban bien (`confidence` = `HIGH`, `identifier_match` = `'true'`). La acción pedía
+al menos dos casos evidentes (`evident.length > 1`). Ahora basta uno, con el texto en singular («Unir el
+caso evidente»). La lógica está en `evidentCases` y `mergeEvident` (`identity-review.ts`).
+
+### Verificación
+
+- En local pasan Pint, PHPStan, `npx vp check --fix`, `tsc` y Vitest (`intervention-state.test.ts` e
+  `identity-review.test.ts`).
+- La prueba Feature extendida en `RemoteConsolidationExecutionTest` responde la revisión de identidades.
+  Después, la ejecución para en la elección de apariencia, y el sondeo de eventos trae el conflicto
+  abierto y su evento sin recargar. Corre en CI porque no hay Docker local.
+- No se agregó una prueba Playwright. La suite e2e no tiene fixtures de consolidación remota. La
+  próxima prueba en AWS confirma el flujo en el navegador.

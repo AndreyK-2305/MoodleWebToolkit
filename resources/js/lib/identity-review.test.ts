@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     chooseCanonical,
     decisionGap,
+    evidentCases,
     defaultUsername,
     identityFacts,
     identityMembers,
@@ -10,6 +11,7 @@ import {
     keepsDuplicateEmail,
     matchReasons,
     memberLabel,
+    mergeEvident,
 } from './identity-review';
 import type { IdentityCandidate } from './identity-review';
 
@@ -138,6 +140,37 @@ describe('identity review', () => {
         expect(isEvidentMatch(same)).toBe(true);
         expect(isEvidentMatch(candidate())).toBe(false);
         expect(isEvidentMatch({ ...same, confidence: 'MEDIUM' })).toBe(false);
+    });
+
+    it('offers the bulk merge for a single evident case too (2026-10-24: Laura Gómez, …1006)', () => {
+        const evident = candidate({
+            group: 'CAND-LAURA',
+            identifier_match: 'true',
+        });
+        evident.b.email = evident.a.email;
+        const doubtful = candidate({ group: 'CAND-OTHER' });
+        const groups = [doubtful, evident];
+        const decisions = groups.map(initialDecision);
+
+        const found = evidentCases(groups, decisions);
+        expect(found.map(({ index }) => index)).toEqual([1]);
+
+        const merged = mergeEvident(
+            decisions,
+            found,
+            '  Mismo correo y documento ',
+        );
+        expect(merged[0]).toEqual(decisions[0]);
+        expect(merged[1]).toMatchObject({
+            resolution: 'MERGE',
+            justification: 'Mismo correo y documento',
+            canonical_target: 'pregrado:3',
+            canonical_email: 'laura.gomez@uni-lab.example',
+            canonical_username: 'lgomez',
+        });
+        expect(decisionGap(merged[1])).toBeNull();
+        // Once decided, the case leaves the bulk action.
+        expect(evidentCases(groups, merged)).toEqual([]);
     });
 
     it('says what a decision lacks and warns when two accounts keep one e-mail', () => {
