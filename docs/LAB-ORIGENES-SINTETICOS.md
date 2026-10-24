@@ -59,7 +59,9 @@ El tercer argumento elige el modo (por defecto `seed`):
 
 Una ejecución completa imprime `COURSE LABSEED-...` por curso y termina con una
 línea `SEEDED {...}`. Por origen se esperan 4 categorías, 6 cursos, 10 usuarios,
-36 módulos, 18 mensajes de foro, 6 entregas y 6 intentos terminados.
+42 módulos (6 por curso más el foro de Avisos que Moodle crea en cada curso),
+18 mensajes de foro, 6 entregas y 6 intentos terminados. Así quedaron ambos
+orígenes en la primera ejecución (2026-10-24).
 
 Garantías del script:
 

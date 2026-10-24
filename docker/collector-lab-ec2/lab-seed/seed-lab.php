@@ -2,6 +2,7 @@
 
 use core\session\manager;
 use core_question\local\bank\question_version_status;
+use mod_quiz\quiz_attempt;
 use mod_quiz\quiz_settings;
 
 // Representative synthetic content for the two EC2 laboratory sources. The
@@ -300,9 +301,19 @@ function lab_seed_course(testing_data_generator $generator, string $variant, arr
     quiz_settings::create($quiz->id)->get_grade_calculator()->recompute_quiz_sumgrades();
     $admin = $USER;
     manager::set_user(core_user::get_user($second, '*', MUST_EXIST));
-    $quizzes = $generator->get_plugin_generator('mod_quiz');
-    $attempt = $quizzes->create_attempt($quiz->id, $second);
-    $quizzes->submit_responses($attempt->id, [1 => get_string('true', 'qtype_truefalse'), 2 => 'PHP'], false, true);
+    $attempt = quiz_attempt::create($generator->get_plugin_generator('mod_quiz')->create_attempt($quiz->id, $second)->id);
+    // The generator's submit_responses() needs a unit-test-only accessor; this is
+    // the POST data the attempt page would send.
+    $postdata = [];
+    foreach ([1 => get_string('true', 'qtype_truefalse'), 2 => 'PHP'] as $slot => $answer) {
+        $step = $attempt->get_question_attempt($slot);
+        $postdata[$step->get_control_field_name('sequencecheck')] = (string) $step->get_sequence_check_count();
+        foreach ($step->get_question()->un_summarise_response($answer) as $name => $value) {
+            $postdata[$step->get_qt_field_name($name)] = (string) $value;
+        }
+    }
+    $attempt->process_submitted_actions(time(), false, $postdata);
+    $attempt->process_finish(time(), false);
     manager::set_user($admin);
 }
 
