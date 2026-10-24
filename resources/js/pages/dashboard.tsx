@@ -91,8 +91,8 @@ export default function Dashboard({ userCounts, projectCounts }: Props) {
                         cuando el preflight no encuentra errores. Al iniciarlo,
                         el Recolector o el Consolidador trabajan en sus
                         servidores; el seguimiento muestra el avance aunque
-                        cierre la página y le pide una decisión solo cuando
-                        hace falta.
+                        cierre la página y le pide una decisión solo cuando hace
+                        falta.
                     </p>
                 </div>
             </div>

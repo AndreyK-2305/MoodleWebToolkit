@@ -77,7 +77,9 @@ const sameText = (left: string | null, right: string | null) =>
     (right ?? '').trim().toLocaleLowerCase('es');
 
 /** Every account of the group, with what the agent knows of it. */
-export function identityMembers(candidate: IdentityCandidate): IdentityMember[] {
+export function identityMembers(
+    candidate: IdentityCandidate,
+): IdentityMember[] {
     const members: IdentityMember[] = [];
     for (const side of [candidate.a, candidate.b]) {
         const keys = side.members.length > 0 ? side.members : [];
@@ -122,7 +124,9 @@ export function defaultUsername(member: IdentityMember | undefined): string {
         .replace(/[^a-z0-9._-]/g, '');
 }
 
-export function initialDecision(candidate: IdentityCandidate): IdentityDecision {
+export function initialDecision(
+    candidate: IdentityCandidate,
+): IdentityDecision {
     const first = identityMembers(candidate)[0];
     return {
         group: candidate.group,
@@ -205,8 +209,12 @@ export function identityFacts(candidate: IdentityCandidate): IdentityFact[] {
     if (documentMatch || a?.document || b?.document) {
         facts.push({
             label: 'Documento',
-            a: a?.document ? `termina en ${a.document.replace('…', '')}` : 'Sin documento',
-            b: b?.document ? `termina en ${b.document.replace('…', '')}` : 'Sin documento',
+            a: a?.document
+                ? `termina en ${a.document.replace('…', '')}`
+                : 'Sin documento',
+            b: b?.document
+                ? `termina en ${b.document.replace('…', '')}`
+                : 'Sin documento',
             same: documentMatch,
         });
     }
@@ -282,7 +290,9 @@ export function decisionGap(decision: IdentityDecision): string | null {
         if (decision.canonical_target === '') {
             return 'falta elegir la cuenta que se conserva';
         }
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(decision.canonical_email.trim())) {
+        if (
+            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(decision.canonical_email.trim())
+        ) {
             return 'el correo de la cuenta unida no es válido';
         }
         if (!/^[a-z0-9._@-]{1,100}$/.test(decision.canonical_username)) {

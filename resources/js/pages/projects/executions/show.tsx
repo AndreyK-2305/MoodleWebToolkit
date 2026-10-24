@@ -2108,8 +2108,7 @@ function CollectorReview({
                             : execution.status === 'REVIEW'
                               ? 'Exportación terminada · '
                               : ''}
-                        cursos{' '}
-                        {report.completed_courses ?? '—'} de{' '}
+                        cursos {report.completed_courses ?? '—'} de{' '}
                         {report.total_courses ?? '—'}
                         {report.failed_courses
                             ? ` · ${report.failed_courses} con error`
@@ -2760,8 +2759,7 @@ function AnswersSent({ summary }: { summary?: AnswerSummary | null }) {
     const parts = summary
         ? [
               summary.merge > 0 && `${summary.merge} unidas`,
-              summary.keep_separate > 0 &&
-                  `${summary.keep_separate} separadas`,
+              summary.keep_separate > 0 && `${summary.keep_separate} separadas`,
               summary.ignore > 0 && `${summary.ignore} sin cambios`,
               summary.theme && `apariencia «${summary.theme}»`,
               summary.promoted > 0 &&
@@ -2885,8 +2883,7 @@ function IdentityReview({
         .map((candidate, index) => ({ candidate, index }))
         .filter(
             ({ candidate, index }) =>
-                isEvidentMatch(candidate) &&
-                decisions[index].resolution === '',
+                isEvidentMatch(candidate) && decisions[index].resolution === '',
         );
 
     return (
@@ -2894,11 +2891,10 @@ function IdentityReview({
             <p className="font-medium">{interventionTitles[conflict.type]}</p>
             <p className="text-muted-foreground">
                 El Consolidador encontró {candidates.length}{' '}
-                {candidates.length === 1 ? 'caso' : 'casos'} de dos cuentas,
-                una de cada origen, que podrían ser de la misma persona. Antes
-                de crear los usuarios en el Moodle consolidado, decida cada
-                caso. Las diferencias entre las dos cuentas aparecen
-                resaltadas.
+                {candidates.length === 1 ? 'caso' : 'casos'} de dos cuentas, una
+                de cada origen, que podrían ser de la misma persona. Antes de
+                crear los usuarios en el Moodle consolidado, decida cada caso.
+                Las diferencias entre las dos cuentas aparecen resaltadas.
             </p>
             <details className="bg-background rounded-md border p-2 text-xs">
                 <summary className="cursor-pointer font-medium">
@@ -2921,8 +2917,8 @@ function IdentityReview({
             {evident.length > 1 && (
                 <div className="bg-background space-y-2 rounded-md border p-3 text-xs">
                     <p className="font-medium">
-                        {evident.length} casos tienen el mismo correo y el
-                        mismo documento
+                        {evident.length} casos tienen el mismo correo y el mismo
+                        documento
                     </p>
                     <p className="text-muted-foreground">
                         Puede unirlos todos de una vez. Cada uno conserva la
@@ -3076,9 +3072,9 @@ function IdentityReview({
                                         ))}
                                     </select>
                                     <span className="text-muted-foreground block">
-                                        La otra cuenta se une a esta: sus
-                                        cursos y calificaciones pasan a la
-                                        cuenta que se conserva.
+                                        La otra cuenta se une a esta: sus cursos
+                                        y calificaciones pasan a la cuenta que
+                                        se conserva.
                                     </span>
                                 </label>
                                 <label className="space-y-1">
@@ -3099,7 +3095,9 @@ function IdentityReview({
                                     />
                                 </label>
                                 <label className="space-y-1">
-                                    <span>Usuario de Moodle de la cuenta unida</span>
+                                    <span>
+                                        Usuario de Moodle de la cuenta unida
+                                    </span>
                                     <Input
                                         value={decision.canonical_username}
                                         onChange={(event) =>

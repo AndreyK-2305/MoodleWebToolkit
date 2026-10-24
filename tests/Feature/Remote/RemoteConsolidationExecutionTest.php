@@ -6,6 +6,7 @@ use App\Domain\Projects\ProjectWizard;
 use App\Domain\Remote\CheckRemoteDestination;
 use App\Domain\Remote\RemoteAgent;
 use App\Domain\Remote\RemoteConsolidationBackup;
+use App\Domain\Remote\RemoteConsolidationInterventions;
 use App\Domain\Remote\RemoteConsolidationPreparation;
 use App\Domain\Remote\RemoteConsolidationWorkflow;
 use App\Domain\Remote\RemotePackageObjects;
@@ -459,7 +460,10 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->queueReport(['stage' => '05b-readiness', 'status' => 'WAITING_USER_ACTION',
             'message' => 'V8_IDENTITY_REVIEW_REQUIRED: IDENTITY_REVIEW_PREPARED; WAITING_USER_ACTION.']);
         $account = fn (string $source, string $id, string $name, string $email): array => ['source' => $source, 'user_id' => $id,
-            'canonical_id' => 'CAN-'.$source.'-'.$id, 'name' => $name, 'email' => $email, 'google' => 'none', 'members' => [$source.':'.$id]];
+            'canonical_id' => 'CAN-'.$source.'-'.$id, 'name' => $name, 'email' => $email, 'google' => 'none', 'members' => [$source.':'.$id],
+            // Agent 1.14: each member's existing username; a malformed key never reaches the page.
+            'accounts' => [['key' => $source.':'.$id, 'name' => $name, 'email' => $email, 'username' => 'u'.$id, 'document' => '…1234'],
+                ['key' => '../etc:1', 'username' => 'root']]];
         $this->transport->ok('identity-candidates', ['total' => 2, 'offset' => 0, 'candidates' => [
             ['group' => 'FUZZ-0001', 'type' => 'POSSIBLE_IDENTITY_MATCH', 'confidence' => 'high', 'name_similarity' => '0.96', 'email_similarity' => '0.80',
                 'a' => $account('pregrado', '12', 'Ana María Pérez', 'ana.perez@ufps.edu.co'), 'b' => $account('posgrado', '7', 'Ana Maria Perez', 'anaperez@gmail.com')],
@@ -470,6 +474,8 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $conflict = $execution->conflicts()->sole();
         $this->assertSame(['IDENTITY_REVIEW', ['APPLY_ANSWERS', 'CONFIRM_COMPLETED']], [$conflict->type, $conflict->details['allowed_decisions']]);
         $this->assertSame(['FUZZ-0001', 'FUZZ-0002'], array_column($conflict->details['candidates'], 'group'));
+        $this->assertSame([['key' => 'pregrado:12', 'name' => 'Ana María Pérez', 'email' => 'ana.perez@ufps.edu.co', 'username' => 'u12', 'document' => '…1234']],
+            $conflict->details['candidates'][0]['a']['accounts']);
         // The personal data reaches the administrator's review only, never the events.
         $this->assertStringNotContainsString('ana.perez@ufps.edu.co', (string) json_encode($execution->events()->get()));
 
@@ -493,6 +499,10 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $sent['decision_timestamp_utc']);
         $this->assertSame('RESOLVED', $conflict->fresh()->status->value);
         $this->assertSame(2, count($conflict->fresh()->details['answers']['decisions']));
+        // The page keeps confirming what was answered, without the personal data.
+        $summary = RemoteConsolidationInterventions::present($conflict->fresh()->details)['answer_summary'];
+        $this->assertSame([1, 1, 0], [$summary['merge'], $summary['keep_separate'], $summary['ignore']]);
+        $this->assertStringNotContainsString('ana.perez', (string) json_encode($summary));
         $apply = $execution->remoteOperations()->where('command_key', RemoteConsolidationWorkflow::IDENTITY_COMMAND)->sole();
 
         $this->queueStatus(alive: false, exit: ['exit_code' => 0, 'cancel_requested' => false, 'finished_at' => '2026-10-21T12:30:00Z'],
