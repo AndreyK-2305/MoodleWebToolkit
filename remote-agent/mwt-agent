@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.13.1"
+readonly AGENT_VERSION="1.14.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -1339,19 +1339,42 @@ cmd_identity_candidates() {
     command -v python3 >/dev/null 2>&1 || fail python3_missing
     local review="$DST_RUNTIME_DIR/exports/identity_candidate_review.csv" out
     [[ -f $review && ! -L $review ]] || fail identity_review_missing
-    out=$(python3 -I - "$review" "$2" <<'PY'
-import csv, json, sys
+    out=$(python3 -I - "$review" "$2" "$DST_RUNTIME_DIR/exports/phase3" <<'PY'
+import csv, glob, json, os, sys
 rows = list(csv.DictReader(open(sys.argv[1], encoding="utf-8-sig", newline="")))
 offset = int(sys.argv[2])
 cut = lambda value, size=120: (value or "")[:size]
+page_rows = rows[offset:offset + 20]
+wanted = {m for row in page_rows for s in ("a", "b") for m in (row.get("canonical_members_" + s) or "").split("|") if m}
+# The existing username and document of each member, from the identity documents the
+# Consolidator compared: the reviewer keeps the username and sees whether documents differ.
+users = {}
+for path in sorted(glob.glob(os.path.join(sys.argv[3], "identity-*.json"))):
+    if os.path.islink(path) or os.path.getsize(path) > 256 * 1024 * 1024:
+        continue
+    try:
+        document = json.load(open(path, encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        continue
+    source = str((document.get("metadata") or {}).get("source") or "") if isinstance(document, dict) else ""
+    for user in document.get("users") or [] if isinstance(document, dict) else []:
+        if isinstance(user, dict):
+            key = str(user.get("source") or source) + ":" + str(user.get("source_user_id") or "")
+            if key in wanted:
+                idnumber = str(user.get("idnumber") or "").strip()
+                users[key] = {"username": cut(str(user.get("username") or ""), 100), "email": cut(str(user.get("email") or "")),
+                    "name": cut((str(user.get("firstname") or "").strip() + " " + str(user.get("lastname") or "").strip()).strip()),
+                    "document": ("…" + idnumber[-4:]) if len(idnumber) > 4 else ("…" if idnumber else "")}
+account = lambda key: {"key": cut(key, 80), **users.get(key, {})}
 side = lambda row, s: {"source": cut(row.get("source_" + s), 64), "user_id": cut(row.get("source_user_id_" + s), 32),
     "canonical_id": cut(row.get("canonical_id_" + s), 64), "members": [cut(m, 80) for m in (row.get("canonical_members_" + s) or "").split("|") if m][:20],
-    "name": cut(row.get("name_" + s)), "email": cut(row.get("email_" + s)), "google": cut(row.get("google_identity_state_" + s), 40)}
+    "name": cut(row.get("name_" + s)), "email": cut(row.get("email_" + s)), "google": cut(row.get("google_identity_state_" + s), 40),
+    "accounts": [account(m) for m in (row.get("canonical_members_" + s) or "").split("|") if m][:20]}
 page = [{"group": cut(row.get("candidate_group"), 80), "type": cut(row.get("candidate_type"), 60),
     "confidence": cut(row.get("confidence_band"), 30), "name_similarity": cut(row.get("name_similarity"), 12),
     "email_similarity": cut(row.get("email_similarity"), 12), "identifier_match": cut(row.get("institutional_identifier_match"), 12),
     "evidence": cut(row.get("other_evidence"), 200), "a": side(row, "a"), "b": side(row, "b"),
-    "resolution": cut(row.get("resolution"), 20)} for row in rows[offset:offset + 20]]
+    "resolution": cut(row.get("resolution"), 20)} for row in page_rows]
 print(json.dumps({"total": len(rows), "offset": offset, "candidates": page}, ensure_ascii=False, separators=(",", ":")))
 PY
 ) || fail identity_review_invalid
