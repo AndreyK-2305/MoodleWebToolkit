@@ -6,6 +6,7 @@ use App\Domain\Collector\CollectorConfiguration;
 use App\Domain\Tools\ToolOperationGate;
 use App\Enums\ConnectionStatus;
 use App\Enums\ProjectType;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\Project;
 use App\Models\ProjectConfiguration;
 use App\Models\Server;
@@ -38,6 +39,7 @@ final class RemoteCollectionPreflight
         $settings = $this->configurations->settings($configuration);
         // One check per kind across every source; the detail names the sources still pending.
         $pending = ['connection' => [], 'distribution' => [], 'source' => []];
+        $blocked = $this->blocked();
         foreach ($settings['sources'] as $source) {
             $server = Server::query()->where('project_id', $project->id)->where('uuid', $source['server_uuid'])->firstOrFail();
             $label = $server->name.' ('.$source['source_profile'].')';
@@ -45,7 +47,7 @@ final class RemoteCollectionPreflight
             if ($connection === null || $connection->status !== ConnectionStatus::VALID) {
                 $pending['connection'][] = $label;
             }
-            if (! $this->deployed($server)) {
+            if ($blocked === null && ! $this->deployed($server)) {
                 $pending['distribution'][] = $label;
             }
             if (($server->metadata['remote_sources'][$source['source_profile']]['ready'] ?? false) !== true) {
@@ -56,9 +58,13 @@ final class RemoteCollectionPreflight
         $checks[] = $this->check('remote.connection', 'Conexión con los servidores de origen', $pending['connection'] === [],
             $pending['connection'] === [] ? "La última prueba de conexión y del agente fue satisfactoria en los {$count} orígenes."
                 : 'Configura la conexión e instala el agente en: '.implode(', ', $pending['connection']).'.');
-        $checks[] = $this->check('collector.distribution', 'Recolector 7.4.2 desplegado', $pending['distribution'] === [],
-            $pending['distribution'] === [] ? 'El árbol desplegado coincide con la distribución verificada del catálogo en cada origen.'
-                : 'Despliega la distribución verificada del Recolector 7.4.2 en: '.implode(', ', $pending['distribution']).'.');
+        // A tool the catalog keeps closed is named as such, not as a missing deployment.
+        $checks[] = $blocked !== null
+            ? $this->check('collector.distribution', 'Recolector 7.4.2 habilitado en la plataforma', false,
+                'El Recolector 7.4.2 no está habilitado en el catálogo de herramientas: '.$blocked.' Un administrador de la plataforma debe habilitarlo; desplegarlo de nuevo no lo resuelve.')
+            : $this->check('collector.distribution', 'Recolector 7.4.2 desplegado', $pending['distribution'] === [],
+                $pending['distribution'] === [] ? 'El árbol desplegado coincide con la distribución verificada del catálogo en cada origen.'
+                    : 'Despliega la distribución verificada del Recolector 7.4.2 en: '.implode(', ', $pending['distribution']).'.');
         $checks[] = $this->check('remote.source', 'Perfiles de origen comprobados', $pending['source'] === [],
             $pending['source'] === [] ? 'Cada perfil superó la comprobación de Moodle, PHP y moodledata.'
                 : 'Comprueba el perfil de origen en: '.implode(', ', $pending['source']).'.');
@@ -111,21 +117,29 @@ final class RemoteCollectionPreflight
         ]);
     }
 
-    private function deployed(Server $server): bool
+    /** Why the catalog does not let the Recolector run, or null when it does. */
+    private function blocked(): ?string
     {
         $distribution = ToolDistribution::query()->with('toolVersion')->where('key', RemoteCollectorExport::DISTRIBUTION_KEY)
             ->where('verification_state', 'VERIFIED')->first();
-        $deployed = $server->metadata['remote_tools'][RemoteCollectorExport::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
-        if ($distribution === null || ! is_string($deployed) || ! hash_equals($distribution->distribution_sha256, $deployed)) {
-            return false;
+        if ($distribution === null) {
+            return 'su distribución verificada no está registrada.';
         }
         try {
             $this->gate->assertRunnable($distribution->toolVersion, 'moodle.source.export');
-        } catch (Throwable) {
-            return false;
+        } catch (ToolOperationBlocked $exception) {
+            return $exception->getMessage();
         }
 
-        return true;
+        return null;
+    }
+
+    private function deployed(Server $server): bool
+    {
+        $distribution = ToolDistribution::query()->where('key', RemoteCollectorExport::DISTRIBUTION_KEY)->where('verification_state', 'VERIFIED')->first();
+        $deployed = $server->metadata['remote_tools'][RemoteCollectorExport::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
+
+        return $distribution !== null && is_string($deployed) && hash_equals($distribution->distribution_sha256, $deployed);
     }
 
     /** @return array{id: string, description: string, result: string, detail: string} */

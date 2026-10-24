@@ -10,6 +10,7 @@ use App\Enums\ToolCompatibilityStatus;
 use App\Exceptions\ToolOperationBlocked;
 use App\Models\Tool;
 use App\Models\ToolDistribution;
+use App\Models\ToolVersion;
 use Database\Seeders\ToolCatalogSeeder;
 use RuntimeException;
 use Tests\Feature\Domain\DomainTestCase;
@@ -99,6 +100,22 @@ class ToolCatalogTest extends DomainTestCase
         $this->assertFalse((bool) config('toolkit.features.recolector_742.enabled'));
         $this->assertFalse((bool) config('toolkit.features.consolidador_800.enabled'));
         $this->assertFalse((bool) config('toolkit.features.integrador_115.enabled'));
+    }
+
+    public function test_re_seeding_keeps_a_version_the_operator_enabled(): void
+    {
+        $this->seed(ToolCatalogSeeder::class);
+        $recolector = ToolVersion::query()->where('version', '7.4.2-linux')->sole();
+        $recolector->forceFill(['enabled' => true])->save();
+
+        $this->seed(ToolCatalogSeeder::class);
+        $this->assertTrue($recolector->fresh()->enabled);
+        $this->assertFalse(ToolVersion::query()->where('version', '8.0.0-linux')->sole()->enabled);
+
+        // Another tree under the same version is a different release: it starts closed again.
+        $recolector->forceFill(['tree_sha256' => str_repeat('0', 64)])->save();
+        $this->seed(ToolCatalogSeeder::class);
+        $this->assertFalse($recolector->fresh()->enabled);
     }
 
     public function test_real_tool_execution_is_blocked_until_both_catalog_and_feature_flag_allow_it(): void
