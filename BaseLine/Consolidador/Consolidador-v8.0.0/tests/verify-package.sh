@@ -126,6 +126,7 @@ pwsh -NoLogo -NoProfile -File tests/rc3-integration.ps1
 pwsh -NoLogo -NoProfile -File tests/rc4-import.ps1
 pwsh -NoLogo -NoProfile -File tests/rc4-wizard-retry.ps1
 pwsh -NoLogo -NoProfile -File tests/rc13-wizard-paths.ps1
+pwsh -NoLogo -NoProfile -File tests/v8-800-zero-plugin-rebuild.ps1
 pwsh -NoLogo -NoProfile -File tests/rc5-startup.ps1
 pwsh -NoLogo -NoProfile -File tests/v8-rc2-powershell.ps1
 pwsh -NoLogo -NoProfile -File tests/v8-rc2-plugin-flow.ps1

@@ -22,7 +22,8 @@ use App\Models\Server;
  *   issues; confirming revalidates, and once the assistant is ready for
  *   approval, accepting approves the sealed plugin inventory on the destination.
  *   When the Consolidator's lock asks for no plugin at all, continuing without
- *   plugins seals it (Consolidator 8.0.0 rc12 and rc13 stall on that case by themselves).
+ *   plugins seals it. Consolidator rc12 and rc13 stall on that case; 8.0.0
+ *   seals it by itself, and this stays as the fallback if the stage still stops.
  * - IDENTITY_REVIEW: the fuzzy identity candidates the Consolidator prepared
  *   (rc13 stops for them); the administrator decides each group in the platform
  *   and the review is applied with the Consolidator's own validator.

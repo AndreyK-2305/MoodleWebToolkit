@@ -43,7 +43,7 @@ class RemoteConsolidationWorkflow
 
     public const APPROVE_COMMAND = 'consolidator.plugins-approve';
 
-    /** Seals a plugin lock that asks for no plugin, working around Consolidator 8.0.0 (rc12 and rc13). */
+    /** Seals a plugin lock that asks for no plugin: the workaround for Consolidator rc12 and rc13, kept as a fallback. */
     public const NONE_COMMAND = 'consolidator.plugins-none';
 
     /** Applies the administrator's fuzzy identity review with the Consolidator's own validator. */

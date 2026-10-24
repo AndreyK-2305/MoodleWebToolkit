@@ -13,6 +13,7 @@ $summary = Join-Path $ProjectRoot 'exports/plugin-installation.json'
 $technical = Join-Path $ProjectRoot 'exports/phase2/plugin_technical_validation.json'
 $inventory = Join-Path $ProjectRoot 'exports/phase2/plugin_inventory_after.json'
 $engine = Join-Path $ProjectRoot 'scripts/v8-plugin-catalog.php'
+$pins = Join-Path $ProjectRoot 'docker/custom-plugins/approved-plugins.json'
 
 function File-Hash([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
@@ -48,6 +49,27 @@ function Wait-MoodleTarget {
     throw 'V8_PLUGIN_STAGING_FAILED: timeout esperando moodle-target.'
 }
 
+# 8.0.0: el manifiesto de pins puede cambiar aunque no se instale ningún plugin
+# (por ejemplo, al resolver un lock vacío). La imagen de moodle-target copia ese
+# manifiesto en /opt/approved-plugins.json, de modo que se reconstruye siempre que
+# ambos difieran; antes solo se reconstruía con plugins instalados y la
+# revalidación fallaba con "pins inconsistentes".
+function Get-TargetPinHash {
+    $output = (& docker compose exec -T moodle-target sha256sum /opt/approved-plugins.json 2>$null |
+        Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $output -notmatch '^([a-f0-9]{64})\s') { return '' }
+    return $Matches[1]
+}
+
+function Sync-MoodleTarget([bool]$Force) {
+    if (-not $Force -and (Get-TargetPinHash) -ceq (File-Hash $pins)) { return }
+    & docker compose build moodle-target | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'V8_PLUGIN_IMAGE_BUILD_FAILED' }
+    & docker compose up -d --force-recreate moodle-target | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'V8_PLUGIN_TARGET_RECREATE_FAILED' }
+    Wait-MoodleTarget
+}
+
 foreach ($required in @($catalog, $engine)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "V8_PLUGIN_RESOLVER_MISSING: $required"
@@ -79,6 +101,8 @@ if ($Mode -eq 'Prepare') {
             [string]$existing.compatibility_needs_sha256 -ceq (File-Hash $needs) -and
             [string]$existing.lock_status -in @(
                 'ARTIFACTS_VERIFIED_PENDING_STAGING', 'DISCOVERY_REQUIRED', 'SEALED')) {
+        # Un intento anterior pudo reescribir los pins y fallar antes de reconstruir.
+        Sync-MoodleTarget $false
         Write-Output $existing
         return
     }
@@ -88,13 +112,7 @@ if ($Mode -eq 'Prepare') {
         '--mode=install', "--catalog=$catalog", "--lock=$lock",
         "--projectroot=$ProjectRoot", "--summary=$summary")
     $installation = Read-Document $summary
-    if ([int]$installation.installed_count -gt 0) {
-        & docker compose build moodle-target | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw 'V8_PLUGIN_IMAGE_BUILD_FAILED' }
-        & docker compose up -d --force-recreate moodle-target | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw 'V8_PLUGIN_TARGET_RECREATE_FAILED' }
-        Wait-MoodleTarget
-    }
+    Sync-MoodleTarget ([int]$installation.installed_count -gt 0)
     Write-Output (Read-Document $lock)
     return
 }
