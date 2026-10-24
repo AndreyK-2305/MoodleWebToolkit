@@ -20,7 +20,7 @@ class RemoteAccessPresenter
         'systemd_version', 'bash_version', 'disk_total_bytes', 'disk_free_bytes', 'php_version', 'docker_version',
         'pwsh_version', 'aws_cli_version', 'observed_at'];
 
-    public function __construct(private readonly RemoteAgent $agent) {}
+    public function __construct(private readonly RemoteAgent $agent, private readonly UpdateRemoteAgent $updates) {}
 
     /** @return array{enabled: bool, agent_version: string|null, default_region: string, available_packages: list<array<string, mixed>>, servers: list<array<string, mixed>>} */
     public function present(Project $project): array
@@ -46,6 +46,8 @@ class RemoteAccessPresenter
                 'role' => $server->role->value,
                 'host' => $server->host,
                 'connection' => $this->connection($server->connections->firstWhere('name', RemoteServerConnections::PRIMARY)),
+                // Why the agent cannot be updated now; null when nothing runs on the server.
+                'agent_update_blocked' => $this->updates->busy($server),
                 'evidence' => $this->evidence($server),
                 'collector_deployed' => is_string($server->metadata['remote_tools'][RemoteCollectorExport::DISTRIBUTION_KEY]['tree_sha256'] ?? null),
                 'sources' => $this->sources($server),

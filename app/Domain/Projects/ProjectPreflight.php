@@ -8,6 +8,7 @@ use App\Domain\Remote\RemoteCollectionConfiguration;
 use App\Domain\Remote\RemoteCollectionPreflight;
 use App\Domain\Remote\RemoteConsolidationConfiguration;
 use App\Domain\Remote\RemoteConsolidationPreflight;
+use App\Enums\ProjectType;
 use App\Models\Project;
 use App\Models\ProjectConfiguration;
 
@@ -26,7 +27,7 @@ final class ProjectPreflight
     /** @return list<array{id: string, description: string, result: string, detail: string}> */
     public function evaluate(Project $project, ProjectConfiguration $configuration): array
     {
-        if ($this->consolidationConfigurations->selected($configuration)) {
+        if ($this->remoteConsolidation($project, $configuration)) {
             return $this->consolidation->evaluate($project, $configuration);
         }
         if ($this->remoteConfigurations->selected($configuration)) {
@@ -38,7 +39,7 @@ final class ProjectPreflight
 
     public function fingerprint(Project $project, ProjectConfiguration $configuration): string
     {
-        if ($this->consolidationConfigurations->selected($configuration)) {
+        if ($this->remoteConsolidation($project, $configuration)) {
             return $this->consolidation->fingerprint($project, $configuration);
         }
         if ($this->remoteConfigurations->selected($configuration)) {
@@ -51,7 +52,7 @@ final class ProjectPreflight
     /** @return list<string> */
     public function configurationErrors(Project $project, ProjectConfiguration $configuration): array
     {
-        if ($this->consolidationConfigurations->selected($configuration)) {
+        if ($this->remoteConsolidation($project, $configuration)) {
             return $this->consolidation->configurationErrors($project, $configuration);
         }
         if ($this->remoteConfigurations->selected($configuration)) {
@@ -59,5 +60,16 @@ final class ProjectPreflight
         }
 
         return $this->configurations->selected($configuration) ? $this->collector->configurationErrors($project, $configuration) : $this->demo->configurationErrors($project, $configuration);
+    }
+
+    /**
+     * With the remote agent a consolidation is always remote, even before its card is
+     * saved: the simulated checks would demand source instances it never uses.
+     */
+    private function remoteConsolidation(Project $project, ProjectConfiguration $configuration): bool
+    {
+        return $this->consolidationConfigurations->selected($configuration)
+            || ($project->type === ProjectType::CONSOLIDATE && config('toolkit.features.remote_agent.enabled')
+                && ($configuration->settings['options']['mode'] ?? null) === null);
     }
 }

@@ -13,6 +13,7 @@ use App\Domain\Remote\RemoteDestinationPackages;
 use App\Domain\Remote\RemoteServerConnections;
 use App\Domain\Remote\RemoteToolDeployer;
 use App\Domain\Remote\TestRemoteConnection;
+use App\Domain\Remote\UpdateRemoteAgent;
 use App\Enums\ConnectionStatus;
 use App\Enums\ConnectionType;
 use App\Enums\ServerRole;
@@ -28,6 +29,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 
 final class RemoteConnectionController extends Controller
@@ -76,6 +78,33 @@ final class RemoteConnectionController extends Controller
         Inertia::flash('toast', $result['installed']
             ? ['type' => 'success', 'message' => 'Agente '.$result['agent_version'].' instalado y verificado.']
             : ['type' => 'error', 'message' => 'No se instaló el agente ('.$result['error_code'].').']);
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    /**
+     * Replaces the agent while the project is in progress (the wizard is read-only then).
+     * Only an administrator does it, confirming it explicitly, and never while something runs on the server.
+     */
+    public function updateAgent(Request $request, Project $project, Server $server, UpdateRemoteAgent $updater): RedirectResponse
+    {
+        Gate::authorize('view', $project);
+        abort_unless((bool) config('toolkit.features.remote_agent.enabled', false), 409, 'Las conexiones remotas están deshabilitadas.');
+        abort_unless((int) $server->project_id === (int) $project->getKey(), 404);
+        /** @var User $actor */
+        $actor = $request->user();
+        abort_unless($actor->isAdmin(), 403, 'Solo un administrador puede actualizar el agente de un servidor.');
+        $request->validate(['acknowledged' => ['accepted']], ['acknowledged.accepted' => 'Confirme que desea actualizar el agente.']);
+        try {
+            $result = $updater->handle($server, $actor);
+        } catch (ToolOperationBlocked|RemoteAgentUnavailable $exception) {
+            throw ValidationException::withMessages(['agent' => $exception->getMessage()]);
+        }
+        Inertia::flash('toast', match (true) {
+            $result['already_current'] => ['type' => 'success', 'message' => 'El agente '.$result['agent_version'].' ya estaba actualizado y verificado.'],
+            $result['updated'] => ['type' => 'success', 'message' => 'Agente actualizado a '.$result['agent_version'].' y verificado.'],
+            default => ['type' => 'error', 'message' => 'No se actualizó el agente ('.$result['error_code'].').'],
+        });
 
         return to_route('projects.show', $project->uuid);
     }

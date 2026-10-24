@@ -500,6 +500,68 @@ class ProjectWizardTest extends TestCase
         $this->assertSame(0, $consolidation->moodleInstances()->count());
     }
 
+    public function test_remote_consolidation_registers_only_the_destination_and_never_source_instances(): void
+    {
+        config(['toolkit.features.remote_agent.enabled' => true]);
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::CONSOLIDATE);
+
+        // Its sources are the sealed packages of the consolidation card, never Moodle instances.
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [
+                $this->instancePayload('SOURCE', 1),
+                $this->instancePayload('SOURCE', 2),
+                $this->instancePayload('DESTINATION', 3, 'PREPARED'),
+            ]])
+            ->assertSessionHasErrors(['instances' => 'La consolidación remota no registra instancias origen: los orígenes son los paquetes sellados que se eligen en la consolidación. Quite los orígenes y deje solo el destino.']);
+        $this->assertSame(0, $project->moodleInstances()->count());
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$this->instancePayload('DESTINATION', 3, 'PREPARED')]])
+            ->assertSessionHasNoErrors();
+        $this->assertSame([MoodleInstanceRole::DESTINATION], $project->moodleInstances()->pluck('role')->all());
+        $this->assertSame([ServerRole::DESTINATION], $project->servers()->pluck('role')->all());
+    }
+
+    public function test_remote_consolidation_preflight_asks_for_the_packages_and_not_for_source_instances(): void
+    {
+        config(['toolkit.features.remote_agent.enabled' => true]);
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::CONSOLIDATE);
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$this->instancePayload('DESTINATION', 3, 'PREPARED')]])
+            ->assertSessionHasNoErrors();
+
+        $this->actingAs($operator)->post(route('projects.wizard.preflight', $project->uuid))->assertSessionHasNoErrors();
+
+        $checks = collect($project->configuration()->firstOrFail()->settings['preflight']['checks']);
+        $this->assertSame(['consolidation.configuration'], $checks->pluck('id')->all());
+        $this->assertSame('ERROR', $checks->first()['result']);
+        $this->assertStringContainsString('paquetes sellados, uno por origen', $checks->first()['detail']);
+        $this->assertStringNotContainsString('instancias origen', $checks->first()['detail']);
+    }
+
+    public function test_simulated_consolidation_keeps_requiring_two_sources_and_one_destination(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::CONSOLIDATE);
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [
+                $this->instancePayload('SOURCE', 1),
+                $this->instancePayload('DESTINATION', 3, 'PREPARED'),
+            ]])
+            ->assertSessionHasNoErrors();
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.options', $project->uuid), $this->optionsPayload(ProjectType::CONSOLIDATE, 'SUCCESS'))
+            ->assertSessionHasNoErrors();
+
+        $this->actingAs($operator)->post(route('projects.wizard.preflight', $project->uuid))->assertSessionHasNoErrors();
+
+        $checks = collect($project->configuration()->firstOrFail()->settings['preflight']['checks'])->keyBy('id');
+        $this->assertSame('ERROR', $checks['instances.cardinality']['result']);
+        $this->assertStringContainsString('Consolidar exige al menos dos instancias origen', $checks['configuration.complete']['detail']);
+    }
+
     public function test_auditor_can_consult_assigned_project_but_cannot_mutate_or_confirm(): void
     {
         $admin = $this->user(UserRole::ADMIN);

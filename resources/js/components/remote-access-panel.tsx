@@ -117,6 +117,7 @@ export type RemoteServer = {
     role: 'SOURCE' | 'DESTINATION' | 'AUXILIARY';
     host: string | null;
     connection: RemoteConnection | null;
+    agent_update_blocked: string | null;
     collector_deployed: boolean;
     sources: RemoteSourceProfile[];
     sources_detected_at: string | null;
@@ -523,6 +524,14 @@ function ServerConnection({
                 </div>
             )}
 
+            {!editable && connection && (
+                <AgentUpdate
+                    base={base}
+                    server={server}
+                    agentVersion={agentVersion}
+                />
+            )}
+
             {server.role === 'DESTINATION' &&
                 connection?.status === 'VALID' && (
                     <DestinationRuntime
@@ -537,6 +546,100 @@ function ServerConnection({
                 <Operations operations={server.operations} />
             )}
         </section>
+    );
+}
+
+/**
+ * While the project is in progress the panel is read-only, but an administrator can still
+ * replace a server's agent (a fixed agent, for example) when nothing runs on that server.
+ */
+function AgentUpdate({
+    base,
+    server,
+    agentVersion,
+}: {
+    base: string;
+    server: RemoteServer;
+    agentVersion: string | null;
+}) {
+    const { auth } = usePage<{ auth: { user: { role: string } } }>().props;
+    const [open, setOpen] = useState(false);
+    const form = useForm({ acknowledged: false });
+    const errors = form.errors as Record<string, string>;
+
+    if (auth.user.role !== 'ADMIN') {
+        return null;
+    }
+
+    const blocked = server.agent_update_blocked;
+
+    return (
+        <div className="space-y-2 rounded-md border p-3">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium">Agente del servidor</span>
+                <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="ml-auto"
+                    disabled={blocked !== null || form.processing}
+                    onClick={() => {
+                        form.reset();
+                        form.clearErrors();
+                        setOpen(true);
+                    }}
+                >
+                    <Download /> Actualizar agente {agentVersion}
+                </Button>
+            </div>
+            <p className="text-muted-foreground text-xs">
+                {blocked !== null
+                    ? `No disponible: ${blocked}. Se habilita cuando termina o cuando la Ejecución espera una acción del administrador.`
+                    : 'El proyecto está en curso y no hay operaciones en este servidor: un administrador puede reemplazar su agente por la versión verificada de la plataforma.'}
+            </p>
+            {!open && <InputError message={errors.agent} />}
+            <Dialog open={open} onOpenChange={setOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>
+                            Actualizar el agente de {server.name}
+                        </DialogTitle>
+                        <DialogDescription>
+                            Se instala en el servidor el agente {agentVersion}{' '}
+                            verificado por SHA-256 y luego se le pide su
+                            versión. La Ejecución en espera no cambia; si el
+                            agente ya coincide, no se reinstala.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="flex items-start gap-2 text-sm">
+                        <Checkbox
+                            id={`agent-update-${server.uuid}`}
+                            checked={form.data.acknowledged}
+                            onCheckedChange={(checked) =>
+                                form.setData('acknowledged', checked === true)
+                            }
+                        />
+                        <Label htmlFor={`agent-update-${server.uuid}`}>
+                            Entiendo que se reemplaza el agente de este servidor
+                            mientras el proyecto está en curso.
+                        </Label>
+                    </div>
+                    <InputError message={errors.acknowledged ?? errors.agent} />
+                    <Button
+                        type="button"
+                        disabled={!form.data.acknowledged || form.processing}
+                        onClick={() =>
+                            form.post(`${base}/update-agent`, {
+                                preserveScroll: true,
+                                onSuccess: () => setOpen(false),
+                            })
+                        }
+                    >
+                        Sí, actualizar el agente
+                    </Button>
+                </DialogContent>
+            </Dialog>
+        </div>
     );
 }
 
