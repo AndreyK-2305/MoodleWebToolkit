@@ -21,15 +21,7 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
                     await checkbox.check();
             }
             if (scenario === 'ERROR') {
-                // The confirmation lists the blocking error and cannot be sent.
-                await expect(
-                    page.getByText('La configuración no puede confirmarse'),
-                ).toBeVisible();
-                await expect(
-                    page.getByRole('button', {
-                        name: 'Confirmar configuración',
-                    }),
-                ).toBeDisabled();
+                // The wizard never reaches the confirmation; the backend refuses it too.
                 expect(
                     (
                         await request(

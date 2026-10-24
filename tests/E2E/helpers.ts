@@ -276,10 +276,13 @@ export async function wizard(
         await expect(
             page.getByRole('button', { name: 'Revisar confirmación' }),
         ).toBeDisabled();
-        await page
-            .getByRole('navigation', { name: 'Pasos del wizard' })
-            .getByRole('button', { name: /Confirmación/ })
-            .click();
+        // The stepper keeps the confirmation closed as well.
+        await expect(
+            page
+                .getByRole('navigation', { name: 'Pasos del wizard' })
+                .getByRole('button', { name: /Confirmación/ }),
+        ).toBeDisabled();
+        return uuid;
     }
     await expect(
         page.getByText('5. Confirmación', { exact: true }),

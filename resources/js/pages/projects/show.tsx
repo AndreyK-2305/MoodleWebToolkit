@@ -185,7 +185,13 @@ export default function ProjectShow({
     collectorLab,
     remoteAccess,
 }: Props) {
-    const [activeStep, setActiveStep] = useState(project.current_step);
+    // A preflight with errors keeps the wizard on step 4, where they are listed: the
+    // confirmation stays closed until a new preflight passes.
+    const blocked = blockingChecks(project.preflight).length > 0;
+    const reachable = (step: number) => (blocked && step === 5 ? 4 : step);
+    const [activeStep, setActiveStep] = useState(
+        reachable(project.current_step),
+    );
     // With remote access the servers are real; REMOTE mode is configured in its own card.
     const simulated = !remoteAccess?.enabled;
     const mode = project.options.mode;
@@ -210,8 +216,9 @@ export default function ProjectShow({
     );
 
     useEffect(() => {
-        setActiveStep(project.current_step);
-    }, [project.configuration_version, project.current_step]);
+        setActiveStep(reachable(project.current_step));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [project.configuration_version, project.current_step, blocked]);
 
     return (
         <>
@@ -306,12 +313,19 @@ export default function ProjectShow({
                     {steps.map((label, index) => {
                         const number = index + 1;
                         const selected = activeStep === number;
+                        const closed = reachable(number) !== number;
 
                         return (
                             <button
                                 key={label}
                                 type="button"
                                 aria-current={selected ? 'step' : undefined}
+                                disabled={closed}
+                                title={
+                                    closed
+                                        ? 'Corrija los errores del preflight para continuar'
+                                        : undefined
+                                }
                                 onClick={() => setActiveStep(number)}
                                 className={cn(
                                     'flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
@@ -1265,10 +1279,24 @@ function PreflightStep({
                             <Button
                                 type="button"
                                 disabled={blocking.length > 0}
+                                aria-describedby={
+                                    blocking.length > 0
+                                        ? 'preflight-blocked'
+                                        : undefined
+                                }
                                 onClick={onNext}
                             >
                                 Revisar confirmación <ArrowRight />
                             </Button>
+                        )}
+                        {preflight && blocking.length > 0 && (
+                            <p
+                                id="preflight-blocked"
+                                className="text-muted-foreground self-center text-sm"
+                            >
+                                Corrija los errores de arriba y repita el
+                                preflight para continuar.
+                            </p>
                         )}
                     </div>
                 </div>

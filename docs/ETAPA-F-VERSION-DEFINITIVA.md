@@ -95,7 +95,7 @@ Antes de la próxima prueba hay que actualizar el agente del destino con «Insta
 ### Preflight y asistente
 
 - Con un error en el preflight, el asistente no pasa a «Confirmación». La lista de errores aparece
-  arriba, con lo que hay que corregir, y «Revisar confirmación» queda deshabilitado.
+  arriba, con lo que hay que corregir, y «Revisar confirmación» queda deshabilitado, con el motivo al lado. El paso «Confirmación» del indicador de pasos también queda cerrado hasta que un nuevo preflight pase.
 - La confirmación enumera los errores que bloquean y deshabilita «Confirmar configuración».
 - Ya no se muestran ids internos como `collector.configuration`. Los resultados se leen «Correcto»,
   «Advertencia» y «Error».
