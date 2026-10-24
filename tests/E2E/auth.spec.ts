@@ -96,9 +96,9 @@ test('tema claro, oscuro y sistema persisten y responden al sistema', async ({
     await login(page, password);
     await page.goto('/settings/appearance');
     for (const [label, value] of [
-        ['Dark', 'dark'],
-        ['Light', 'light'],
-        ['System', 'system'],
+        ['Oscuro', 'dark'],
+        ['Claro', 'light'],
+        ['Sistema', 'system'],
     ]) {
         await page.getByRole('button', { name: label, exact: true }).click();
         expect(

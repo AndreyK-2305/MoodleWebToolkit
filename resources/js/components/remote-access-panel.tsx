@@ -186,6 +186,41 @@ const statusLabels: Record<RemoteConnection['status'], string> = {
     INVALID: 'Con errores',
 };
 
+/** The badge of a connection: a server that only lacks its agent is not «with errors». */
+export function connectionStatus(server: RemoteServer): {
+    label: string;
+    variant: 'default' | 'secondary' | 'destructive';
+} {
+    const connection = server.connection;
+    if (!connection) {
+        return { label: 'Sin configurar', variant: 'secondary' };
+    }
+    const failed = (server.evidence?.checks ?? []).filter(
+        (check) => check.result === 'ERROR',
+    );
+    if (
+        connection.status === 'INVALID' &&
+        failed.length > 0 &&
+        failed.every((check) => check.key === 'agent')
+    ) {
+        return {
+            label: failed[0].message.includes('no está instalado')
+                ? 'Falta instalar el agente'
+                : 'Falta actualizar el agente',
+            variant: 'secondary',
+        };
+    }
+    return {
+        label: statusLabels[connection.status],
+        variant:
+            connection.status === 'INVALID'
+                ? 'destructive'
+                : connection.status === 'VALID'
+                  ? 'default'
+                  : 'secondary',
+    };
+}
+
 export default function RemoteAccessPanel({
     projectUuid,
     access,
@@ -212,6 +247,7 @@ export default function RemoteAccessPanel({
                     ),
             ),
     );
+    const [wasBusy, setWasBusy] = useState(busy);
     useEffect(() => {
         if (!busy) {
             return;
@@ -223,6 +259,21 @@ export default function RemoteAccessPanel({
 
         return () => window.clearInterval(timer);
     }, [busy]);
+    // When the work ends, the cards below (profiles, packages) read the final state once more.
+    useEffect(() => {
+        if (wasBusy && !busy) {
+            const timer = window.setTimeout(
+                () => router.reload({ only: ['remoteAccess'] }),
+                3000,
+            );
+            setWasBusy(false);
+
+            return () => window.clearTimeout(timer);
+        }
+        if (busy && !wasBusy) {
+            setWasBusy(true);
+        }
+    }, [busy, wasBusy]);
 
     return (
         <Card>
@@ -327,18 +378,8 @@ function ServerConnection({
                     <h3 className="font-medium">{server.name}</h3>
                     <Badge variant="outline">{roleLabels[server.role]}</Badge>
                 </div>
-                <Badge
-                    variant={
-                        connection?.status === 'INVALID'
-                            ? 'destructive'
-                            : connection?.status === 'VALID'
-                              ? 'default'
-                              : 'secondary'
-                    }
-                >
-                    {connection
-                        ? statusLabels[connection.status]
-                        : 'Sin configurar'}
+                <Badge variant={connectionStatus(server).variant}>
+                    {connectionStatus(server).label}
                 </Badge>
             </div>
 
@@ -1078,6 +1119,7 @@ function Preparation({
                                     <input
                                         type="radio"
                                         name={`prepare-${destination.id}`}
+                                        value="reset"
                                         checked={prepare.data.reset}
                                         aria-labelledby={`prepare-reset-${destination.id}`}
                                         aria-describedby={`prepare-reset-${destination.id}-detail`}
@@ -1112,6 +1154,7 @@ function Preparation({
                                     <input
                                         type="radio"
                                         name={`prepare-${destination.id}`}
+                                        value="keep"
                                         checked={!prepare.data.reset}
                                         disabled={
                                             destination.destination_written

@@ -388,7 +388,9 @@ class RemoteConsolidationWorkflow
             }
             $waiting = $this->lifecycle->transitionForWorker($locked, ExecutionStatus::WAITING_USER_ACTION);
             $this->events->record($waiting, 'consolidator.waiting_user_action', $stage, EventSeverity::WARNING,
-                message: 'El Consolidador espera una intervención en '.$this->stageName($stage).': '.($report['message'] ?? 'revise el destino').'',
+                // The timeline speaks plainly; the Consolidator's code stays in the status card's technical details.
+                message: 'El Consolidador espera una intervención en '.$this->stageName($stage).': '
+                    .(OperatorText::forWebUser(is_string($report['message'] ?? null) ? $report['message'] : null) ?? 'revise el destino'),
                 payload: ['stage' => $stage, 'status' => $report['state']['status'] ?? null, 'review_paths' => $report['review_paths'] ?? []],
                 operation: $run);
 

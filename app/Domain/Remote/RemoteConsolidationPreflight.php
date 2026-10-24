@@ -6,6 +6,7 @@ use App\Domain\Collector\CollectorConfiguration;
 use App\Domain\Tools\ToolOperationGate;
 use App\Enums\ConnectionStatus;
 use App\Enums\ProjectType;
+use App\Exceptions\ToolOperationBlocked;
 use App\Models\Project;
 use App\Models\ProjectConfiguration;
 use App\Models\Server;
@@ -51,10 +52,15 @@ final class RemoteConsolidationPreflight
         $connection = $this->connections->primary($server)?->status === ConnectionStatus::VALID;
         $checks[] = $this->check('remote.connection', 'Conexión con el servidor de destino', $connection,
             $connection ? 'La última prueba de conexión y del agente fue satisfactoria.' : 'Configura la conexión e instala el agente en '.$server->name.'.');
-        $deployed = $this->deployed($server);
-        $checks[] = $this->check('consolidator.distribution', 'Consolidador V8 desplegado y habilitado', $deployed,
-            $deployed ? 'El árbol desplegado coincide con la distribución verificada del catálogo.'
-                : 'Despliega el Consolidador verificado y habilita su modo remoto (consolidator:enable-remote).');
+        $blocked = $this->blocked();
+        $deployed = $blocked === null && $this->deployed($server);
+        $checks[] = $blocked !== null
+            ? $this->check('consolidator.distribution', 'Consolidador V8 habilitado en la plataforma', false,
+                'El Consolidador 8.0.0 no está habilitado en el catálogo de herramientas: '.$blocked
+                .' Un administrador de la plataforma debe habilitarlo (php artisan consolidator:enable-remote).')
+            : $this->check('consolidator.distribution', 'Consolidador V8 desplegado', $deployed,
+                $deployed ? 'El árbol desplegado coincide con la distribución verificada del catálogo.'
+                    : 'Despliega el Consolidador verificado en '.$server->name.'.');
         $ready = is_array($check) && ($check['ready'] ?? false) === true;
         $checks[] = $this->check('remote.destination', 'Perfil de destino comprobado', $ready,
             $ready ? 'El perfil '.$profile.' superó su comprobación.' : 'Comprueba el perfil de destino '.$profile.'.');
@@ -146,21 +152,29 @@ final class RemoteConsolidationPreflight
             .($extra === [] ? '' : 'Retira de copias/: '.implode(', ', $extra).' (el Consolidador importa todos los ZIP).'))];
     }
 
-    private function deployed(Server $server): bool
+    /** Why the catalog does not let the Consolidator run, or null when it does. */
+    private function blocked(): ?string
     {
         $distribution = ToolDistribution::query()->with('toolVersion')->where('key', CheckRemoteDestination::DISTRIBUTION_KEY)
             ->where('verification_state', 'VERIFIED')->first();
-        $deployed = $server->metadata['remote_tools'][CheckRemoteDestination::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
-        if ($distribution === null || ! is_string($deployed) || ! hash_equals($distribution->distribution_sha256, $deployed)) {
-            return false;
+        if ($distribution === null) {
+            return 'su distribución verificada no está registrada.';
         }
         try {
             $this->gate->assertRunnable($distribution->toolVersion, RemoteConsolidationConfiguration::WORKFLOW);
-        } catch (Throwable) {
-            return false;
+        } catch (ToolOperationBlocked $exception) {
+            return $exception->getMessage();
         }
 
-        return true;
+        return null;
+    }
+
+    private function deployed(Server $server): bool
+    {
+        $distribution = ToolDistribution::query()->where('key', CheckRemoteDestination::DISTRIBUTION_KEY)->where('verification_state', 'VERIFIED')->first();
+        $deployed = $server->metadata['remote_tools'][CheckRemoteDestination::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
+
+        return $distribution !== null && is_string($deployed) && hash_equals($distribution->distribution_sha256, $deployed);
     }
 
     /** @return array{id: string, description: string, result: string, detail: string} */

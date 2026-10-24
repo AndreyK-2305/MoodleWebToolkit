@@ -62,8 +62,9 @@ export default function Dashboard({ userCounts, projectCounts }: Props) {
                         Gestión de migraciones Moodle
                     </h1>
                     <p className="text-muted-foreground mt-1 max-w-2xl text-sm">
-                        Configure proyectos mediante el wizard e inicie una
-                        ejecución simulada real sobre Redis Queue y Reverb.
+                        Configure un proyecto paso a paso, conecte sus
+                        servidores y siga la recolección o la consolidación
+                        desde esta plataforma.
                     </p>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -84,12 +85,14 @@ export default function Dashboard({ userCounts, projectCounts }: Props) {
                     ))}
                 </div>
                 <div className="border-border bg-card rounded-xl border p-6">
-                    <h2 className="font-semibold">Alcance de esta entrega</h2>
+                    <h2 className="font-semibold">Cómo funciona</h2>
                     <p className="text-muted-foreground mt-2 text-sm">
-                        Confirmar deja el proyecto en READY. Iniciar es una
-                        acción posterior que persiste el intento antes de
-                        despacharlo al worker. La conexión a servidores y las
-                        herramientas reales permanecen fuera de este corte.
+                        Cada proyecto se configura en cinco pasos y se confirma
+                        cuando el preflight no encuentra errores. Al iniciarlo,
+                        el Recolector o el Consolidador trabajan en sus
+                        servidores; el seguimiento muestra el avance aunque
+                        cierre la página y le pide una decisión solo cuando hace
+                        falta.
                     </p>
                 </div>
             </div>

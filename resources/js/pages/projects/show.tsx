@@ -119,6 +119,7 @@ function blankInstance(
     role: InstanceRole,
     type: ProjectType,
     sequence: number,
+    simulated: boolean,
 ): InstanceDraft {
     const destinationKind =
         role === 'DESTINATION'
@@ -139,8 +140,10 @@ function blankInstance(
         name:
             role === 'SOURCE' ? `Moodle origen ${sequence}` : 'Moodle destino',
         base_url: '',
-        moodle_version: '4.5',
-        validated: true,
+        // The sources run Moodle 4.5; the Consolidator builds its destinations on Moodle 5.2.
+        moodle_version: role === 'SOURCE' ? '4.5' : '5.2',
+        // A real instance is reviewed by the administrator: they tick it themselves.
+        validated: simulated,
         destination_kind: destinationKind,
     };
 }
@@ -155,24 +158,24 @@ function defaultInstances(
 
     // A remote consolidation reads its sources from sealed packages: only the destination is registered.
     if (project.type === 'CONSOLIDATE' && !simulated) {
-        return [blankInstance('DESTINATION', project.type, 1)];
+        return [blankInstance('DESTINATION', project.type, 1, simulated)];
     }
 
     if (project.type === 'COLLECT') {
-        return [blankInstance('SOURCE', project.type, 1)];
+        return [blankInstance('SOURCE', project.type, 1, simulated)];
     }
 
     if (project.type === 'CONSOLIDATE') {
         return [
-            blankInstance('SOURCE', project.type, 1),
-            blankInstance('SOURCE', project.type, 2),
-            blankInstance('DESTINATION', project.type, 1),
+            blankInstance('SOURCE', project.type, 1, simulated),
+            blankInstance('SOURCE', project.type, 2, simulated),
+            blankInstance('DESTINATION', project.type, 1, simulated),
         ];
     }
 
     return [
-        blankInstance('SOURCE', project.type, 1),
-        blankInstance('DESTINATION', project.type, 1),
+        blankInstance('SOURCE', project.type, 1, simulated),
+        blankInstance('DESTINATION', project.type, 1, simulated),
     ];
 }
 
@@ -182,7 +185,13 @@ export default function ProjectShow({
     collectorLab,
     remoteAccess,
 }: Props) {
-    const [activeStep, setActiveStep] = useState(project.current_step);
+    // A preflight with errors keeps the wizard on step 4, where they are listed: the
+    // confirmation stays closed until a new preflight passes.
+    const blocked = blockingChecks(project.preflight).length > 0;
+    const reachable = (step: number) => (blocked && step === 5 ? 4 : step);
+    const [activeStep, setActiveStep] = useState(
+        reachable(project.current_step),
+    );
     // With remote access the servers are real; REMOTE mode is configured in its own card.
     const simulated = !remoteAccess?.enabled;
     const mode = project.options.mode;
@@ -191,7 +200,12 @@ export default function ProjectShow({
     const remoteConsolidation =
         mode === 'REMOTE_CONSOLIDATION' ||
         (!simulated && project.type === 'CONSOLIDATE');
-    const remoteMode = mode === 'REMOTE' || remoteConsolidation;
+    // Likewise a collection with real servers is configured in its remote card, saved or not;
+    // only the collector laboratory keeps its own mode.
+    const remoteMode =
+        mode === 'REMOTE' ||
+        remoteConsolidation ||
+        (!simulated && project.type === 'COLLECT' && !mode);
     const steps = wizardSteps(
         simulated,
         remoteConsolidation
@@ -202,8 +216,9 @@ export default function ProjectShow({
     );
 
     useEffect(() => {
-        setActiveStep(project.current_step);
-    }, [project.configuration_version, project.current_step]);
+        setActiveStep(reachable(project.current_step));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [project.configuration_version, project.current_step, blocked]);
 
     return (
         <>
@@ -298,12 +313,19 @@ export default function ProjectShow({
                     {steps.map((label, index) => {
                         const number = index + 1;
                         const selected = activeStep === number;
+                        const closed = reachable(number) !== number;
 
                         return (
                             <button
                                 key={label}
                                 type="button"
                                 aria-current={selected ? 'step' : undefined}
+                                disabled={closed}
+                                title={
+                                    closed
+                                        ? 'Corrija los errores del preflight para continuar'
+                                        : undefined
+                                }
                                 onClick={() => setActiveStep(number)}
                                 className={cn(
                                     'flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
@@ -348,6 +370,12 @@ export default function ProjectShow({
                 {activeStep === 3 && remoteMode && (
                     <RemoteOptionsStep
                         consolidation={remoteConsolidation}
+                        configured={
+                            mode ===
+                            (remoteConsolidation
+                                ? 'REMOTE_CONSOLIDATION'
+                                : 'REMOTE')
+                        }
                         onBack={() => setActiveStep(2)}
                         onNext={() => setActiveStep(4)}
                     />
@@ -641,7 +669,11 @@ function InstancesStep({
                                     id={`server-host-${index}`}
                                     label={simulated ? 'Host simulado' : 'Host'}
                                     value={instance.server_host}
-                                    placeholder="moodle-origen.test"
+                                    placeholder={
+                                        instance.role === 'SOURCE'
+                                            ? 'moodle-origen.test'
+                                            : 'moodle-destino.test'
+                                    }
                                     disabled={!project.can_edit}
                                     error={
                                         fieldErrors[
@@ -676,7 +708,11 @@ function InstancesStep({
                                             : 'URL de Moodle'
                                     }
                                     value={instance.base_url}
-                                    placeholder="https://moodle.test"
+                                    placeholder={
+                                        instance.role === 'SOURCE'
+                                            ? 'https://moodle-origen.test'
+                                            : 'https://moodle-destino.test'
+                                    }
                                     disabled={!project.can_edit}
                                     error={
                                         fieldErrors[
@@ -691,7 +727,11 @@ function InstancesStep({
                                     id={`version-${index}`}
                                     label="Versión Moodle"
                                     value={instance.moodle_version}
-                                    placeholder="4.5"
+                                    placeholder={
+                                        instance.role === 'SOURCE'
+                                            ? '4.5'
+                                            : '5.2'
+                                    }
                                     disabled={!project.can_edit}
                                     error={
                                         fieldErrors[
@@ -742,6 +782,7 @@ function InstancesStep({
                                             'SOURCE',
                                             project.type,
                                             sourceCount + 1,
+                                            simulated,
                                         ),
                                     ],
                                 }))
@@ -809,10 +850,12 @@ function InstanceField({
 
 function RemoteOptionsStep({
     consolidation,
+    configured,
     onBack,
     onNext,
 }: {
     consolidation: boolean;
+    configured: boolean;
     onBack: () => void;
     onNext: () => void;
 }) {
@@ -828,11 +871,22 @@ function RemoteOptionsStep({
                 <p className="text-muted-foreground text-sm">
                     {consolidation
                         ? 'La configuración de este proyecto se define en la tarjeta «Consolidación en el servidor de destino»: destino, perfil, paquetes y workers.'
-                        : 'La configuración de este proyecto se define en la tarjeta «Recolección desde el servidor de origen»: servidor, perfil, workers y nombre del paquete.'}{' '}
+                        : 'La configuración de este proyecto se define en la tarjeta «Recolección desde los servidores de origen»: servidor, perfil, workers y nombre del paquete.'}{' '}
                     No hay escenarios simulados que elegir.
                 </p>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-4">
+                {!configured && (
+                    <Alert>
+                        <CircleDot />
+                        <AlertTitle>Configuración pendiente</AlertTitle>
+                        <AlertDescription>
+                            {consolidation
+                                ? 'Guarde primero la tarjeta «Consolidación en el servidor de destino», más arriba en esta página.'
+                                : 'Guarde primero la tarjeta «Recolección desde los servidores de origen», más arriba en esta página.'}
+                        </AlertDescription>
+                    </Alert>
+                )}
                 <div className="flex flex-wrap justify-between gap-3">
                     <Button type="button" variant="outline" onClick={onBack}>
                         <ArrowLeft /> Atrás
@@ -1143,6 +1197,7 @@ function PreflightStep({
     const form = useForm({});
     const preflight = project.preflight;
     const fieldErrors = form.errors as Record<string, string>;
+    const blocking = blockingChecks(preflight);
 
     return (
         <Card>
@@ -1156,6 +1211,9 @@ function PreflightStep({
                 </p>
             </CardHeader>
             <CardContent className="space-y-4">
+                {blocking.length > 0 && (
+                    <BlockingChecks checks={blocking} simulated={simulated} />
+                )}
                 {preflight ? (
                     <div className="grid gap-3">
                         {preflight.checks.map((check) => (
@@ -1192,7 +1250,23 @@ function PreflightStep({
                                 onClick={() =>
                                     form.post(
                                         `/projects/${project.uuid}/wizard/preflight`,
-                                        { onSuccess: onNext },
+                                        {
+                                            // An error blocks the confirmation: stay here, where it is explained.
+                                            onSuccess: (page) => {
+                                                const fresh = (
+                                                    page.props as {
+                                                        project?: ProjectData;
+                                                    }
+                                                ).project?.preflight;
+                                                if (
+                                                    fresh &&
+                                                    blockingChecks(fresh)
+                                                        .length === 0
+                                                ) {
+                                                    onNext();
+                                                }
+                                            },
+                                        },
                                     )
                                 }
                             >
@@ -1202,14 +1276,79 @@ function PreflightStep({
                             </Button>
                         )}
                         {preflight && (
-                            <Button type="button" onClick={onNext}>
+                            <Button
+                                type="button"
+                                disabled={blocking.length > 0}
+                                aria-describedby={
+                                    blocking.length > 0
+                                        ? 'preflight-blocked'
+                                        : undefined
+                                }
+                                onClick={onNext}
+                            >
                                 Revisar confirmación <ArrowRight />
                             </Button>
+                        )}
+                        {preflight && blocking.length > 0 && (
+                            <p
+                                id="preflight-blocked"
+                                className="text-muted-foreground self-center text-sm"
+                            >
+                                Corrija los errores de arriba y repita el
+                                preflight para continuar.
+                            </p>
                         )}
                     </div>
                 </div>
             </CardContent>
         </Card>
+    );
+}
+
+const checkResults: Record<PreflightCheck['result'], string> = {
+    SUCCESS: 'Correcto',
+    WARNING: 'Advertencia',
+    ERROR: 'Error',
+};
+
+function blockingChecks(preflight: Preflight | null): PreflightCheck[] {
+    return preflight?.checks.filter((check) => check.result === 'ERROR') ?? [];
+}
+
+/** The errors that block the confirmation, each with what to correct. */
+function BlockingChecks({
+    checks,
+    simulated,
+}: {
+    checks: PreflightCheck[];
+    simulated: boolean;
+}) {
+    return (
+        <Alert variant="destructive">
+            <AlertCircle />
+            <AlertTitle>
+                {checks.length === 1
+                    ? 'Hay 1 error que impide confirmar el proyecto'
+                    : `Hay ${checks.length} errores que impiden confirmar el proyecto`}
+            </AlertTitle>
+            <AlertDescription>
+                <ul className="list-disc space-y-1 pl-5">
+                    {checks.map((check) => (
+                        <li key={check.id}>
+                            <span className="font-medium">
+                                {check.description}:
+                            </span>{' '}
+                            {check.detail}
+                        </li>
+                    ))}
+                </ul>
+                <p className="mt-2">
+                    {simulated
+                        ? 'Corrija la configuración y vuelva a ejecutar el preflight.'
+                        : 'Corrija cada punto (en esta página o en el servidor) y vuelva a ejecutar el preflight.'}
+                </p>
+            </AlertDescription>
+        </Alert>
     );
 }
 
@@ -1239,14 +1378,11 @@ function CheckRow({ check }: { check: PreflightCheck }) {
                             check.result === 'ERROR' ? 'destructive' : 'outline'
                         }
                     >
-                        {check.result}
+                        {checkResults[check.result]}
                     </Badge>
                 </div>
                 <p className="text-muted-foreground mt-1 text-sm">
                     {check.detail}
-                </p>
-                <p className="text-muted-foreground mt-1 font-mono text-xs">
-                    {check.id}
                 </p>
             </div>
         </div>
@@ -1266,9 +1402,7 @@ function ConfirmationStep({
         project.preflight?.checks.filter(
             (check) => check.result === 'WARNING',
         ) ?? [];
-    const errors =
-        project.preflight?.checks.filter((check) => check.result === 'ERROR') ??
-        [];
+    const errors = blockingChecks(project.preflight);
     const form = useForm({
         configuration_version: project.configuration_version,
         accepted_warning_ids:
@@ -1368,16 +1502,15 @@ function ConfirmationStep({
                 )}
 
                 {errors.length > 0 && (
-                    <Alert variant="destructive">
-                        <AlertCircle />
-                        <AlertTitle>
+                    <div className="space-y-2">
+                        <p className="font-medium">
                             La configuración no puede confirmarse
-                        </AlertTitle>
-                        <AlertDescription>
-                            Corrija los errores y ejecute nuevamente el
-                            preflight.
-                        </AlertDescription>
-                    </Alert>
+                        </p>
+                        <BlockingChecks
+                            checks={errors}
+                            simulated={!project.options.mode}
+                        />
+                    </div>
                 )}
 
                 {project.status === 'READY' && (
@@ -1417,7 +1550,7 @@ function ConfirmationStep({
                     {project.can_edit && project.status !== 'READY' && (
                         <Button
                             type="button"
-                            disabled={form.processing}
+                            disabled={form.processing || errors.length > 0}
                             onClick={() =>
                                 form.post(
                                     `/projects/${project.uuid}/wizard/confirm`,

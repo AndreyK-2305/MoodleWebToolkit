@@ -117,6 +117,22 @@ class RemoteCollectionExecutionTest extends DomainTestCase
         $this->assertNotSame(ProjectStatus::READY, $this->project->fresh()->status);
     }
 
+    public function test_a_disabled_recolector_is_named_as_the_cause_and_survives_a_re_seed(): void
+    {
+        $this->put(route('projects.collector.remote-configuration', $this->project), $this->input())->assertRedirect();
+        // Re-seeding the catalog keeps the version the operator enabled.
+        $this->seed(ToolCatalogSeeder::class);
+        $this->post(route('projects.wizard.preflight', $this->project))->assertRedirect();
+        $this->assertSame('SUCCESS', collect($this->project->fresh()->configuration->settings['preflight']['checks'])->pluck('result', 'id')['collector.distribution']);
+
+        ToolDistribution::query()->with('toolVersion')->where('key', RemoteCollectorExport::DISTRIBUTION_KEY)->sole()->toolVersion->update(['enabled' => false]);
+        $this->post(route('projects.wizard.preflight', $this->project))->assertRedirect();
+        $check = collect($this->project->fresh()->configuration->settings['preflight']['checks'])->firstWhere('id', 'collector.distribution');
+        $this->assertSame(['ERROR', 'Recolector 7.4.2 habilitado en la plataforma'], [$check['result'], $check['description']]);
+        $this->assertStringContainsString('no está habilitado en el catálogo', $check['detail']);
+        $this->assertStringNotContainsString('Despliega', $check['detail']);
+    }
+
     public function test_execution_runs_the_export_publishes_and_reaches_review(): void
     {
         $execution = $this->startExecution();

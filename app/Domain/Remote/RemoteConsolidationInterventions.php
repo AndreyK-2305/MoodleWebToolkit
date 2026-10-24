@@ -145,6 +145,15 @@ class RemoteConsolidationInterventions
                 $presented['server_'.$field] = OperatorText::technical($original);
             }
         }
+        // What was answered, without personal data: the page keeps confirming it while the destination applies it.
+        if (is_array($details['answers'] ?? null)) {
+            $answers = $details['answers'];
+            $resolutions = array_column(is_array($answers['decisions'] ?? null) ? array_filter($answers['decisions'], 'is_array') : [], 'resolution');
+            $presented['answer_summary'] = ['answered_at' => is_string($answers['answered_at'] ?? null) ? $answers['answered_at'] : null,
+                'merge' => count(array_keys($resolutions, 'MERGE', true)), 'keep_separate' => count(array_keys($resolutions, 'KEEP_SEPARATE', true)),
+                'ignore' => count(array_keys($resolutions, 'IGNORE', true)), 'theme' => is_string($answers['theme'] ?? null) ? $answers['theme'] : null,
+                'promoted' => is_array($answers['promote'] ?? null) ? count($answers['promote']) : 0];
+        }
 
         return $presented;
     }
@@ -293,7 +302,13 @@ class RemoteConsolidationInterventions
         $side = fn (mixed $side): array => is_array($side) ? ['source' => $text($side['source'] ?? null, 64), 'user_id' => $text($side['user_id'] ?? null, 32),
             'canonical_id' => $text($side['canonical_id'] ?? null, 64), 'name' => $text($side['name'] ?? null), 'email' => $text($side['email'] ?? null),
             'google' => $text($side['google'] ?? null, 40), 'members' => array_values(array_filter(array_map(fn ($member): ?string => $text($member, 80),
-                is_array($side['members'] ?? null) ? array_slice($side['members'], 0, 20) : [])))] : [];
+                is_array($side['members'] ?? null) ? array_slice($side['members'], 0, 20) : []))),
+            // Agent 1.14+: each member's existing username and the last digits of its document.
+            'accounts' => array_values(array_filter(array_map(fn ($account): ?array => is_array($account) && is_string($account['key'] ?? null)
+                && preg_match('/^[A-Za-z0-9_.-]{1,64}:[0-9]{1,15}$/D', $account['key']) === 1 ? ['key' => $account['key'], 'name' => $text($account['name'] ?? null),
+                    'email' => $text($account['email'] ?? null), 'username' => $text($account['username'] ?? null, 100),
+                    'document' => $text($account['document'] ?? null, 8)] : null,
+                is_array($side['accounts'] ?? null) ? array_slice($side['accounts'], 0, 20) : [])))] : [];
 
         return ['group' => $candidate['group'], 'type' => $text($candidate['type'] ?? null, 60), 'confidence' => $text($candidate['confidence'] ?? null, 30),
             'name_similarity' => $text($candidate['name_similarity'] ?? null, 12), 'email_similarity' => $text($candidate['email_similarity'] ?? null, 12),

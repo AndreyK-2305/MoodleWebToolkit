@@ -20,13 +20,8 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
                 for (const checkbox of await page.getByRole('checkbox').all())
                     await checkbox.check();
             }
-            await page
-                .getByRole('button', { name: 'Confirmar configuración' })
-                .click();
             if (scenario === 'ERROR') {
-                await expect(
-                    page.getByText('La configuración no puede confirmarse'),
-                ).toBeVisible();
+                // The wizard never reaches the confirmation; the backend refuses it too.
                 expect(
                     (
                         await request(
@@ -41,6 +36,9 @@ for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
                 ).toBe(422);
                 expect(snapshot(uuid).status).toBe('CONFIGURING');
             } else {
+                await page
+                    .getByRole('button', { name: 'Confirmar configuración' })
+                    .click();
                 await expect(
                     page.getByText('Proyecto listo', { exact: true }),
                 ).toBeVisible();

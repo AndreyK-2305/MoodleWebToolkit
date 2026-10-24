@@ -92,15 +92,11 @@ class ToolCatalogSeeder extends Seeder
                 );
 
                 /** @var ToolVersion $version */
-                $version = $tool->versions()->updateOrCreate(
-                    ['version' => $entry['version']],
-                    [
-                        'archive_name' => null,
-                        'archive_sha256' => null,
-                        'tree_sha256' => $entry['tree_sha256'],
-                        'enabled' => false,
-                    ],
-                );
+                $version = $tool->versions()->firstOrNew(['version' => $entry['version']]);
+                // A new version starts disabled. Re-seeding keeps the operator's choice for the same tree,
+                // and only a different tree under the same version closes it again.
+                $enabled = $version->exists && $version->enabled && hash_equals((string) $version->tree_sha256, $entry['tree_sha256']);
+                $version->forceFill(['archive_name' => null, 'archive_sha256' => null, 'tree_sha256' => $entry['tree_sha256'], 'enabled' => $enabled])->save();
 
                 $distribution = ToolDistribution::query()->updateOrCreate(
                     ['key' => $tool->key.'-'.$version->version.'-tree'],

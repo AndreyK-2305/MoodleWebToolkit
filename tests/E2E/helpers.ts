@@ -268,6 +268,22 @@ export async function wizard(
     await page
         .getByRole('button', { name: 'Ejecutar preflight', exact: true })
         .click();
+    if (scenario === 'ERROR') {
+        // An error keeps the wizard on the preflight, which lists it.
+        await expect(
+            page.getByText(/que impiden? confirmar el proyecto/).first(),
+        ).toBeVisible();
+        await expect(
+            page.getByRole('button', { name: 'Revisar confirmación' }),
+        ).toBeDisabled();
+        // The stepper keeps the confirmation closed as well.
+        await expect(
+            page
+                .getByRole('navigation', { name: 'Pasos del wizard' })
+                .getByRole('button', { name: /Confirmación/ }),
+        ).toBeDisabled();
+        return uuid;
+    }
     await expect(
         page.getByText('5. Confirmación', { exact: true }),
     ).toBeVisible();

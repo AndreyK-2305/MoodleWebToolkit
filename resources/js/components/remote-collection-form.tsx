@@ -1,5 +1,5 @@
 import { router, useForm } from '@inertiajs/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import InputError from '@/components/input-error';
 import type {
     RemoteServer,
@@ -40,6 +40,15 @@ function packageName(server: RemoteServer | undefined, index: number): string {
     return /^[a-z]/.test(slug) ? slug.slice(0, 64) : `origen-${index + 1}`;
 }
 
+/** The profile a row starts with: the first checked one, else the first the server reported. */
+function firstProfile(server: RemoteServer | undefined): string {
+    return (
+        server?.sources.find((source) => source.ready)?.id ??
+        server?.sources.find((source) => source.detected)?.id ??
+        ''
+    );
+}
+
 function initialRows(
     options: RemoteCollectionOptions,
     sources: RemoteServer[],
@@ -57,10 +66,10 @@ function initialRows(
         ];
     }
 
-    // One row per source server, with the first ready profile of each.
+    // One row per source server, with its first profile.
     return sources.slice(0, MAX_SOURCES).map((server, index) => ({
         server_uuid: server.uuid,
-        source_profile: server.sources.find((source) => source.ready)?.id ?? '',
+        source_profile: firstProfile(server),
         package_name: packageName(server, index),
     }));
 }
@@ -88,6 +97,28 @@ export default function RemoteCollectionForm({
     });
     const errors = form.errors as Record<string, string>;
     const [busy, setBusy] = useState<string | null>(null);
+    // Profiles detected after the form opened fill the rows still without one.
+    const detected = sources
+        .map((server) => `${server.uuid}:${firstProfile(server)}`)
+        .join('|');
+    useEffect(() => {
+        form.setData((data) => ({
+            ...data,
+            sources: data.sources.map((row) =>
+                row.source_profile === ''
+                    ? {
+                          ...row,
+                          source_profile: firstProfile(
+                              sources.find(
+                                  (server) => server.uuid === row.server_uuid,
+                              ),
+                          ),
+                      }
+                    : row,
+            ),
+        }));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [detected]);
     const updateRow = (index: number, row: Partial<SourceRow>) =>
         form.setData(
             'sources',
@@ -207,10 +238,7 @@ export default function RemoteCollectionForm({
                                                         server_uuid:
                                                             event.target.value,
                                                         source_profile:
-                                                            next?.sources.find(
-                                                                (source) =>
-                                                                    source.ready,
-                                                            )?.id ?? '',
+                                                            firstProfile(next),
                                                     });
                                                 }}
                                             >
@@ -402,17 +430,32 @@ export default function RemoteCollectionForm({
                                     <Button
                                         type="button"
                                         variant="outline"
-                                        onClick={() =>
+                                        onClick={() => {
+                                            // The next server not used yet; a server can hold several profiles, so it may repeat.
+                                            const next =
+                                                sources.find(
+                                                    (server) =>
+                                                        !form.data.sources.some(
+                                                            (row) =>
+                                                                row.server_uuid ===
+                                                                server.uuid,
+                                                        ),
+                                                ) ?? sources[0];
                                             form.setData('sources', [
                                                 ...form.data.sources,
                                                 {
                                                     server_uuid:
-                                                        sources[0]?.uuid ?? '',
-                                                    source_profile: '',
-                                                    package_name: `origen-${form.data.sources.length + 1}`,
+                                                        next?.uuid ?? '',
+                                                    source_profile:
+                                                        firstProfile(next),
+                                                    package_name: packageName(
+                                                        next,
+                                                        form.data.sources
+                                                            .length,
+                                                    ),
                                                 },
-                                            ])
-                                        }
+                                            ]);
+                                        }}
                                     >
                                         Agregar origen
                                     </Button>

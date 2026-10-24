@@ -42,6 +42,24 @@ import {
     responseBelongsToExecution,
     resumePayload,
 } from '@/lib/execution-tracking';
+import {
+    chooseCanonical,
+    confidenceLabel,
+    decisionGap,
+    identityFacts,
+    identityMembers,
+    initialDecision,
+    isEvidentMatch,
+    keepsDuplicateEmail,
+    matchReasons,
+    memberLabel,
+    MIN_JUSTIFICATION,
+    resolutionLabels,
+} from '@/lib/identity-review';
+import type {
+    IdentityCandidate,
+    IdentityDecision,
+} from '@/lib/identity-review';
 import { cn } from '@/lib/utils';
 
 type Step = {
@@ -197,6 +215,7 @@ type ConflictData = {
         checkpoint_status?: string | null;
         plugins_none?: boolean;
         candidates?: IdentityCandidate[];
+        answer_summary?: AnswerSummary;
         candidate_total?: number | null;
         candidates_complete?: boolean;
         themes?: string[];
@@ -228,37 +247,19 @@ type ConflictData = {
     } | null;
 };
 
-type IdentityAccount = {
-    source: string | null;
-    user_id: string | null;
-    canonical_id: string | null;
-    name: string | null;
-    email: string | null;
-    google: string | null;
-    members: string[];
+type AnswerSummary = {
+    answered_at: string | null;
+    merge: number;
+    keep_separate: number;
+    ignore: number;
+    theme: string | null;
+    promoted: number;
 };
 
-type IdentityCandidate = {
-    group: string;
-    type: string | null;
-    confidence: string | null;
-    name_similarity: string | null;
-    email_similarity: string | null;
-    identifier_match: string | null;
-    evidence: string | null;
-    a: IdentityAccount;
-    b: IdentityAccount;
-};
-
-type IdentityDecision = {
-    group: string;
-    resolution: '' | 'MERGE' | 'KEEP_SEPARATE' | 'IGNORE';
-    canonical_target: string;
-    canonical_email: string;
-    canonical_username: string;
-    oauth_policy: 'canonical_account' | 'none';
-    justification: string;
-};
+const resolutionOptions = Object.entries(resolutionLabels) as [
+    Exclude<IdentityDecision['resolution'], ''>,
+    { label: string; help: string },
+][];
 
 type CheckpointData = {
     id: number;
@@ -688,8 +689,20 @@ function ExecutionTracker({
         // The upload ends on the destination; follow it closely until the
         // platform registers (or rejects) the copy.
         const follow = window.setInterval(() => void catchUp(), 5_000);
+        // In the 2026-10-24 test the state stayed on «Respaldando…» until a manual
+        // reload: the page props are read again too, as a reload would.
+        const reload = window.setInterval(
+            () =>
+                router.reload({
+                    only: ['execution', 'review', 'events'],
+                }),
+            20_000,
+        );
 
-        return () => window.clearInterval(follow);
+        return () => {
+            window.clearInterval(follow);
+            window.clearInterval(reload);
+        };
     }, [backupRunning, catchUp]);
 
     const progress = progressDisplay(execution.status, execution.progress);
@@ -824,6 +837,9 @@ function ExecutionTracker({
                         executionUuid={execution.uuid}
                         consolidation={execution.consolidation}
                         status={execution.status}
+                        awaitingAnswer={execution.conflicts.some(
+                            (conflict) => conflict.status === 'OPEN',
+                        )}
                         canControl={canControl && !updatesPaused}
                     />
                 )}
@@ -1504,6 +1520,7 @@ function ExecutionActions({
         'WAITING_USER_ACTION',
         'VERIFYING',
     ].includes(execution.status);
+    const answered = answeredIntervention(execution);
 
     if (execution.status === 'COMPLETED') {
         return null;
@@ -1530,6 +1547,11 @@ function ExecutionActions({
                             disabled={disabled}
                         />
                     ))}
+                {answered && (
+                    <AnswersSent
+                        summary={answered.intervention?.answer_summary}
+                    />
+                )}
 
                 <div className="flex flex-wrap gap-2">
                     {execution.collector?.can_fresh_export && (
@@ -1746,6 +1768,27 @@ function ExecutionActions({
     );
 }
 
+/**
+ * The intervention answered last, while the Consolidator is still on its stage:
+ * its confirmation stays visible until the destination moves on.
+ */
+function answeredIntervention(execution: ExecutionData): ConflictData | null {
+    if (execution.conflicts.some((conflict) => conflict.status === 'OPEN')) {
+        return null;
+    }
+    const last = [...execution.conflicts]
+        .reverse()
+        .find((conflict) => conflict.intervention?.answer_summary);
+    return last &&
+        ['QUEUED', 'RUNNING', 'WAITING_USER_ACTION'].includes(
+            execution.status,
+        ) &&
+        (execution.consolidation?.stage ?? null) ===
+            (last.intervention?.stage ?? null)
+        ? last
+        : null;
+}
+
 const consolidationStages: Record<string, string> = {
     '01-importar-paquetes': 'Importar paquetes',
     '02-oauth2': 'Google OAuth2',
@@ -1776,12 +1819,14 @@ function ConsolidationStatus({
     executionUuid,
     consolidation,
     status,
+    awaitingAnswer,
     canControl,
 }: {
     projectUuid: string;
     executionUuid: string;
     consolidation: ConsolidationData;
     status: string;
+    awaitingAnswer: boolean;
     canControl: boolean;
 }) {
     const backupForm = useForm({});
@@ -1837,7 +1882,9 @@ function ConsolidationStatus({
                                     'El Consolidador espera una decisión.'}
                             </p>
                             <p className="text-xs">
-                                Respóndala en «Acciones controladas».
+                                {awaitingAnswer
+                                    ? 'Respóndala más abajo, en «Acciones controladas».'
+                                    : 'Su respuesta quedó registrada; el destino la está aplicando.'}
                             </p>
                             <ServerDetails
                                 message={consolidation.server_message}
@@ -2055,8 +2102,13 @@ function CollectorReview({
                 )}
                 {remote && report && (
                     <p className="text-sm">
-                        Etapa {report.stage ?? 'sin determinar'} · cursos{' '}
-                        {report.completed_courses ?? '—'} de{' '}
+                        {/* With several sources the stage is per source; only the total is shown here. */}
+                        {report.stage
+                            ? `Etapa ${report.stage} · `
+                            : execution.status === 'REVIEW'
+                              ? 'Exportación terminada · '
+                              : ''}
+                        cursos {report.completed_courses ?? '—'} de{' '}
                         {report.total_courses ?? '—'}
                         {report.failed_courses
                             ? ` · ${report.failed_courses} con error`
@@ -2506,15 +2558,7 @@ function UnknownPlugins({
     );
 
     if (sent) {
-        return (
-            <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
-                <p className="font-medium">Respuestas enviadas</p>
-                <p className="text-muted-foreground">
-                    El destino las aplica y la consolidación continúa; el
-                    seguimiento muestra el avance.
-                </p>
-            </div>
-        );
+        return <AnswersSent />;
     }
 
     const ready = Object.keys(proposals);
@@ -2710,29 +2754,82 @@ function useInterventionAnswers(
     return { send, processing, errors, sent };
 }
 
-function AccountFacts({
-    label,
-    account,
-}: {
-    label: string;
-    account: IdentityAccount;
-}) {
+/** Shown once the answers are sent, and kept while the destination applies them. */
+function AnswersSent({ summary }: { summary?: AnswerSummary | null }) {
+    const parts = summary
+        ? [
+              summary.merge > 0 && `${summary.merge} unidas`,
+              summary.keep_separate > 0 && `${summary.keep_separate} separadas`,
+              summary.ignore > 0 && `${summary.ignore} sin cambios`,
+              summary.theme && `apariencia «${summary.theme}»`,
+              summary.promoted > 0 &&
+                  `${summary.promoted} plugins agregados al catálogo`,
+          ].filter(Boolean)
+        : [];
+
     return (
-        <div className="space-y-0.5 text-xs">
-            <p className="font-medium">{label}</p>
-            <p>{account.name ?? 'Sin nombre'}</p>
-            <p className="text-muted-foreground break-all">
-                {account.email ?? 'Sin correo'}
-            </p>
-            <p className="text-muted-foreground font-mono">
-                {account.source}:{account.user_id}
-                {account.google && ` · Google ${account.google}`}
+        <div
+            role="status"
+            className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm dark:border-emerald-900 dark:bg-emerald-950/30"
+        >
+            <p className="font-medium">Respuestas enviadas</p>
+            {parts.length > 0 && <p>Decisiones: {parts.join(', ')}.</p>}
+            <p className="text-muted-foreground">
+                El destino las aplica y la consolidación continúa sola; el
+                seguimiento muestra el avance. No necesita hacer nada más aquí.
             </p>
         </div>
     );
 }
 
-/** The fuzzy identity candidates: each group is merged, kept apart or ignored, with a reason. */
+function IdentityFactsTable({ candidate }: { candidate: IdentityCandidate }) {
+    return (
+        <table className="w-full text-left text-xs">
+            <thead>
+                <tr className="text-muted-foreground">
+                    <th className="w-28 py-1 font-normal">
+                        <span className="sr-only">Dato</span>
+                    </th>
+                    <th className="py-1 font-medium">Cuenta 1</th>
+                    <th className="py-1 font-medium">Cuenta 2</th>
+                </tr>
+            </thead>
+            <tbody>
+                {identityFacts(candidate).map((fact) => (
+                    <tr key={fact.label} className="border-t align-top">
+                        <th
+                            scope="row"
+                            className="text-muted-foreground py-1 pr-2 font-normal"
+                        >
+                            {fact.label}
+                            {!fact.same && fact.label !== 'Origen' && (
+                                <span className="sr-only"> (distinto)</span>
+                            )}
+                        </th>
+                        {[fact.a, fact.b].map((value, position) => (
+                            <td
+                                key={position}
+                                className={`py-1 pr-2 break-all ${
+                                    fact.same || fact.label === 'Origen'
+                                        ? ''
+                                        : 'font-medium text-amber-800 dark:text-amber-300'
+                                }`}
+                            >
+                                {value}
+                            </td>
+                        ))}
+                    </tr>
+                ))}
+            </tbody>
+        </table>
+    );
+}
+
+/**
+ * The fuzzy identity candidates: for each pair of accounts that may be one
+ * person, the administrator decides whether they are joined, kept apart or
+ * left as they are, with a reason that stays in the audit.
+ */
 function IdentityReview({
     projectUuid,
     executionUuid,
@@ -2746,16 +2843,9 @@ function IdentityReview({
 }) {
     const candidates = conflict.intervention?.candidates ?? [];
     const [decisions, setDecisions] = useState<IdentityDecision[]>(() =>
-        candidates.map((candidate) => ({
-            group: candidate.group,
-            resolution: '',
-            canonical_target: candidate.a.members[0] ?? '',
-            canonical_email: candidate.a.email ?? '',
-            canonical_username: (candidate.a.email ?? '').toLowerCase(),
-            oauth_policy: 'canonical_account',
-            justification: '',
-        })),
+        candidates.map(initialDecision),
     );
+    const [bulkReason, setBulkReason] = useState('');
     const { send, processing, errors, sent } = useInterventionAnswers(
         projectUuid,
         executionUuid,
@@ -2763,14 +2853,20 @@ function IdentityReview({
     );
 
     if (sent) {
+        const count = (resolution: IdentityDecision['resolution']) =>
+            decisions.filter((decision) => decision.resolution === resolution)
+                .length;
         return (
-            <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
-                <p className="font-medium">Respuestas enviadas</p>
-                <p className="text-muted-foreground">
-                    El destino las aplica y la consolidación continúa; el
-                    seguimiento muestra el avance.
-                </p>
-            </div>
+            <AnswersSent
+                summary={{
+                    answered_at: null,
+                    merge: count('MERGE'),
+                    keep_separate: count('KEEP_SEPARATE'),
+                    ignore: count('IGNORE'),
+                    theme: null,
+                    promoted: 0,
+                }}
+            />
         );
     }
 
@@ -2780,136 +2876,209 @@ function IdentityReview({
                 position === index ? { ...decision, ...changes } : decision,
             ),
         );
-    const complete = decisions.every(
-        (decision) =>
-            decision.resolution !== '' &&
-            decision.justification.trim().length >= 3 &&
-            (decision.resolution !== 'MERGE' ||
-                (decision.canonical_target !== '' &&
-                    decision.canonical_email !== '' &&
-                    decision.canonical_username !== '')),
-    );
+    const gaps = decisions.map(decisionGap);
+    const decided = gaps.filter((gap) => gap === null).length;
+    const complete = decided === decisions.length;
+    const evident = candidates
+        .map((candidate, index) => ({ candidate, index }))
+        .filter(
+            ({ candidate, index }) =>
+                isEvidentMatch(candidate) && decisions[index].resolution === '',
+        );
 
     return (
         <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-900 dark:bg-amber-950/30">
             <p className="font-medium">{interventionTitles[conflict.type]}</p>
             <p className="text-muted-foreground">
-                El Consolidador encontró {candidates.length} grupos de cuentas
-                que podrían ser la misma persona. Decida cada uno antes de crear
-                los usuarios en el destino: fusionar en una cuenta canónica,
-                mantenerlas separadas o ignorar la coincidencia. El Consolidador
-                valida la revisión completa antes de aplicarla.
+                El Consolidador encontró {candidates.length}{' '}
+                {candidates.length === 1 ? 'caso' : 'casos'} de dos cuentas, una
+                de cada origen, que podrían ser de la misma persona. Antes de
+                crear los usuarios en el Moodle consolidado, decida cada caso.
+                Las diferencias entre las dos cuentas aparecen resaltadas.
             </p>
+            <details className="bg-background rounded-md border p-2 text-xs">
+                <summary className="cursor-pointer font-medium">
+                    ¿Qué significa cada opción?
+                </summary>
+                <dl className="mt-2 space-y-2">
+                    {Object.values(resolutionLabels).map((option) => (
+                        <div key={option.label}>
+                            <dt className="font-medium">{option.label}</dt>
+                            <dd className="text-muted-foreground">
+                                {option.help}
+                            </dd>
+                        </div>
+                    ))}
+                </dl>
+            </details>
+            <p className="font-medium" aria-live="polite">
+                {decided} de {decisions.length} decididos
+            </p>
+            {evident.length > 1 && (
+                <div className="bg-background space-y-2 rounded-md border p-3 text-xs">
+                    <p className="font-medium">
+                        {evident.length} casos tienen el mismo correo y el mismo
+                        documento
+                    </p>
+                    <p className="text-muted-foreground">
+                        Puede unirlos todos de una vez. Cada uno conserva la
+                        cuenta, el correo y el usuario de la primera cuenta;
+                        después puede revisar o cambiar cualquiera.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                        <Input
+                            className="max-w-md"
+                            aria-label="Motivo para unir los casos evidentes"
+                            placeholder="Motivo (queda en la auditoría)"
+                            value={bulkReason}
+                            onChange={(event) =>
+                                setBulkReason(event.target.value)
+                            }
+                        />
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={
+                                disabled ||
+                                bulkReason.trim().length < MIN_JUSTIFICATION
+                            }
+                            onClick={() =>
+                                setDecisions((current) =>
+                                    current.map((decision, position) =>
+                                        evident.some(
+                                            ({ index }) => index === position,
+                                        )
+                                            ? {
+                                                  ...decision,
+                                                  resolution: 'MERGE',
+                                                  justification:
+                                                      bulkReason.trim(),
+                                              }
+                                            : decision,
+                                    ),
+                                )
+                            }
+                        >
+                            Unir los {evident.length} casos evidentes
+                        </Button>
+                    </div>
+                </div>
+            )}
             {candidates.map((candidate, index) => {
                 const decision = decisions[index];
-                const accounts = [
-                    ...new Set([
-                        ...candidate.a.members,
-                        ...candidate.b.members,
-                    ]),
-                ];
+                const members = identityMembers(candidate);
+                const reasons = matchReasons(candidate);
                 const prefix = `decisions.${index}`;
+                const gap = gaps[index];
                 return (
-                    <div
+                    <fieldset
                         key={candidate.group}
-                        className="bg-background space-y-2 rounded-md border p-3"
+                        className="bg-background space-y-3 rounded-md border p-3"
                     >
+                        <legend className="sr-only">Caso {index + 1}</legend>
                         <div className="flex flex-wrap items-center gap-2 text-xs">
-                            <span className="font-mono">{candidate.group}</span>
-                            {candidate.confidence && (
-                                <Badge variant="outline">
-                                    confianza {candidate.confidence}
-                                </Badge>
-                            )}
-                            <span className="text-muted-foreground">
-                                nombre {candidate.name_similarity ?? '—'} ·
-                                correo {candidate.email_similarity ?? '—'}
-                                {candidate.identifier_match &&
-                                    ` · identificador ${candidate.identifier_match}`}
+                            <span className="font-medium">
+                                Caso {index + 1} de {candidates.length}
                             </span>
+                            <Badge variant="outline">
+                                {confidenceLabel(candidate.confidence)}
+                            </Badge>
+                            {gap === null ? (
+                                <Badge variant="secondary">Decidido</Badge>
+                            ) : (
+                                <span className="text-muted-foreground">
+                                    Pendiente: {gap}
+                                </span>
+                            )}
                         </div>
-                        <div className="grid gap-3 sm:grid-cols-2">
-                            <AccountFacts
-                                label="Cuenta A"
-                                account={candidate.a}
-                            />
-                            <AccountFacts
-                                label="Cuenta B"
-                                account={candidate.b}
-                            />
-                        </div>
-                        {candidate.evidence && (
-                            <p className="text-muted-foreground text-xs">
-                                Evidencia: {candidate.evidence}
+                        {reasons.length > 0 && (
+                            <p className="text-xs">
+                                Se detectó porque {reasons.join(', ')}.
                             </p>
                         )}
-                        <div className="flex flex-wrap gap-3 text-xs">
-                            {(
-                                [
-                                    ['MERGE', 'Fusionar'],
-                                    ['KEEP_SEPARATE', 'Mantener separadas'],
-                                    ['IGNORE', 'Ignorar coincidencia'],
-                                ] as const
-                            ).map(([value, label]) => (
-                                <label key={value} className="flex gap-1">
+                        <IdentityFactsTable candidate={candidate} />
+                        <div
+                            role="radiogroup"
+                            aria-label={`Decisión del caso ${index + 1}`}
+                            className="grid gap-2 text-xs sm:grid-cols-3"
+                        >
+                            {resolutionOptions.map(([value, option]) => (
+                                <label
+                                    key={value}
+                                    className={`flex cursor-pointer gap-2 rounded-md border p-2 ${
+                                        decision.resolution === value
+                                            ? 'border-primary bg-primary/5'
+                                            : ''
+                                    }`}
+                                >
                                     <input
                                         type="radio"
                                         name={`resolution-${candidate.group}`}
+                                        value={value}
+                                        aria-label={option.label}
                                         checked={decision.resolution === value}
                                         onChange={() =>
                                             update(index, { resolution: value })
                                         }
                                     />
-                                    {label}
+                                    <span>
+                                        <span className="block font-medium">
+                                            {option.label}
+                                        </span>
+                                        <span className="text-muted-foreground">
+                                            {option.help}
+                                        </span>
+                                    </span>
                                 </label>
                             ))}
                         </div>
+                        {keepsDuplicateEmail(candidate, decision) && (
+                            <p className="text-xs text-amber-800 dark:text-amber-300">
+                                Atención: las dos cuentas tienen el mismo correo
+                                y quedarán separadas en el Moodle consolidado.
+                                Si son la misma persona, elija «
+                                {resolutionLabels.MERGE.label}».
+                            </p>
+                        )}
                         {decision.resolution === 'MERGE' && (
                             <div className="grid gap-2 text-xs sm:grid-cols-2">
-                                <label className="space-y-1">
-                                    <span>Cuenta canónica</span>
+                                <label className="space-y-1 sm:col-span-2">
+                                    <span>Cuenta que se conserva</span>
                                     <select
                                         className="border-input bg-background w-full rounded-md border px-2 py-1"
                                         value={decision.canonical_target}
                                         onChange={(event) =>
-                                            update(index, {
-                                                canonical_target:
-                                                    event.target.value,
-                                            })
+                                            setDecisions((current) =>
+                                                current.map((item, position) =>
+                                                    position === index
+                                                        ? chooseCanonical(
+                                                              item,
+                                                              members,
+                                                              event.target
+                                                                  .value,
+                                                          )
+                                                        : item,
+                                                ),
+                                            )
                                         }
                                     >
-                                        {accounts.map((account) => (
+                                        {members.map((member) => (
                                             <option
-                                                key={account}
-                                                value={account}
+                                                key={member.key}
+                                                value={member.key}
                                             >
-                                                {account}
+                                                {memberLabel(member)}
                                             </option>
                                         ))}
                                     </select>
+                                    <span className="text-muted-foreground block">
+                                        La otra cuenta se une a esta: sus cursos
+                                        y calificaciones pasan a la cuenta que
+                                        se conserva.
+                                    </span>
                                 </label>
                                 <label className="space-y-1">
-                                    <span>Vínculo con Google</span>
-                                    <select
-                                        className="border-input bg-background w-full rounded-md border px-2 py-1"
-                                        value={decision.oauth_policy}
-                                        onChange={(event) =>
-                                            update(index, {
-                                                oauth_policy: event.target
-                                                    .value as IdentityDecision['oauth_policy'],
-                                            })
-                                        }
-                                    >
-                                        <option value="canonical_account">
-                                            Vincular a la cuenta canónica
-                                        </option>
-                                        <option value="none">
-                                            Sin vínculo
-                                        </option>
-                                    </select>
-                                </label>
-                                <label className="space-y-1">
-                                    <span>Correo canónico</span>
+                                    <span>Correo de la cuenta unida</span>
                                     <Input
                                         value={decision.canonical_email}
                                         onChange={(event) =>
@@ -2926,7 +3095,9 @@ function IdentityReview({
                                     />
                                 </label>
                                 <label className="space-y-1">
-                                    <span>Usuario canónico</span>
+                                    <span>
+                                        Usuario de Moodle de la cuenta unida
+                                    </span>
                                     <Input
                                         value={decision.canonical_username}
                                         onChange={(event) =>
@@ -2945,13 +3116,35 @@ function IdentityReview({
                                         }
                                     />
                                 </label>
+                                <label className="space-y-1 sm:col-span-2">
+                                    <span>Inicio de sesión con Google</span>
+                                    <select
+                                        className="border-input bg-background w-full rounded-md border px-2 py-1"
+                                        value={decision.oauth_policy}
+                                        onChange={(event) =>
+                                            update(index, {
+                                                oauth_policy: event.target
+                                                    .value as IdentityDecision['oauth_policy'],
+                                            })
+                                        }
+                                    >
+                                        <option value="canonical_account">
+                                            Mantener el vínculo de la cuenta que
+                                            se conserva
+                                        </option>
+                                        <option value="none">
+                                            Quitarlo: la persona lo vuelve a
+                                            vincular después
+                                        </option>
+                                    </select>
+                                </label>
                             </div>
                         )}
                         <label className="block space-y-1 text-xs">
-                            <span>Justificación</span>
+                            <span>Motivo de la decisión</span>
                             <Input
                                 value={decision.justification}
-                                placeholder="Por qué se decide así (queda en la auditoría)"
+                                placeholder="Por ejemplo: mismo documento y mismo nombre (queda en la auditoría)"
                                 onChange={(event) =>
                                     update(index, {
                                         justification: event.target.value,
@@ -2962,17 +3155,53 @@ function IdentityReview({
                                 message={errors[`${prefix}.justification`]}
                             />
                         </label>
-                    </div>
+                        <ServerDetails
+                            message={[
+                                `Grupo ${candidate.group}`,
+                                `confianza ${candidate.confidence ?? '—'}`,
+                                `nombre ${candidate.name_similarity ?? '—'}`,
+                                `correo ${candidate.email_similarity ?? '—'}`,
+                                `identificador ${candidate.identifier_match ?? '—'}`,
+                                candidate.evidence,
+                                `cuentas ${members.map((member) => member.key).join(', ')}`,
+                            ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                        />
+                    </fieldset>
                 );
             })}
             <InputError message={errors.decisions ?? errors.conflict} />
+            {!complete && (
+                <div className="text-xs" aria-live="polite">
+                    <p className="font-medium">
+                        Para aplicar la revisión falta decidir{' '}
+                        {decisions.length - decided} de {decisions.length}{' '}
+                        casos:
+                    </p>
+                    <ul className="text-muted-foreground list-disc pl-5">
+                        {gaps.map((gap, index) =>
+                            gap === null ? null : (
+                                <li key={candidates[index].group}>
+                                    Caso {index + 1}: {gap}
+                                </li>
+                            ),
+                        )}
+                    </ul>
+                </div>
+            )}
             <Button
                 disabled={disabled || processing || !complete}
                 onClick={() =>
                     send({
                         decisions: decisions.map((decision) =>
                             decision.resolution === 'MERGE'
-                                ? decision
+                                ? {
+                                      ...decision,
+                                      canonical_email: decision.canonical_email
+                                          .trim()
+                                          .toLowerCase(),
+                                  }
                                 : {
                                       group: decision.group,
                                       resolution: decision.resolution,
@@ -3019,15 +3248,7 @@ function ThemeSelection({
     );
 
     if (sent) {
-        return (
-            <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
-                <p className="font-medium">Respuestas enviadas</p>
-                <p className="text-muted-foreground">
-                    El destino las aplica y la consolidación continúa; el
-                    seguimiento muestra el avance.
-                </p>
-            </div>
-        );
+        return <AnswersSent />;
     }
 
     return (

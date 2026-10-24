@@ -1,4 +1,5 @@
 import { useForm } from '@inertiajs/react';
+import { useEffect } from 'react';
 import InputError from '@/components/input-error';
 import type {
     AvailablePackage,
@@ -74,6 +75,22 @@ export default function RemoteConsolidationForm({
                 : form.data.source_packages.filter((item) => item !== uuid),
         );
     const count = form.data.source_packages.length;
+    // A destination that finishes preparing reports its profile later: choose it once it arrives.
+    const available = (server?.destinations ?? [])
+        .map((item) => `${item.id}:${item.ready}`)
+        .join('|');
+    useEffect(() => {
+        if (form.data.destination_profile !== '' || !server) {
+            return;
+        }
+        const first =
+            server.destinations.find((item) => item.ready) ??
+            server.destinations[0];
+        if (first) {
+            form.setData('destination_profile', first.id);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [available]);
 
     return (
         <Card>
