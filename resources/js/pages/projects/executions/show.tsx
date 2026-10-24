@@ -2102,7 +2102,13 @@ function CollectorReview({
                 )}
                 {remote && report && (
                     <p className="text-sm">
-                        Etapa {report.stage ?? 'sin determinar'} · cursos{' '}
+                        {/* With several sources the stage is per source; only the total is shown here. */}
+                        {report.stage
+                            ? `Etapa ${report.stage} · `
+                            : execution.status === 'REVIEW'
+                              ? 'Exportación terminada · '
+                              : ''}
+                        cursos{' '}
                         {report.completed_courses ?? '—'} de{' '}
                         {report.total_courses ?? '—'}
                         {report.failed_courses
