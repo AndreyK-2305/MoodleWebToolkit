@@ -1,4 +1,6 @@
-8.0.0-linux-rc13
+8.0.0-linux
+Origen: 8.0.0-linux-rc13 + reconstrucción de moodle-target cuando cambian los pins sin plugins instalados
+Estado: versión final de cierre técnico; RC13 validada de punta a punta desde MoodleWebToolkit (2026-10-22), el cambio final se confirma en la prueba representativa
 Origen: 8.0.0-linux-rc12 + revisión fuzzy exigible en modo automático (CONSOLIDATION_FUZZY_REVIEW=required)
 Estado: candidata final de cierre técnico; arranque background independiente del bit ejecutable del wrapper
 Origen: 8.0.0-linux-rc11 + ejecución explícita del wrapper mediante bash en systemd y nohup

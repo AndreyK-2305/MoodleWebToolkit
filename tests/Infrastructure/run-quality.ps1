@@ -236,12 +236,12 @@ try {
         playwright_retries = 0
         healthy_services = $expectedServices
         clean_images_built_in_driver = -not $SkipBuild
-        baseline_files = 424
+        baseline_files = 426
         baseline_readonly_services = if ($CollectorLab) { 8 } else { 7 }
         collector_restart_proof = if ($CollectorLab) { 'collector-resilience.json' } else { $null }
         collector_report_hygiene_proof = if ($CollectorLab -and $reportHygieneApproved) { 'collector-report-hygiene.json' } else { $null }
         collector_report_hygiene_contracts_proof = if ($CollectorLab -and $reportHygieneApproved) { 'collector-report-hygiene-contracts.json' } else { $null }
-        baseline_sha256 = '1b22d480e9b0c4380210634a11bc567bc293f49157e27d6bb214bef68bfb383e'
+        baseline_sha256 = '4613bd0a9a3338a0d6f3824955f9f30e712af3d1f6f15cbd43e2ae2b93c8cae6'
         completed_at_utc = [DateTime]::UtcNow.ToString('o')
     }
     $validation | ConvertTo-Json | Set-Content -LiteralPath $validationFile

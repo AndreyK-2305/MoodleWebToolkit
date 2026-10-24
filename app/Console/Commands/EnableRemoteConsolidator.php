@@ -30,7 +30,7 @@ class EnableRemoteConsolidator extends Command
         try {
             $distribution = ToolDistribution::query()->with('toolVersion')->where('key', CheckRemoteDestination::DISTRIBUTION_KEY)->sole();
             $verified = $verifier->verify($distribution);
-            if ($distribution->toolVersion->version !== '8.0.0-linux-rc13' || ! hash_equals($distribution->distribution_sha256, $verified->treeSha256)) {
+            if ($distribution->toolVersion->version !== '8.0.0-linux' || ! hash_equals($distribution->distribution_sha256, $verified->treeSha256)) {
                 throw new \RuntimeException;
             }
             DB::transaction(function () use ($distribution): void {
