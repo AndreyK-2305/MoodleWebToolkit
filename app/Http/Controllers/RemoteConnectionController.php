@@ -69,15 +69,19 @@ final class RemoteConnectionController extends Controller
         return to_route('projects.show', $project->uuid);
     }
 
-    public function installAgent(Request $request, Project $project, Server $server, InstallRemoteAgent $installer): RedirectResponse
+    public function installAgent(Request $request, Project $project, Server $server, InstallRemoteAgent $installer, TestRemoteConnection $tester): RedirectResponse
     {
         $this->authorizeServer($project, $server);
         /** @var User $actor */
         $actor = $request->user();
         $result = $installer->handle($server, $actor);
-        Inertia::flash('toast', $result['installed']
-            ? ['type' => 'success', 'message' => 'Agente '.$result['agent_version'].' instalado y verificado.']
-            : ['type' => 'error', 'message' => 'No se instaló el agente ('.$result['error_code'].').']);
+        // A fresh agent is tested right away: the panel shows the new state without a second click.
+        $tested = $result['installed'] ? $tester->handle($server, $actor)['status'] : null;
+        Inertia::flash('toast', match (true) {
+            $tested === 'VALID' => ['type' => 'success', 'message' => 'Agente '.$result['agent_version'].' instalado; la conexión quedó verificada.'],
+            $tested !== null => ['type' => 'warning', 'message' => 'Agente '.$result['agent_version'].' instalado, pero la prueba de conexión encontró problemas; revise las comprobaciones.'],
+            default => ['type' => 'error', 'message' => 'No se instaló el agente ('.$result['error_code'].').'],
+        });
 
         return to_route('projects.show', $project->uuid);
     }

@@ -689,8 +689,20 @@ function ExecutionTracker({
         // The upload ends on the destination; follow it closely until the
         // platform registers (or rejects) the copy.
         const follow = window.setInterval(() => void catchUp(), 5_000);
+        // In the 2026-10-24 test the state stayed on «Respaldando…» until a manual
+        // reload: the page props are read again too, as a reload would.
+        const reload = window.setInterval(
+            () =>
+                router.reload({
+                    only: ['execution', 'review', 'events'],
+                }),
+            20_000,
+        );
 
-        return () => window.clearInterval(follow);
+        return () => {
+            window.clearInterval(follow);
+            window.clearInterval(reload);
+        };
     }, [backupRunning, catchUp]);
 
     const progress = progressDisplay(execution.status, execution.progress);

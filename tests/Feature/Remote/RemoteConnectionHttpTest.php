@@ -108,6 +108,23 @@ class RemoteConnectionHttpTest extends DomainTestCase
         $this->assertSame(['install'], $this->transport->subcommands());
     }
 
+    public function test_a_successful_install_tests_the_connection_right_away(): void
+    {
+        config(['toolkit.features.remote_agent.enabled' => true]);
+        $this->actingAs($this->admin)->putJson($this->url('update'), $this->ssm())->assertRedirect();
+        $sha = app(RemoteAgent::class)->distribution()['sha256'];
+        $this->transport->ok('version', ['agent_sha256' => $sha]);
+        $this->transport->ok('version', ['agent_sha256' => $sha]);
+        $this->transport->ok('probe', ['agent_sha256' => $sha, 'launcher' => 'systemd', 'bash_version' => '5.2.21(1)-release',
+            'disk_free_bytes' => 200 * 1073741824, 'os_name' => 'Ubuntu 24.04 LTS', 'cpus' => 4]);
+
+        $this->actingAs($this->admin)->post($this->url('install-agent'))
+            ->assertRedirect(route('projects.show', $this->project->uuid))
+            ->assertInertiaFlash('toast.type', 'success');
+        $this->assertSame(['install', 'version', 'probe'], $this->transport->subcommands());
+        $this->assertSame(ConnectionStatus::VALID, $this->server->connections()->sole()->status);
+    }
+
     public function test_a_new_connection_suggests_the_configured_region(): void
     {
         config(['toolkit.remote.default_region' => 'sa-east-1']);
