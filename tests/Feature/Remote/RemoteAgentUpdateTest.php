@@ -155,8 +155,10 @@ class RemoteAgentUpdateTest extends DomainTestCase
 
     public function test_a_completed_project_never_updates_its_agent(): void
     {
-        $completed = $this->project($this->admin, ProjectStatus::COMPLETED);
+        // A completed project is read-only in the database: its server exists from before.
+        $completed = $this->project($this->admin);
         $server = $completed->servers()->create(['name' => 'Cerrado', 'role' => ServerRole::DESTINATION, 'host' => 'cerrado.example.edu']);
+        Project::query()->whereKey($completed->id)->update(['status' => ProjectStatus::COMPLETED]);
 
         $this->confirmed($this->admin)->post(route('projects.servers.connection.update-agent', [$completed->uuid, $server->uuid]), ['acknowledged' => true])
             ->assertSessionHasErrors('agent');
