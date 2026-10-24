@@ -30,6 +30,7 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::put('projects/{project:uuid}/consolidation/remote-configuration', RemoteConsolidationConfigurationController::class)->middleware('action.confirmed')->name('projects.consolidation.remote-configuration');
     Route::put('projects/{project:uuid}/servers/{server:uuid}/connection', [RemoteConnectionController::class, 'update'])->middleware('action.confirmed')->name('projects.servers.connection.update');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/connection/install-agent', [RemoteConnectionController::class, 'installAgent'])->middleware('action.confirmed')->name('projects.servers.connection.install-agent');
+    Route::post('projects/{project:uuid}/servers/{server:uuid}/connection/update-agent', [RemoteConnectionController::class, 'updateAgent'])->middleware('action.confirmed')->name('projects.servers.connection.update-agent');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/connection/test', [RemoteConnectionController::class, 'test'])->middleware('action.confirmed')->name('projects.servers.connection.test');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/collector/deploy', [RemoteConnectionController::class, 'deployCollector'])->middleware('action.confirmed')->name('projects.servers.collector.deploy');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/sources/check', [RemoteConnectionController::class, 'checkSource'])->middleware('action.confirmed')->name('projects.servers.sources.check');

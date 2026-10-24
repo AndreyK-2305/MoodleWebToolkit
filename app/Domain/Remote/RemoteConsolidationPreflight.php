@@ -86,6 +86,10 @@ final class RemoteConsolidationPreflight
         if ($project->type !== ProjectType::CONSOLIDATE || ! config('toolkit.features.remote_agent.enabled')) {
             return ['La consolidación remota requiere un proyecto CONSOLIDATE y el agente remoto habilitado.'];
         }
+        if (! $this->configurations->selected($configuration)) {
+            return ['Guarde la consolidación en el servidor de destino: el destino, su perfil y de '.RemoteConsolidationConfiguration::MIN_PACKAGES
+                .' a '.RemoteConsolidationConfiguration::MAX_PACKAGES.' paquetes sellados, uno por origen.'];
+        }
         try {
             $this->configurations->settings($configuration);
         } catch (Throwable) {

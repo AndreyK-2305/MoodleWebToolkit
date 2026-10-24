@@ -145,9 +145,17 @@ function blankInstance(
     };
 }
 
-function defaultInstances(project: ProjectData): InstanceDraft[] {
+function defaultInstances(
+    project: ProjectData,
+    simulated: boolean,
+): InstanceDraft[] {
     if (project.instances.length > 0) {
         return project.instances;
+    }
+
+    // A remote consolidation reads its sources from sealed packages: only the destination is registered.
+    if (project.type === 'CONSOLIDATE' && !simulated) {
+        return [blankInstance('DESTINATION', project.type, 1)];
     }
 
     if (project.type === 'COLLECT') {
@@ -362,6 +370,7 @@ export default function ProjectShow({
                 {activeStep === 5 && (
                     <ConfirmationStep
                         project={project}
+                        remoteConsolidation={remoteConsolidation}
                         onBack={() => setActiveStep(4)}
                     />
                 )}
@@ -478,15 +487,17 @@ function InstancesStep({
     onNext: () => void;
 }) {
     const form = useForm<{ instances: InstanceDraft[] }>({
-        instances: defaultInstances(project),
+        instances: defaultInstances(project, simulated),
     });
     const fieldErrors = form.errors as Record<string, string>;
     const sourceCount = form.data.instances.filter(
         (instance) => instance.role === 'SOURCE',
     ).length;
     // Collecting from several sources is a remote collection; at most eight of them.
+    // A remote consolidation has no source instances: its sources are the packages.
+    const remoteConsolidation = project.type === 'CONSOLIDATE' && !simulated;
     const canAddSource =
-        project.type === 'CONSOLIDATE' ||
+        (project.type === 'CONSOLIDATE' && simulated) ||
         (project.type === 'COLLECT' && sourceCount < 8);
 
     const updateInstance = <K extends keyof InstanceDraft>(
@@ -516,12 +527,31 @@ function InstancesStep({
                             ? 'Recolectar utiliza exactamente un origen y no requiere destino.'
                             : 'Recolectar utiliza uno o más orígenes, cada uno con su paquete, y no requiere destino.')}
                     {project.type === 'CONSOLIDATE' &&
-                        'Consolidar utiliza dos o más orígenes y referencia un destino ya preparado.'}
+                        (simulated
+                            ? 'Consolidar utiliza dos o más orígenes y referencia un destino ya preparado.'
+                            : 'Consolidar registra aquí solo el servidor de destino.')}
                     {project.type === 'INTEGRATE' &&
                         'Integrar utiliza un origen y referencia un Moodle consolidado existente.'}
                 </p>
             </CardHeader>
             <CardContent>
+                {remoteConsolidation && (
+                    <Alert className="mb-4">
+                        <CircleDot />
+                        <AlertTitle>
+                            Los orígenes son los paquetes sellados
+                        </AlertTitle>
+                        <AlertDescription>
+                            La consolidación remota no se conecta a los Moodle
+                            de origen: importa en el destino los paquetes que el
+                            Recolector ya selló en S3, uno por origen. Los
+                            paquetes se eligen en la tarjeta «Consolidación en
+                            el servidor de destino».
+                            {sourceCount > 0 &&
+                                ' Quite las instancias origen registradas antes: ya no se usan.'}
+                        </AlertDescription>
+                    </Alert>
+                )}
                 <form
                     className="space-y-4"
                     onSubmit={(event) => {
@@ -1225,9 +1255,11 @@ function CheckRow({ check }: { check: PreflightCheck }) {
 
 function ConfirmationStep({
     project,
+    remoteConsolidation,
     onBack,
 }: {
     project: ProjectData;
+    remoteConsolidation: boolean;
     onBack: () => void;
 }) {
     const warnings =
@@ -1256,14 +1288,24 @@ function ConfirmationStep({
             <CardContent className="space-y-5">
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                     <Summary label="Operación" value={project.type_label} />
-                    <Summary
-                        label="Orígenes"
-                        value={String(
-                            project.instances.filter(
-                                (instance) => instance.role === 'SOURCE',
-                            ).length,
-                        )}
-                    />
+                    {remoteConsolidation ? (
+                        <Summary
+                            label="Paquetes de origen"
+                            value={String(
+                                (project.options as RemoteConsolidationOptions)
+                                    .source_packages?.length ?? 0,
+                            )}
+                        />
+                    ) : (
+                        <Summary
+                            label="Orígenes"
+                            value={String(
+                                project.instances.filter(
+                                    (instance) => instance.role === 'SOURCE',
+                                ).length,
+                            )}
+                        />
+                    )}
                     <Summary
                         label="Destino"
                         value={

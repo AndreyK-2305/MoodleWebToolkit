@@ -541,6 +541,12 @@ class ProjectWizard
             $messages['instances'] = 'Consolidar admite una sola instancia destino.';
         }
 
+        // A remote consolidation never connects to the sources: they are the sealed
+        // packages chosen in its card, so the project only registers the destination.
+        if ($type === ProjectType::CONSOLIDATE && $sources->isNotEmpty() && config('toolkit.features.remote_agent.enabled')) {
+            $messages['instances'] = 'La consolidación remota no registra instancias origen: los orígenes son los paquetes sellados que se eligen en la consolidación. Quite los orígenes y deje solo el destino.';
+        }
+
         if ($type === ProjectType::INTEGRATE && ($sources->count() > 1 || $destinations->count() > 1)) {
             $messages['instances'] = 'Integrar admite como máximo una instancia origen y una instancia destino.';
         }

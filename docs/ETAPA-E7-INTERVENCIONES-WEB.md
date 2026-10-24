@@ -232,9 +232,37 @@ agente 1.13.1 durante la prueba.
 - **Accesibilidad:** los radios del diálogo de preparación tienen nombre y descripción
   accesibles, agrupados en un `fieldset`.
 
+### Hallazgos corregidos después de la prueba
+
+Los dos pendientes de la prueba quedaron corregidos:
+
+- **Consolidación remota sin instancias de origen:** la consolidación remota nunca se
+  conecta a los orígenes. Sus orígenes son los paquetes sellados en S3, de 2 a 32, uno por
+  `source_id`. Con el agente remoto habilitado:
+    - el paso 2 registra solo el servidor de destino y explica que los orígenes son los
+      paquetes. El servidor rechaza instancias origen en un proyecto CONSOLIDATE;
+    - el preflight es siempre el de la consolidación remota, aunque la tarjeta
+      «Consolidación en el servidor de destino» todavía no se haya guardado. En ese caso pide
+      el destino, su perfil y los paquetes, y no menciona instancias de origen;
+    - la confirmación muestra «Paquetes de origen» en lugar de «Orígenes».
+
+    El modo simulado conserva sus reglas: al menos dos orígenes y exactamente un destino.
+
+- **Actualizar el agente con el proyecto en curso:** mientras el proyecto está en curso, el
+  panel de conexiones sigue en sólo lectura, pero un administrador ve «Actualizar agente» en
+  cada servidor. La acción (`POST …/connection/update-agent`):
+    - exige un administrador activo, la contraseña confirmada y la casilla del diálogo de
+      confirmación;
+    - se rechaza con un mensaje claro si algo corre en ese servidor: una operación del agente
+      no terminada, una preparación del destino, una transferencia de paquetes o un
+      despliegue. Por ejemplo, se habilita cuando la Ejecución queda en WAITING_USER_ACTION;
+    - es idempotente: si el agente ya coincide en versión y SHA-256 con la distribución
+      verificada, no se reinstala;
+    - después de instalar, vuelve a preguntar la versión al agente. Cada intento queda
+      auditado como `REMOTE_AGENT_UPDATED`;
+    - no cambia el estado del proyecto ni de la Ejecución, y no está disponible en un
+      proyecto completado.
+
 ### Hallazgos pendientes
 
-- **Consolidación remota:** el proyecto sigue pidiendo dos instancias de origen que no
-  usa, porque los paquetes vienen de S3. Quitarlas cambia la cardinalidad del asistente y
-  del preflight.
-- **Agente:** no se puede actualizar desde la web mientras un proyecto está en curso.
+Ninguno de la prueba.
