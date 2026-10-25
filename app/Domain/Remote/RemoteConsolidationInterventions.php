@@ -32,6 +32,10 @@ use Illuminate\Support\Facades\DB;
  *   and the review is applied with the Consolidator's own validator.
  * - THEME_SELECTION: the destination's global theme and the legacy theme
  *   decision, recorded in the Consolidator's theme policy.
+ * - CATEGORY_MAP: the destination category tree the Consolidator 8.1.0 proposed
+ *   from the sources' inventories, with their courses and merge suggestions; the
+ *   administrator draws the map in the platform and it is written as
+ *   config/category-map.json, which the Consolidator validates on resuming.
  * - CONSOLIDATOR_INTERVENTION: any other stop, with the assistant's message.
  *
  * Decisions go through the generic conflict resolution, so they are versioned,
@@ -49,7 +53,12 @@ class RemoteConsolidationInterventions
 
     public const THEMES = 'THEME_SELECTION';
 
-    public const TYPES = [self::OAUTH2, self::PLUGINS, self::IDENTITY, self::THEMES, self::GENERIC];
+    public const CATEGORY_MAP = 'CATEGORY_MAP';
+
+    public const TYPES = [self::OAUTH2, self::PLUGINS, self::IDENTITY, self::THEMES, self::CATEGORY_MAP, self::GENERIC];
+
+    /** Proposal pages read at most: each fits one agent answer, so a larger tree is decided on the server. */
+    public const MAX_MAP_PAGES = 200;
 
     /** Candidates shown at most: a review covers every group, so a longer one is decided on the server. */
     public const MAX_CANDIDATES = 200;
@@ -61,7 +70,7 @@ class RemoteConsolidationInterventions
     /** How the timeline names each intervention. */
     private const TITLES = [self::OAUTH2 => 'configurar Google OAuth2', self::PLUGINS => 'plugins requeridos por los orígenes',
         self::IDENTITY => 'revisar posibles identidades duplicadas', self::THEMES => 'elegir la apariencia del Moodle consolidado',
-        self::GENERIC => 'el Consolidador necesita una decisión'];
+        self::CATEGORY_MAP => 'revisar el mapa de categorías del destino', self::GENERIC => 'el Consolidador necesita una decisión'];
 
     public function __construct(
         private readonly RemoteServerConnections $connections,
@@ -86,6 +95,7 @@ class RemoteConsolidationInterventions
             $stage === '03-plugins' => self::PLUGINS,
             $stage === '05b-readiness' && str_starts_with($message, 'V8_IDENTITY_REVIEW_REQUIRED') => self::IDENTITY,
             $stage === '05b-readiness' && collect(self::THEME_MESSAGES)->contains(fn (string $prefix): bool => str_starts_with($message, $prefix)) => self::THEMES,
+            $stage === '05a-mapa-categorias' && str_starts_with($message, 'V8_CATEGORY_MAP_') => self::CATEGORY_MAP,
             default => self::GENERIC,
         };
         $documents = in_array($type, [self::OAUTH2, self::PLUGINS], true) ? $this->documents($execution, $settings, $type === self::OAUTH2 ? 'oauth2' : 'plugins') : [];
@@ -95,6 +105,7 @@ class RemoteConsolidationInterventions
                 self::PLUGINS => $this->plugins($documents),
                 self::IDENTITY => $this->identities($execution, $settings),
                 self::THEMES => $this->themes($execution, $settings),
+                self::CATEGORY_MAP => $this->categoryMap($execution, $settings),
                 default => [],
             }];
         $details['allowed_decisions'] = match (true) {
@@ -105,6 +116,7 @@ class RemoteConsolidationInterventions
             // Answered in the platform; a review that could not be read is decided on the server and confirmed.
             $type === self::IDENTITY && ($details['candidates_complete'] ?? false) === true => ['APPLY_ANSWERS', 'CONFIRM_COMPLETED'],
             $type === self::THEMES && ($details['themes'] ?? []) !== [] => ['APPLY_ANSWERS', 'CONFIRM_COMPLETED'],
+            $type === self::CATEGORY_MAP && ($details['map_complete'] ?? false) === true => ['APPLY_ANSWERS', 'CONFIRM_COMPLETED'],
             default => ['CONFIRM_COMPLETED'],
         };
 
@@ -157,7 +169,8 @@ class RemoteConsolidationInterventions
         $presented = array_intersect_key($details, array_flip(['kind', 'stage', 'message', 'review_paths', 'instructions', 'callback_uri', 'issues',
             'needs', 'new_plugins', 'updated_plugins', 'removed_plugins', 'technical_issues', 'checkpoint_status', 'plugins_none',
             'candidates', 'candidate_total', 'candidates_complete', 'themes', 'theme_selected', 'theme_default', 'legacy_sources', 'legacy_accepted',
-            'unknown', 'inspections', 'proposals']));
+            'unknown', 'inspections', 'proposals', 'proposal_sha256', 'map_sources', 'existing', 'categories', 'suggestions', 'pilot', 'map_issues',
+            'map_complete', 'previous_map']));
         // The web user answers in the platform; the console wording goes to the technical details.
         foreach (['message', 'instructions'] as $field) {
             if (array_key_exists($field, $presented)) {
@@ -173,7 +186,10 @@ class RemoteConsolidationInterventions
             $presented['answer_summary'] = ['answered_at' => is_string($answers['answered_at'] ?? null) ? $answers['answered_at'] : null,
                 'merge' => count(array_keys($resolutions, 'MERGE', true)), 'keep_separate' => count(array_keys($resolutions, 'KEEP_SEPARATE', true)),
                 'ignore' => count(array_keys($resolutions, 'IGNORE', true)), 'theme' => is_string($answers['theme'] ?? null) ? $answers['theme'] : null,
-                'promoted' => is_array($answers['promote'] ?? null) ? count($answers['promote']) : 0];
+                'promoted' => is_array($answers['promote'] ?? null) ? count($answers['promote']) : 0,
+                'categories' => is_array($answers['nodes'] ?? null) ? count($answers['nodes']) : 0,
+                'merged' => is_array($answers['nodes'] ?? null) && is_array($answers['assignments'] ?? null)
+                    ? count(array_filter(array_count_values(array_map('strval', array_column($answers['assignments'], 'node'))), fn (int $members): bool => $members > 1)) : 0];
         }
 
         return $presented;
@@ -335,6 +351,103 @@ class RemoteConsolidationInterventions
             'name_similarity' => $text($candidate['name_similarity'] ?? null, 12), 'email_similarity' => $text($candidate['email_similarity'] ?? null, 12),
             'identifier_match' => $text($candidate['identifier_match'] ?? null, 12), 'evidence' => $text($candidate['evidence'] ?? null, 200),
             'a' => $side($candidate['a'] ?? null), 'b' => $side($candidate['b'] ?? null)];
+    }
+
+    /**
+     * The proposed tree read a page at a time with closed fields: the destination's existing
+     * categories, every source category with its courses, the merge suggestions and, when a
+     * map was refused, the Consolidator's reasons. The previous answer of this Execution lets
+     * the administrator correct the map instead of starting again.
+     *
+     * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private function categoryMap(Execution $execution, array $settings): array
+    {
+        $target = $this->target($execution, $settings);
+        $text = fn (mixed $value, int $size = 255): string => is_string($value) ? mb_substr($value, 0, $size) : '';
+        $int = fn (mixed $value): int => is_int($value) ? $value : 0;
+        $header = null;
+        $existing = $categories = $suggestions = [];
+        $offset = 0;
+        $total = null;
+        for ($page = 0; $target !== null && $page < self::MAX_MAP_PAGES; $page++) {
+            try {
+                $response = $this->agent->call($target, 'category-map-proposal', [(string) $settings['destination_profile'], (string) $offset], 30);
+            } catch (RemoteAgentUnavailable) {
+                break;
+            }
+            if (! $response->ok) {
+                break;
+            }
+            $header ??= is_array($response->data['header'] ?? null) ? $response->data['header'] : null;
+            $total = is_int($response->data['total'] ?? null) ? $response->data['total'] : null;
+            foreach (is_array($response->data['items'] ?? null) ? $response->data['items'] : [] as $item) {
+                if (! is_array($item)) {
+                    continue;
+                }
+                $kind = $item['k'] ?? null;
+                if ($kind === 'e') {
+                    $existing[] = ['id' => $int($item['id'] ?? null), 'parent_id' => $int($item['parent_id'] ?? null), 'name' => $text($item['name'] ?? null),
+                        'depth' => $int($item['depth'] ?? null), 'course_count' => $int($item['course_count'] ?? null)];
+                } elseif ($kind === 'c' && preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $text($item['source'] ?? null, 64)) === 1) {
+                    $courses = [];
+                    foreach (is_array($item['courses'] ?? null) ? array_slice($item['courses'], 0, 20) : [] as $course) {
+                        if (is_array($course)) {
+                            $courses[] = ['id' => $int($course['id'] ?? null), 'shortname' => $text($course['shortname'] ?? null, 100),
+                                'fullname' => $text($course['fullname'] ?? null, 120)];
+                        }
+                    }
+                    $categories[] = ['source' => $text($item['source'], 64), 'id' => $int($item['id'] ?? null), 'parent_id' => $int($item['parent_id'] ?? null),
+                        'name' => $text($item['name'] ?? null), 'depth' => $int($item['depth'] ?? null), 'course_count' => $int($item['course_count'] ?? null),
+                        'courses' => $courses];
+                } elseif ($kind === 's') {
+                    $side = fn (mixed $value): array => ['source' => $text(is_array($value) ? ($value['source'] ?? null) : null, 64),
+                        'id' => $int(is_array($value) ? ($value['id'] ?? null) : null)];
+                    $suggestions[] = ['kind' => ($item['kind'] ?? null) === 'same' ? 'same' : 'similar',
+                        'score' => is_numeric($item['score'] ?? null) ? round((float) $item['score'], 3) : 0.0,
+                        'a' => $side($item['a'] ?? null), 'b' => $side($item['b'] ?? null)];
+                }
+            }
+            $next = is_int($response->data['next'] ?? null) ? $response->data['next'] : $offset;
+            $advanced = $next > $offset;
+            $offset = $next;
+            if ($total === null || ! $advanced || $offset >= $total) {
+                break;
+            }
+        }
+        $sha = is_array($header) && is_string($header['proposal_sha256'] ?? null) && preg_match('/^[a-f0-9]{64}$/D', $header['proposal_sha256']) === 1
+            ? $header['proposal_sha256'] : null;
+        $sources = [];
+        foreach (is_array($header['sources'] ?? null) ? array_slice($header['sources'], 0, 20) : [] as $source) {
+            if (is_array($source) && is_string($source['source'] ?? null)) {
+                $sources[] = ['source' => $text($source['source'], 64), 'alias' => $text($source['alias'] ?? null, 3), 'name' => $text($source['name'] ?? null, 120)];
+            }
+        }
+        $pilotHeader = is_array($header['pilot'] ?? null) ? $header['pilot'] : null;
+        $pilot = $pilotHeader === null ? null : ['source' => $text($pilotHeader['source'] ?? null, 64),
+            'source_category_id' => $int($pilotHeader['source_category_id'] ?? null), 'shortname' => $text($pilotHeader['shortname'] ?? null, 100)];
+        $issues = [];
+        foreach (is_array($header['issues'] ?? null) ? array_slice($header['issues'], 0, 50) : [] as $issue) {
+            if (is_array($issue)) {
+                $issues[] = ['code' => $text($issue['code'] ?? null, 40), 'node' => is_string($issue['node'] ?? null) ? $text($issue['node'], 64) : null,
+                    'message' => mb_substr($this->redactor->redactString($text($issue['message'] ?? null, 300)), 0, 300)];
+            }
+        }
+        $previous = null;
+        foreach (Conflict::query()->where('execution_id', $execution->id)->where('type', self::CATEGORY_MAP)->orderByDesc('id')->get() as $conflict) {
+            $answers = $conflict->details['answers'] ?? null;
+            if (is_array($answers)) {
+                $previous = ['nodes' => $answers['nodes'] ?? [], 'assignments' => $answers['assignments'] ?? []];
+
+                break;
+            }
+        }
+
+        return ['proposal_sha256' => $sha, 'map_sources' => $sources, 'existing' => $existing, 'categories' => $categories,
+            'suggestions' => $suggestions, 'pilot' => $pilot, 'map_issues' => $issues,
+            'map_complete' => $sha !== null && $total !== null && $offset >= $total && $categories !== [],
+            'previous_map' => $previous];
     }
 
     /**

@@ -19,7 +19,8 @@ class RemoteAgent
 
     private const SUBCOMMANDS = ['version', 'probe', 'launch', 'status', 'tail', 'cancel', 'tool-status', 'tool-commit', 'source-check', 'collector-report', 'upload-report', 'cleanup', 'source-list', 'destination-list', 'destination-check',
         'fetch-report', 'copias-list', 'copias-remove', 'consolidator-report', 'consolidator-intervention', 'site-upload-report', 'copias-release',
-        'identity-candidates', 'identity-review-submit', 'theme-options', 'theme-policy-set', 'plugin-proposal'];
+        'identity-candidates', 'identity-review-submit', 'theme-options', 'theme-policy-set', 'plugin-proposal',
+        'category-map-proposal', 'category-map-submit'];
 
     private const ARGUMENT = '/^[A-Za-z0-9._:=-]{1,160}$/D';
 
