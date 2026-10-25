@@ -37,9 +37,9 @@ class ToolCatalogSeeder extends Seeder
             'tool' => ['key' => 'moodle-consolidador', 'name' => 'Consolidador Moodle', 'description' => 'Consolidación académica Moodle 5.2.1 sobre Linux.'],
             'version' => '8.1.0-linux',
             'source_path' => 'BaseLine/Consolidador/Consolidador-v8.0.0',
-            'tree_sha256' => '3ec3b038c3bb24ac82a469085a7e611256fb7e2283678f8d1db025e48b24ddb8',
-            'manifest_sha256' => '9d49491e283c26d8b030f86c5d55c43e37b8fd9935e2445c16a9f55620af8f8e',
-            'file_count' => 272,
+            'tree_sha256' => '949e906903e903df4d9f0cf27d832cfe139c056f56025001e784cf772809ac98',
+            'manifest_sha256' => 'bc1768ecd5e5e91ee08ac47788b33167627bed0556a06b2c79d6de7955920df0',
+            'file_count' => 273,
             'mutable_paths' => ['config/phase5-pilot-package.json', 'config/phase6-batch.json'],
             'deployment_exclusions' => [
                 'config.yaml',

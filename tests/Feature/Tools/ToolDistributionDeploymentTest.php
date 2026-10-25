@@ -78,7 +78,7 @@ class ToolDistributionDeploymentTest extends DomainTestCase
         $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config/phase5-pilot-package.json');
         $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config/phase6-batch.json');
         $this->assertSame([], $result['evidence']['workspace_overlays']);
-        $this->assertSame(258, $result['evidence']['deployed_file_count']);
+        $this->assertSame(259, $result['evidence']['deployed_file_count']);
         $activeConfig = app(ExecutionWorkspaceManager::class)->resolve(
             $execution,
             'state',

@@ -20,6 +20,14 @@ que `CONSOLIDATION_FUZZY_REVIEW`, y la plataforma web exporta ambas variables.
 Sin ninguno de los dos, las etapas nuevas no existen y el plan, la
 aplicación y la verificación son los de 8.0.0, byte a byte.
 
+`compose.yaml` declara `CONSOLIDATION_CATEGORY_MAP` en el entorno de
+`assistant-runtime`, junto a `CONSOLIDATION_FUZZY_REVIEW`. Sin esa
+declaración, la variable que exporta el agente no llegaba al contenedor y la
+etapa se omitía en silencio: así ocurrió en la primera prueba en AWS.
+`tests/v8-810-env-propagation.py` exige que toda variable `CONSOLIDATION_*` que
+leen los scripts llegue al asistente, ya sea por el entorno de compose, por el
+`.env` que escribe el launcher o por un `-e`.
+
 ## Etapas nuevas
 
 - **`05a-mapa-categorias`**: va antes de `05b-readiness` y no escribe en el

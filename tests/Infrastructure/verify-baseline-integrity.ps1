@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$expectedFileCount = 432
-$expectedFingerprint = '0338231d2fbf32c5e7988f3f047d0ef77f0ede7762e8b8a59fb2d0af977bc7fe'
+$expectedFileCount = 433
+$expectedFingerprint = 'bc50e8873c1f7fdf911930aeba7e3e122d4be9efb87a3ad862e4c50531eec1b1'
 $baselineRoot = (Resolve-Path -LiteralPath 'BaseLine').Path
 
 $paths = New-Object 'System.Collections.Generic.List[string]'
