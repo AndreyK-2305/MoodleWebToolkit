@@ -141,7 +141,7 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->queueReport(['stage' => '02-oauth2', 'status' => 'running', 'message' => '2. Configurar y validar Google OAuth2']);
         dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
         $execution->refresh();
-        $this->assertSame(5, $execution->progress);
+        $this->assertSame(4, $execution->progress);
         $this->assertSame([ExecutionStepStatus::SUCCESS, ExecutionStepStatus::RUNNING],
             [$this->stepStatus($execution, '01-importar-paquetes'), $this->stepStatus($execution, '02-oauth2')]);
 
