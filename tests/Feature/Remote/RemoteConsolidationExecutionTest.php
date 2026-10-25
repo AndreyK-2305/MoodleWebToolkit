@@ -134,7 +134,7 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame(RemoteConsolidationPreparation::ADAPTER_KEY, $execution->toolBinding->adapter_key);
         $this->assertSame('consolidator-remote.v1', $execution->toolBinding->configuration_snapshot['schema_version']);
         $this->assertSame(['campus', 'auto'], [$run->evidence['parameters']['destination'], $run->evidence['parameters']['workers']]);
-        $this->assertCount(21, $execution->steps);
+        $this->assertCount(23, $execution->steps);
 
         // The assistant imported the packages and moved on to OAuth2.
         $this->queueStatus(alive: true);
