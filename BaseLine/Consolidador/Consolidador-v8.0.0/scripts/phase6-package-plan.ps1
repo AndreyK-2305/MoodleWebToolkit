@@ -70,6 +70,19 @@ Copy-Item -LiteralPath $Phase6BatchConfigPath `
     -Destination (Join-Path $phase6Host "batch_config.json") -Force
 Copy-Item -LiteralPath $Phase6RoleResolutionsPath `
     -Destination (Join-Path $phase6Host "role_resolutions.csv") -Force
+# 8.1.0: con config\category-map.json el plan usa su validación sellada; sin
+# él, el plan es el de 8.0.0 (raíz por origen y jerarquía reflejada).
+$categoryMapArguments = @()
+$phase6CategoryMap = Join-Path $phase6Host "category_map.json"
+if (Test-Path -LiteralPath $phase6CategoryMap -PathType Leaf) {
+    Remove-Item -LiteralPath $phase6CategoryMap -Force
+}
+if (Test-Path -LiteralPath (Join-Path $ProjectRoot "config\category-map.json") -PathType Leaf) {
+    & "$PSScriptRoot/v8-category-map.ps1" -Mode PilotCheck | Out-Null
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot "exports\category-map\validation.json") `
+        -Destination $phase6CategoryMap -Force
+    $categoryMapArguments = @("--categorymap=/exports/phase6/category_map.json")
+}
 foreach ($pattern in @(
     "target_inventory.json",
     "category_plan.csv",
@@ -117,7 +130,7 @@ $planOutput = & docker compose exec -T -u www-data $targetService `
     "--roleresolutions=/exports/phase6/role_resolutions.csv" `
     "--configsha=$configHash" `
     "--targetid=$($targetSite.id)" `
-    "--expectlab=0" 2>&1
+    "--expectlab=0" @categoryMapArguments 2>&1
 $planExit = $LASTEXITCODE
 Restore-AssistantExportOwnership -Service $targetService -ContainerPath "/exports/phase6"
 $planOutput | Out-File -FilePath $report -Append -Encoding UTF8

@@ -348,7 +348,7 @@ function Invoke-Compose {
 
 function Assert-ExportContainerPath([string]$ContainerPath) {
     $segments = @($ContainerPath.Split('/') | Where-Object { $_ -ne '' })
-    if ($ContainerPath -notmatch '^/exports/(phase[1-8]|oauth2(?:-[a-z0-9][a-z0-9_-]*)?)(/[a-zA-Z0-9._-]+)*$' -or
+    if ($ContainerPath -notmatch '^/exports/(phase[1-8]|oauth2(?:-[a-z0-9][a-z0-9_-]*)?|category-map)(/[a-zA-Z0-9._-]+)*$' -or
             $segments -contains '.' -or $segments -contains '..') {
         throw "Ruta de exportación no permitida: '$ContainerPath'."
     }

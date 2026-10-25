@@ -9,6 +9,7 @@ require('/var/www/html/config.php');
 require_once($CFG->libdir . '/clilib.php');
 require_once('/opt/consolidator/phase5-lib.php');
 require_once('/opt/consolidator/phase6-lib.php');
+require_once('/opt/consolidator/v8-category-map.php');
 
 [$options, $unrecognized] = cli_get_params(
     [
@@ -20,6 +21,7 @@ require_once('/opt/consolidator/phase6-lib.php');
         'configsha' => null,
         'targetid' => null,
         'expectlab' => 0,
+        'categorymap' => '',
         'help' => false,
     ],
     ['h' => 'help']
@@ -45,6 +47,7 @@ try {
     $configsha = p5_require_sha256((string)$options['configsha'], 'configsha');
     $targetid = p5_norm((string)$options['targetid']);
     $expectlab = (bool)(int)$options['expectlab'];
+    $categorymappath = trim((string)$options['categorymap']);
     if (!preg_match('/^[a-z][a-z0-9_-]*$/', $targetid)) {
         throw new RuntimeException('targetid inválido.');
     }
@@ -76,7 +79,9 @@ try {
 
     $targetcategoriesbymarker = [];
     $targetcategoriesbyparentname = [];
+    $targetcategoriesbyid = [];
     foreach ($target['categories'] ?? [] as $category) {
+        $targetcategoriesbyid[(int)$category['target_category_id']] = $category;
         $marker = (string)($category['idnumber'] ?? '');
         if ($marker !== '') {
             $targetcategoriesbymarker[$marker][] = $category;
@@ -276,14 +281,35 @@ try {
         }
     }
 
+    // 8.1.0: con el mapa de categorías, las filas son los nodos del mapa y
+    // reemplazan las raíces por origen y la jerarquía reflejada.
+    $categorymapsha = '';
+    if ($categorymappath !== '') {
+        $categorymap = v8cm_load_validation($categorymappath, $configsha);
+        $categorymapsha = (string)hash_file('sha256', $categorymappath);
+        [$categoryrows, $categoryrowbykey, $categorykeybysourceid] = p6_mapped_category_rows(
+            $categorymap,
+            $sourcecategorymaps,
+            $targetcategoriesbyid,
+            $targetcategoriesbymarker,
+            $targetcategoriesbyparentname
+        );
+    }
+
     $categorymarkercounts = [];
     foreach ($categoryrows as $row) {
+        if ($categorymapsha !== '' && (string)$row['target_category_marker'] === '') {
+            continue;
+        }
         $normalizedmarker = p5_norm((string)$row['target_category_marker']);
         $categorymarkercounts[$normalizedmarker] =
             (int)($categorymarkercounts[$normalizedmarker] ?? 0) + 1;
     }
     foreach ($categoryrows as $index => $row) {
         $normalizedmarker = p5_norm((string)$row['target_category_marker']);
+        if ($categorymapsha !== '' && $normalizedmarker === '') {
+            continue;
+        }
         if (($categorymarkercounts[$normalizedmarker] ?? 0) > 1) {
             $reason = p6_issue_text([
                 (string)$row['blocking_reason'],
@@ -725,6 +751,7 @@ try {
         'matched_target_category_id',
         'action',
         'blocking_reason',
+        ...($categorymapsha !== '' ? ['node_kind', 'member_keys'] : []),
     ], $categoryrows);
     p5_write_csv($coursepath, [
         'course_key',
@@ -857,6 +884,9 @@ try {
         'role_normalization.csv' => $fallbackpath,
         'identity_convergence.csv' => $convergencepath,
     ] + $sourcepaths;
+    if ($categorymapsha !== '') {
+        $artifactpaths['category_map.json'] = $categorymappath;
+    }
     $summary = [
         'schema_version' => '1.0',
         'phase' => '6-multi-course-inventory-plan',
@@ -937,6 +967,10 @@ try {
         'backups_created' => false,
         'courses_restored' => false,
     ];
+    if ($categorymapsha !== '') {
+        $summary['category_mode'] = 'mapped';
+        $summary['category_map_sha256'] = $categorymapsha;
+    }
     if ($expectlab) {
         $summary['lab_validation'] =
             $blockingconflicts === 0 &&

@@ -66,7 +66,25 @@ try {
                 $bundle['manifest_sha256']) {
         throw new RuntimeException('La evidencia de categorías perdió integridad.');
     }
-    foreach (p5_read_csv($categorymappath) as $categoryrow) {
+    $appliedcategoryrows = p5_read_csv($categorymappath);
+    // 8.1.0: con mapa de categorías, cada nodo del plan sellado quedó aplicado
+    // y los orígenes unidos comparten categoría destino.
+    if (($bundle['summary']['category_mode'] ?? '') === 'mapped') {
+        $plannedkeys = array_map(
+            static fn(array $row): string => (string)$row['category_key'],
+            $bundle['category_rows']
+        );
+        $appliedkeys = array_map(
+            static fn(array $row): string => (string)$row['category_key'],
+            $appliedcategoryrows
+        );
+        sort($plannedkeys, SORT_STRING);
+        sort($appliedkeys, SORT_STRING);
+        if ($plannedkeys !== $appliedkeys) {
+            throw new RuntimeException('Las categorías aplicadas no coinciden con el mapa de categorías.');
+        }
+    }
+    foreach ($appliedcategoryrows as $categoryrow) {
         $category = $DB->get_record(
             'course_categories',
             ['id' => (int)$categoryrow['target_category_id']],

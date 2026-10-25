@@ -115,6 +115,10 @@ required_engine_files=(
   scripts/v8-plugin-resolver.ps1
   scripts/v8-preparation.php
   scripts/v8-readiness.ps1
+  scripts/v8-category-map.php
+  scripts/v8-category-map.ps1
+  scripts/v8-category-target.php
+  scripts/v8-category-chain.php
   docker/managed-config.php
   tests/contracts.php
   tests/verify-package.sh

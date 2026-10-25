@@ -56,7 +56,7 @@ final class RemoteConsolidationPreflight
         $deployed = $blocked === null && $this->deployed($server);
         $checks[] = $blocked !== null
             ? $this->check('consolidator.distribution', 'Consolidador V8 habilitado en la plataforma', false,
-                'El Consolidador 8.0.0 no está habilitado en el catálogo de herramientas: '.$blocked
+                'El Consolidador 8.1.0 no está habilitado en el catálogo de herramientas: '.$blocked
                 .' Un administrador de la plataforma debe habilitarlo (php artisan consolidator:enable-remote).')
             : $this->check('consolidator.distribution', 'Consolidador V8 desplegado', $deployed,
                 $deployed ? 'El árbol desplegado coincide con la distribución verificada del catálogo.'
