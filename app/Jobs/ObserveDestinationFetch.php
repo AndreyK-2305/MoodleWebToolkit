@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Domain\Remote\RemoteConsolidationCopias;
 use App\Domain\Remote\RemoteDestinationPackages;
 use App\Models\Server;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
@@ -28,11 +29,16 @@ final class ObserveDestinationFetch implements ShouldBeUnique, ShouldQueue
         return 'destination-fetch:'.$this->serverId.':'.$this->destination.':'.$this->packageUuid;
     }
 
-    public function handle(RemoteDestinationPackages $packages): void
+    public function handle(RemoteDestinationPackages $packages, RemoteConsolidationCopias $copias): void
     {
-        $server = Server::query()->find($this->serverId);
-        if ($server !== null) {
-            $packages->observe($server, $this->destination, $this->packageUuid);
+        $server = Server::query()->with('project')->find($this->serverId);
+        if ($server === null) {
+            return;
+        }
+        $fetch = $packages->observe($server, $this->destination, $this->packageUuid);
+        // A finished transfer lets the consolidation bring its next package; a failure waits for the user.
+        if (($fetch['state'] ?? null) === 'SUCCEEDED' && $server->project !== null) {
+            $copias->advance($server->project, null, retry: false);
         }
     }
 }

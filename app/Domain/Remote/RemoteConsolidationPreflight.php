@@ -26,6 +26,7 @@ final class RemoteConsolidationPreflight
         private readonly CollectorConfiguration $hashes,
         private readonly RemoteServerConnections $connections,
         private readonly ToolOperationGate $gate,
+        private readonly RemoteConsolidationCopias $transfers,
     ) {}
 
     /**
@@ -78,6 +79,11 @@ final class RemoteConsolidationPreflight
                 $written ? 'El Consolidador ya escribió en este destino; una nueva consolidación requiere un destino limpio.'
                     : 'El Consolidador aún no escribió en el destino.');
             [$matches, $detail] = $this->copias(is_array($copias) ? $copias : null, $settings['source_packages']);
+            // The platform brings the configured packages itself: say so while a transfer runs or after it failed.
+            $transfer = $matches ? null : $this->transfers->progress($project);
+            if ($transfer !== null && in_array($transfer['state'], ['FETCHING', 'FAILED'], true)) {
+                $detail = $transfer['detail'].' '.$detail;
+            }
             $checks[] = $this->check('destination.copias', 'Paquetes en copias/', $matches, $detail);
         }
         $checks[] = ['id' => 'consolidation.oauth', 'description' => 'Configuración manual de Google OAuth2', 'result' => 'WARNING',

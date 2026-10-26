@@ -20,6 +20,9 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property ProjectType $type
  * @property ProjectStatus $status
  * @property int $created_by
+ * @property int|null $source_project_id
+ * @property array<string, mixed>|null $source_link
+ * @property-read Project|null $sourceProject
  */
 class Project extends Model
 {
@@ -32,6 +35,8 @@ class Project extends Model
         'status',
         'description',
         'created_by',
+        'source_project_id',
+        'source_link',
     ];
 
     protected static function booted(): void
@@ -122,6 +127,16 @@ class Project extends Model
         return $this->hasMany(Execution::class);
     }
 
+    /**
+     * The COLLECT project whose packages a consolidation uses.
+     *
+     * @return BelongsTo<Project, $this>
+     */
+    public function sourceProject(): BelongsTo
+    {
+        return $this->belongsTo(Project::class, 'source_project_id');
+    }
+
     /** @return HasMany<AuditLog, $this> */
     public function auditLogs(): HasMany
     {
@@ -133,6 +148,7 @@ class Project extends Model
         return [
             'type' => ProjectType::class,
             'status' => ProjectStatus::class,
+            'source_link' => 'array',
         ];
     }
 }

@@ -239,3 +239,59 @@ conserve la identidad visual de la institución.
   aplicados y subir a mano los logos.
 - Antes de esa prueba hay que actualizar el agente del destino a 1.16.0 y re-apuntar el perfil al
   árbol de 8.2.0.
+
+## F6: dos modos de proyecto (2026-10-26)
+
+El personal no capacitado no entendía cómo unir una recolección con una consolidación: la tarjeta
+de la consolidación ofrecía una lista plana de paquetes de cualquier proyecto y cada paquete se
+traía a mano a `copias/`. El usuario aprobó rediseñarlo en dos modos.
+
+### Solo Recolección y Consolidación
+
+- El asistente de proyectos nuevos ofrece solo Recolectar y Consolidar. `INTEGRATE` sigue en el
+  enum y los proyectos que ya lo usan funcionan igual; el backend rechaza crear uno nuevo o
+  cambiar otro proyecto a Integrar (`ProjectType::creatable()`).
+
+### «¿De dónde salen los orígenes?»
+
+- **De un proyecto de recolección completado.** Se elige una recolección COMPLETED que el usuario
+  puede ver; sus paquetes (uno por origen, VALID, AVAILABLE, sin revocar, en S3) quedan
+  preseleccionados con origen, fecha y tamaño. La revisión guarda `source_project_uuid` y el
+  backend exige que cada paquete pertenezca a esa recolección. El esquema ya admite un solo
+  paquete por origen y proyecto; si hubiera varios, se toma el más reciente y se indica cuántos
+  anteriores existen.
+- **Recolectar ahora.** La tarjeta pide los orígenes (nombre, ID de instancia SSM, región, perfil
+  de origen y nombre del paquete) junto con el destino. Se crea un proyecto COLLECT vinculado
+  («<consolidación> · Recolección»), con las mismas personas asignadas, sus servidores, sus
+  conexiones SSM y su configuración remota. Se ejecuta con su propia página y su propia
+  ejecución: instalar el agente, desplegar el Recolector, comprobar perfiles, preflight,
+  confirmar e iniciar. La consolidación muestra «Paso 1: recolección (n/N orígenes)» y qué espera.
+- Cuando una ejecución llega a COMPLETED se emite `ExecutionCompleted` (después del commit). El
+  listener `PickUpLinkedCollectionPackages` guarda los paquetes más recientes de la recolección
+  como revisión de la consolidación, con el destino, el perfil y los workers elegidos al crearla.
+  Es idempotente; si falla, el motivo queda en `projects.source_link` y en la página.
+- La lista plana de paquetes queda como «Avanzado: elegir paquetes sueltos de varias
+  recolecciones». Es el único modo que mezcla paquetes de varias recolecciones, por ejemplo un
+  origen recolectado de nuevo en otro proyecto.
+- El enlace vive en la consolidación (`projects.source_project_id`, `projects.source_link`), no en
+  la recolección: un proyecto COMPLETED es de solo lectura.
+
+### Paquetes a `copias/` sin pasos manuales
+
+- `RemoteConsolidationCopias` trae a `copias/` exactamente los paquetes configurados, uno a la
+  vez, reutilizando `RemoteDestinationPackages::fetch`/`observe` y su verificación. Arranca al
+  guardar la configuración, al ejecutar el preflight y al tomar los paquetes de la recolección
+  vinculada. Cuando una transferencia termina, la observación inicia la siguiente.
+- Una transferencia fallida no se reintenta sola: el preflight siguiente la reintenta y explica
+  el motivo. Nunca se retira nada de `copias/`: un ZIP ajeno lo sigue señalando el preflight.
+- El panel manual «Traer desde S3» se mantiene, sin cambios, para casos especiales.
+- La consolidación no puede iniciar hasta que el preflight ve `copias/` completo. El wizard dice
+  qué espera: la recolección vinculada o la transferencia en curso.
+
+### Verificación
+
+- `tests/Feature/Remote/ConsolidationSourcesTest.php`: restricción de INTEGRATE, validación del
+  origen desde una recolección, creación de la recolección vinculada, toma automática al
+  completarse y transferencias a `copias/` una a la vez.
+- `resources/js/lib/consolidation-sources.test.ts`: modo inicial, preselección, nombres de
+  paquete y validación del formulario «Recolectar ahora».

@@ -957,6 +957,13 @@ class ProjectWizardTest extends TestCase
 
     private function createProject(User $actor, ProjectType $type): Project
     {
+        // New projects no longer offer INTEGRATE; the existing ones still go through the wizard.
+        if (! in_array($type, ProjectType::creatable(), true)) {
+            $this->actingAs($actor);
+
+            return app(ProjectWizard::class)->create($actor, $this->basics($type));
+        }
+
         $this->actingAs($actor)
             ->post(route('projects.store'), $this->basics($type))
             ->assertSessionHasNoErrors();

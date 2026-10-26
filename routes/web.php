@@ -10,6 +10,7 @@ use App\Http\Controllers\ExecutionActionController;
 use App\Http\Controllers\ExecutionController;
 use App\Http\Controllers\ExecutionEventController;
 use App\Http\Controllers\ExecutionReviewController;
+use App\Http\Controllers\LinkedCollectionController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\ProjectWizardController;
 use App\Http\Controllers\RemoteCollectionConfigurationController;
@@ -28,6 +29,7 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::put('projects/{project:uuid}/collector/configuration', CollectorConfigurationController::class)->middleware('action.confirmed')->name('projects.collector.configuration');
     Route::put('projects/{project:uuid}/collector/remote-configuration', RemoteCollectionConfigurationController::class)->middleware('action.confirmed')->name('projects.collector.remote-configuration');
     Route::put('projects/{project:uuid}/consolidation/remote-configuration', RemoteConsolidationConfigurationController::class)->middleware('action.confirmed')->name('projects.consolidation.remote-configuration');
+    Route::post('projects/{project:uuid}/consolidation/linked-collection', LinkedCollectionController::class)->middleware('action.confirmed')->name('projects.consolidation.linked-collection');
     Route::put('projects/{project:uuid}/servers/{server:uuid}/connection', [RemoteConnectionController::class, 'update'])->middleware('action.confirmed')->name('projects.servers.connection.update');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/connection/install-agent', [RemoteConnectionController::class, 'installAgent'])->middleware('action.confirmed')->name('projects.servers.connection.install-agent');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/connection/update-agent', [RemoteConnectionController::class, 'updateAgent'])->middleware('action.confirmed')->name('projects.servers.connection.update-agent');

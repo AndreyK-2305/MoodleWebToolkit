@@ -7,6 +7,8 @@ use App\Domain\Collector\LabMoodleProfiles;
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Projects\SimulatedUrlSafety;
 use App\Domain\Remote\RemoteAccessPresenter;
+use App\Domain\Remote\RemoteConsolidationCopias;
+use App\Domain\Remote\RemoteConsolidationSources;
 use App\Enums\ProjectStatus;
 use App\Enums\ProjectType;
 use App\Models\MoodleInstance;
@@ -61,9 +63,9 @@ class ProjectController extends Controller
         Gate::authorize('create', Project::class);
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:160'],
-            'type' => ['required', Rule::enum(ProjectType::class)],
+            'type' => ['required', Rule::in(ProjectType::creatableValues())],
             'description' => ['nullable', 'string', 'max:2000'],
-        ]);
+        ], ['type.in' => 'Elija Recolección o Consolidación: la integración no está disponible para proyectos nuevos.']);
         /** @var User $actor */
         $actor = $request->user();
         /** @var array{name: string, type: string, description?: string|null} $validated */
@@ -135,18 +137,66 @@ class ProjectController extends Controller
                     'status' => $latestExecution->status->value,
                 ],
             ],
-            'projectTypes' => $this->projectTypes(),
+            'projectTypes' => $this->projectTypes($project->type),
             'remoteAccess' => app(RemoteAccessPresenter::class)->present($project),
+            'consolidationSources' => $this->consolidationSources($project, $actor),
+            'linkedConsolidations' => $this->linkedConsolidations($project, $actor),
         ]);
     }
 
-    /** @return list<array{value: string, label: string}> */
-    private function projectTypes(): array
+    /**
+     * Where a remote consolidation takes its sources from: its link, the completed
+     * collections the viewer may use and the state of its packages in copias/.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function consolidationSources(Project $project, User $actor): ?array
     {
-        return array_map(
-            fn (ProjectType $type): array => ['value' => $type->value, 'label' => $type->label()],
-            ProjectType::cases(),
-        );
+        if ($project->type !== ProjectType::CONSOLIDATE || ! config('toolkit.features.remote_agent.enabled')) {
+            return null;
+        }
+        $sources = app(RemoteConsolidationSources::class);
+
+        return [
+            'link' => $sources->presentLink($project),
+            'collections' => $sources->completedCollections($actor),
+            'copias' => app(RemoteConsolidationCopias::class)->progress($project),
+            'min_sources' => RemoteConsolidationSources::MIN_SOURCES,
+            'max_sources' => RemoteConsolidationSources::MAX_SOURCES,
+        ];
+    }
+
+    /**
+     * The consolidations that wait for this collection's packages.
+     *
+     * @return list<array{uuid: string, name: string}>
+     */
+    private function linkedConsolidations(Project $project, User $actor): array
+    {
+        if ($project->type !== ProjectType::COLLECT) {
+            return [];
+        }
+
+        return array_values(Project::query()->where('source_project_id', $project->getKey())->whereNotNull('source_link')->get()
+            ->filter(fn (Project $consolidation): bool => $actor->can('view', $consolidation))
+            ->map(fn (Project $consolidation): array => ['uuid' => $consolidation->uuid, 'name' => $consolidation->name])
+            ->all());
+    }
+
+    /**
+     * The operations a project may choose; an existing project keeps its own
+     * even when it is no longer offered for new projects.
+     *
+     * @return list<array{value: string, label: string}>
+     */
+    private function projectTypes(?ProjectType $current = null): array
+    {
+        $types = ProjectType::creatable();
+        if ($current !== null && ! in_array($current, $types, true)) {
+            $types[] = $current;
+        }
+
+        return array_map(fn (ProjectType $type): array => ['value' => $type->value, 'label' => $type->label()], $types);
     }
 
     private function canEdit(User $actor, Project $project): bool
