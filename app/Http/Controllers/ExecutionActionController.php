@@ -6,6 +6,7 @@ use App\Domain\Collector\RetryCollectorExecution;
 use App\Domain\Executions\RequestExecutionCancellation;
 use App\Domain\Executions\ResolveExecutionConflict;
 use App\Domain\Executions\ResumeProjectExecution;
+use App\Domain\Remote\CategoryMapValidator;
 use App\Domain\Remote\RemoteConsolidationBackup;
 use App\Domain\Remote\RemoteConsolidationInterventions;
 use App\Domain\Remote\RemoteConsolidationPreparation;
@@ -49,12 +50,13 @@ class ExecutionActionController extends Controller
      * validated against what the intervention offered, kept on it as evidence, and applied
      * through the same audited resolution as any other decision.
      */
-    public function answerIntervention(Request $request, Project $project, Execution $execution, Conflict $conflict, ResolveExecutionConflict $resolver): JsonResponse|RedirectResponse
+    public function answerIntervention(Request $request, Project $project, Execution $execution, Conflict $conflict, ResolveExecutionConflict $resolver,
+        CategoryMapValidator $categoryMaps): JsonResponse|RedirectResponse
     {
         $this->ensureBelongsToProject($project, $execution);
         abort_unless($conflict->execution_id === $execution->getKey(), 404);
         abort_unless(in_array($conflict->type, [RemoteConsolidationInterventions::IDENTITY, RemoteConsolidationInterventions::THEMES,
-            RemoteConsolidationInterventions::PLUGINS], true), 404);
+            RemoteConsolidationInterventions::PLUGINS, RemoteConsolidationInterventions::CATEGORY_MAP], true), 404);
         Gate::authorize('control', $execution);
         $request->merge(['idempotency_key' => $request->header('Idempotency-Key')]);
         $details = $conflict->details ?? [];
@@ -66,6 +68,30 @@ class ExecutionActionController extends Controller
             $input = $request->validate([...$base, 'promote' => ['required', 'array', 'min:1', 'max:10'],
                 'promote.*' => ['required', 'string', 'distinct', Rule::in($proposed)], 'confirm' => ['accepted']]);
             $answers = ['promote' => array_values($input['promote'])];
+        } elseif ($conflict->type === RemoteConsolidationInterventions::CATEGORY_MAP) {
+            // The tree the administrator drew, checked with the Consolidator's own rules; the
+            // operations list is the audit trail of how it was drawn.
+            $input = $request->validate([...$base, 'nodes' => ['required', 'array', 'min:1', 'max:5000'],
+                'nodes.*.key' => ['required', 'string', 'distinct', 'regex:/^[A-Za-z0-9_-]{1,64}$/D'],
+                'nodes.*.existing_category_id' => ['nullable', 'integer', 'min:1'],
+                'nodes.*.name' => ['nullable', 'required_without:nodes.*.existing_category_id', 'string', 'max:255'],
+                'nodes.*.parent' => ['nullable', 'required_without:nodes.*.existing_category_id', 'string', 'regex:/^(@top|[A-Za-z0-9_-]{1,64})$/D'],
+                'assignments' => ['required', 'array', 'min:1', 'max:5000'],
+                'assignments.*.source' => ['required', 'string', 'regex:/^[a-z][a-z0-9_-]{0,63}$/D'],
+                'assignments.*.source_category_id' => ['required', 'integer', 'min:1'],
+                'assignments.*.node' => ['required', 'string', 'regex:/^[A-Za-z0-9_-]{1,64}$/D'],
+                'operations' => ['nullable', 'array', 'max:500'], 'operations.*' => ['string', 'max:200'],
+                'confirm' => ['accepted']]);
+            $nodes = array_values(array_map(fn (array $node): array => isset($node['existing_category_id'])
+                ? ['key' => (string) $node['key'], 'existing_category_id' => (int) $node['existing_category_id']]
+                : ['key' => (string) $node['key'], 'name' => trim((string) $node['name']), 'parent' => (string) $node['parent']], $input['nodes']));
+            $assignments = array_values(array_map(fn (array $assignment): array => ['source' => (string) $assignment['source'],
+                'source_category_id' => (int) $assignment['source_category_id'], 'node' => (string) $assignment['node']], $input['assignments']));
+            $issues = $categoryMaps->validate($details, $nodes, $assignments);
+            if ($issues !== []) {
+                throw ValidationException::withMessages(['category_map' => array_values(array_unique(array_column(array_slice($issues, 0, 10), 'message')))]);
+            }
+            $answers = ['nodes' => $nodes, 'assignments' => $assignments, 'operations' => array_values($input['operations'] ?? [])];
         } elseif ($conflict->type === RemoteConsolidationInterventions::THEMES) {
             $input = $request->validate([...$base, 'theme' => ['required', 'string', Rule::in($details['themes'] ?? [])],
                 'accept_legacy' => [($details['legacy_sources'] ?? []) !== [] && ($details['legacy_accepted'] ?? false) !== true ? 'accepted' : 'boolean']]);

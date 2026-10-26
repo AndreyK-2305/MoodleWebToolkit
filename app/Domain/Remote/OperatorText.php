@@ -41,6 +41,8 @@ class OperatorText
         'PLUGIN_TECHNICAL_VALIDATION_FAILED' => 'La validación técnica de los plugins falló.',
         'PLUGIN_UPGRADE_FAILED' => 'La instalación o actualización de plugins en el destino falló.',
         'V8_PLUGIN_STAGING_FAILED' => 'La prueba de los plugins antes de instalarlos en el destino falló.',
+        'V8_CATEGORY_MAP_REQUIRED' => 'Revise en esta página cómo quedarán las categorías del Moodle consolidado: puede unir, renombrar y mover categorías antes de crearlas.',
+        'V8_CATEGORY_MAP_INVALID' => 'El Consolidador no aceptó el mapa de categorías. Corrija en esta página los problemas señalados.',
     ];
 
     /** The family of an unknown code, when nothing readable is left after it. */
@@ -48,6 +50,7 @@ class OperatorText
         'V8_IDENTITY_' => 'El Consolidador se detuvo en la revisión de identidades.',
         'V8_THEME_' => 'El Consolidador se detuvo en la apariencia (themes) del destino.',
         'V8_PLUGIN_' => 'El Consolidador se detuvo en los plugins del destino.',
+        'V8_CATEGORY_MAP_' => 'El Consolidador se detuvo en el mapa de categorías del destino.',
         'PLUGIN_' => 'El Consolidador se detuvo en los plugins del destino.',
     ];
 

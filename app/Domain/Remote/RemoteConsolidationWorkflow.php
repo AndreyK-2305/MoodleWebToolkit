@@ -444,6 +444,12 @@ class RemoteConsolidationWorkflow
 
                 return;
             }
+            if ($conflict->type === RemoteConsolidationInterventions::CATEGORY_MAP) {
+                $this->submitCategoryMap($execution, $conflict, $actor, $target, $profile, $answers);
+                $this->resume($execution, $actor);
+
+                return;
+            }
             if ($conflict->type === RemoteConsolidationInterventions::THEMES) {
                 $this->agentStep($target, 'theme-policy-set', [$profile, (string) ($answers['theme'] ?? ''), ($answers['accept_legacy'] ?? false) === true ? '1' : '0']);
                 $this->resume($execution, $actor);
@@ -453,6 +459,53 @@ class RemoteConsolidationWorkflow
             throw new ToolOperationBlocked('Esta intervención no admite respuestas desde la plataforma.');
         }
         $this->resume($execution, $actor);
+    }
+
+    /**
+     * Writes the administrator's category map on the destination as config/category-map.json:
+     * compact tuples in parts of base64url chunks, so a large tree never exceeds one call. The
+     * map, its operations and the written file's hash are audited.
+     *
+     * @param  array<string, mixed>  $answers
+     */
+    private function submitCategoryMap(Execution $execution, Conflict $conflict, User $actor, RemoteTarget $target, string $profile, array $answers): void
+    {
+        $nodes = array_map(fn (array $node): array => [(string) $node['key'], isset($node['existing_category_id']) ? null : (string) ($node['name'] ?? ''),
+            isset($node['existing_category_id']) ? null : (string) ($node['parent'] ?? ''), isset($node['existing_category_id']) ? (int) $node['existing_category_id'] : null],
+            array_values(array_filter($answers['nodes'] ?? [], 'is_array')));
+        $assignments = array_map(fn (array $assignment): array => [(string) $assignment['source'], (int) $assignment['source_category_id'], (string) $assignment['node']],
+            array_values(array_filter($answers['assignments'] ?? [], 'is_array')));
+        $payload = rtrim(strtr(base64_encode((string) json_encode([
+            'proposal_sha256' => (string) ($conflict->details['proposal_sha256'] ?? ''),
+            'operator' => $actor->name.' <'.$actor->email.'>', 'decision_timestamp_utc' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
+            'evidence_reference' => 'MoodleWebToolkit: ejecución '.$execution->uuid.', intervención '.$conflict->id,
+            'nodes' => $nodes, 'assignments' => $assignments,
+        ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)), '+/', '-_'), '=');
+        $parts = array_chunk(str_split($payload, 150), 40);
+        $submission = bin2hex(random_bytes(8));
+        $written = null;
+        foreach ($parts as $index => $chunks) {
+            try {
+                $response = $this->agent->call($target, 'category-map-submit', [$profile, $submission, (string) $index, (string) count($parts), ...$chunks], 60);
+            } catch (RemoteAgentUnavailable $exception) {
+                throw new ToolOperationBlocked('No se pudo escribir el mapa de categorías en el destino ('.$exception->errorCode.').');
+            }
+            if (! $response->ok) {
+                throw new ToolOperationBlocked('El destino rechazó el mapa de categorías ('.$response->errorCode.').');
+            }
+            $written = is_array($response->data['written'] ?? null) ? $response->data['written'] : $written;
+        }
+        $sha = is_string($written['sha256'] ?? null) && preg_match('/^[a-f0-9]{64}$/D', $written['sha256']) === 1 ? $written['sha256'] : null;
+        AuditLog::query()->create([
+            'actor_id' => $actor->getKey(), 'project_id' => $execution->project_id, 'action' => 'CATEGORY_MAP_SUBMITTED',
+            'auditable_type' => $conflict->getMorphClass(), 'auditable_id' => $conflict->getKey(),
+            'payload' => ['execution' => $execution->uuid, 'proposal_sha256' => $conflict->details['proposal_sha256'] ?? null, 'category_map_sha256' => $sha,
+                'categories' => count($nodes), 'assignments' => count($assignments),
+                'operations' => array_slice(is_array($answers['operations'] ?? null) ? $answers['operations'] : [], 0, 500)],
+        ]);
+        $this->events->record($execution, 'consolidator.category_map_submitted', '05a-mapa-categorias',
+            message: 'Mapa de categorías registrado en el destino: '.count($nodes).' categorías.',
+            payload: ['category_map_sha256' => $sha, 'categories' => count($nodes)]);
     }
 
     /**

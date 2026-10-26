@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.14.0"
+readonly AGENT_VERSION="1.15.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -429,9 +429,10 @@ registered_argv() {
             destination_owned || fail destination_owner_mismatch
             # The assistant resumes from its own checkpoints; it is never run twice at once (flock inside).
             # The fuzzy identity candidates are reviewed in the platform: from rc13 on, the automatic
-            # mode stops for them instead of skipping them.
+            # mode stops for them instead of skipping them. From 8.1.0 on it also stops for the
+            # destination category map, decided in the platform before any category is written.
             # shellcheck disable=SC2016
-            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'cd "$1" && export CONSOLIDATION_FUZZY_REVIEW=required && exec bash ./moodle-consolidation.sh ejecutar-automatico "--workers=$2"' consolidator-run
+            REGISTERED_ARGV=("${DST_EXEC[@]}" bash -c 'cd "$1" && export CONSOLIDATION_FUZZY_REVIEW=required CONSOLIDATION_CATEGORY_MAP=required && exec bash ./moodle-consolidation.sh ejecutar-automatico "--workers=$2"' consolidator-run
                 "$DST_RUNTIME_DIR" "${params[workers]}")
             ;;
         consolidator.plugins-approve)
@@ -1465,6 +1466,159 @@ PY
     respond_ok theme-options "$out"
 }
 
+# Consolidator 8.1.0: the destination category tree the Consolidator proposed,
+# a page at a time within a byte budget so every answer fits one call. The first
+# page carries the header (proposal hash, sources, pilot, validation issues);
+# then come the destination's existing categories, each source category with
+# its first courses (the total is always there), and the merge suggestions,
+# all with closed fields.
+cmd_category_map_proposal() {
+    (($# == 2)) || fail invalid_arguments
+    [[ $2 =~ ^[0-9]{1,5}$ ]] || fail invalid_arguments
+    load_destination "$1"
+    command -v python3 >/dev/null 2>&1 || fail python3_missing
+    local proposal="$DST_RUNTIME_DIR/exports/category-map/proposal.json" out
+    [[ -f $proposal && ! -L $proposal ]] || fail category_map_proposal_missing
+    out=$(python3 -I - "$proposal" "$DST_RUNTIME_DIR/exports/category-map/validation.json" "$2" <<'PY'
+import hashlib, json, os, sys
+path, validation_path, offset = sys.argv[1], sys.argv[2], int(sys.argv[3])
+raw = open(path, "rb").read()
+proposal = json.loads(raw.decode("utf-8-sig"))
+cut = lambda value, size=255: str(value if value is not None else "")[:size]
+number = lambda value: int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+items = []
+for category in proposal.get("existing") or []:
+    if isinstance(category, dict):
+        items.append({"k": "e", "id": number(category.get("id")), "parent_id": number(category.get("parent_id")),
+            "name": cut(category.get("name")), "depth": number(category.get("depth")),
+            "course_count": number(category.get("course_count"))})
+for source in proposal.get("sources") or []:
+    if not isinstance(source, dict):
+        continue
+    for category in source.get("categories") or []:
+        if isinstance(category, dict):
+            items.append({"k": "c", "source": cut(source.get("source"), 64), "id": number(category.get("id")),
+                "parent_id": number(category.get("parent_id")), "name": cut(category.get("name")),
+                "depth": number(category.get("depth")), "course_count": number(category.get("course_count")),
+                "courses": [{"id": number(course.get("id")), "shortname": cut(course.get("shortname"), 100),
+                    "fullname": cut(course.get("fullname"), 120)}
+                    for course in (category.get("courses") or [])[:20] if isinstance(course, dict)]})
+for suggestion in (proposal.get("suggestions") or [])[:500]:
+    if isinstance(suggestion, dict):
+        side = lambda value: {"source": cut((value or {}).get("source"), 64), "id": number((value or {}).get("source_category_id"))}
+        items.append({"k": "s", "kind": "same" if suggestion.get("kind") == "same" else "similar",
+            "score": float(suggestion.get("score") or 0), "a": side(suggestion.get("a")), "b": side(suggestion.get("b"))})
+page, size = [], 0
+header = None
+if offset == 0:
+    issues = []
+    if os.path.isfile(validation_path) and not os.path.islink(validation_path):
+        try:
+            validation = json.load(open(validation_path, encoding="utf-8-sig"))
+            issues = [{"code": cut(issue.get("code"), 40), "node": cut(issue.get("node"), 64) or None, "message": cut(issue.get("message"), 300)}
+                for issue in (validation.get("issues") or [])[:50] if isinstance(issue, dict)]
+        except (OSError, ValueError):
+            issues = []
+    pilot = proposal.get("pilot") if isinstance(proposal.get("pilot"), dict) else None
+    header = {"proposal_sha256": hashlib.sha256(raw).hexdigest(),
+        "sources": [{"source": cut(s.get("source"), 64), "alias": cut(s.get("alias"), 3), "name": cut(s.get("name"), 120)}
+            for s in (proposal.get("sources") or []) if isinstance(s, dict)][:20],
+        "pilot": {"source": cut(pilot.get("source"), 64), "source_category_id": number(pilot.get("source_category_id")),
+            "shortname": cut(pilot.get("shortname"), 100)} if pilot else None,
+        "issues": issues}
+    size = len(json.dumps(header, ensure_ascii=False).encode("utf-8"))
+for item in items[offset:]:
+    encoded = len(json.dumps(item, ensure_ascii=False).encode("utf-8")) + 1
+    if page and size + encoded > 14000:
+        break
+    page.append(item)
+    size += encoded
+print(json.dumps({"total": len(items), "offset": offset, "next": offset + len(page), "header": header, "items": page},
+    ensure_ascii=False, separators=(",", ":")))
+PY
+) || fail category_map_proposal_invalid
+    respond_ok category-map-proposal "$out"
+}
+
+# Writes the administrator's category map as config/category-map.json. It travels
+# in parts (submission id, part, total) of base64url chunks of the closed
+# alphabet; the last part joins them, checks the structure and the proposal hash
+# and writes the file. The Consolidator's own validator decides when it resumes.
+cmd_category_map_submit() {
+    (($# >= 5)) || fail invalid_arguments
+    local destination=$1 submission=$2 part=$3 total=$4 staging out
+    shift 4
+    [[ $submission =~ ^[a-f0-9]{16}$ && $part =~ ^[0-9]{1,3}$ && $total =~ ^[1-9][0-9]{0,2}$ ]] && ((part < total)) || fail invalid_arguments
+    load_destination "$destination"
+    command -v python3 >/dev/null 2>&1 || fail python3_missing
+    [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
+    [[ -f $DST_RUNTIME_DIR/exports/category-map/proposal.json && ! -L $DST_RUNTIME_DIR/exports/category-map/proposal.json ]] || fail category_map_proposal_missing
+    local chunk
+    for chunk in "$@"; do
+        [[ $chunk =~ ^[A-Za-z0-9_-]{1,160}$ ]] || fail invalid_arguments
+    done
+    staging="$DST_RUNTIME_DIR/exports/category-map/incoming-$submission"
+    [[ ! -L $staging ]] || fail category_map_invalid
+    mkdir -p "$staging"
+    printf '%s' "$@" > "$staging/$part.part"
+    if ((part + 1 < total)); then
+        [[ $(id -u) != 0 ]] || chown -R "$DST_RUN_AS:" "$staging"
+        respond_ok category-map-submit "{\"destination\":\"$destination\",\"received\":$((part + 1)),\"total\":$total}"
+    fi
+    local index joined="$staging/joined"
+    : > "$joined"
+    for ((index = 0; index < total; index++)); do
+        [[ -f $staging/$index.part && ! -L $staging/$index.part ]] || { rm -rf -- "$staging"; fail category_map_incomplete; }
+        cat -- "$staging/$index.part" >> "$joined"
+    done
+    (($(stat -c %s "$joined") <= 2097152)) || { rm -rf -- "$staging"; fail invalid_arguments; }
+    out=$(python3 -I - "$DST_RUNTIME_DIR" "$joined" <<'PY'
+import base64, hashlib, json, os, re, sys
+root = sys.argv[1]
+encoded = open(sys.argv[2], encoding="ascii").read()
+answers = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8"))
+proposal = open(os.path.join(root, "exports/category-map/proposal.json"), "rb").read()
+if answers.get("proposal_sha256") != hashlib.sha256(proposal).hexdigest():
+    sys.exit(3)
+meta = {key: str(answers.get(key) or "")[:200] for key in ("operator", "decision_timestamp_utc", "evidence_reference")}
+if not all(meta.values()) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", meta["decision_timestamp_utc"]):
+    sys.exit(2)
+key_re = re.compile(r"[A-Za-z0-9_-]{1,64}")
+nodes, keys = [], set()
+for node in answers.get("nodes") or []:
+    if not isinstance(node, list) or len(node) != 4 or not isinstance(node[0], str) or not key_re.fullmatch(node[0]) or node[0] in keys:
+        sys.exit(4)
+    keys.add(node[0])
+    if node[3] is not None:
+        if not isinstance(node[3], int) or isinstance(node[3], bool) or node[3] < 1:
+            sys.exit(4)
+        nodes.append({"key": node[0], "existing_category_id": node[3]})
+    else:
+        if not isinstance(node[1], str) or not isinstance(node[2], str) or len(node[1]) > 255 or not (node[2] == "@top" or key_re.fullmatch(node[2])):
+            sys.exit(4)
+        nodes.append({"key": node[0], "name": node[1], "parent": node[2]})
+assignments = []
+for assignment in answers.get("assignments") or []:
+    if not isinstance(assignment, list) or len(assignment) != 3 or not isinstance(assignment[0], str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", assignment[0]) \
+            or not isinstance(assignment[1], int) or isinstance(assignment[1], bool) or assignment[1] < 1 or assignment[2] not in keys:
+        sys.exit(5)
+    assignments.append({"source": assignment[0], "source_category_id": assignment[1], "node": assignment[2]})
+if not nodes or not assignments or len(nodes) > 5000 or len(assignments) > 5000:
+    sys.exit(6)
+document = {"schema_version": "1.0", "proposal_sha256": answers["proposal_sha256"], **meta, "nodes": nodes, "assignments": assignments}
+path = os.path.join(root, "config/category-map.json")
+temporary = path + ".incoming"
+with open(temporary, "w", encoding="utf-8") as handle:
+    handle.write(json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+os.replace(temporary, path)
+print(json.dumps({"nodes": len(nodes), "assignments": len(assignments), "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest()}))
+PY
+) || { rm -rf -- "$staging"; fail category_map_invalid; }
+    rm -rf -- "$staging"
+    [[ $(id -u) != 0 ]] || chown "$DST_RUN_AS:" "$DST_RUNTIME_DIR/config/category-map.json"
+    respond_ok category-map-submit "{\"destination\":\"$destination\",\"received\":$total,\"total\":$total,\"written\":$out}"
+}
+
 # Records the administrator's theme decisions in the Consolidator's own policy, as
 # its interactive mode does (selection_source=operator).
 cmd_theme_policy_set() {
@@ -1649,6 +1803,8 @@ case $COMMAND in
     identity-review-submit) cmd_identity_review_submit "$@" ;;
     theme-options) cmd_theme_options "$@" ;;
     theme-policy-set) cmd_theme_policy_set "$@" ;;
+    category-map-proposal) cmd_category_map_proposal "$@" ;;
+    category-map-submit) cmd_category_map_submit "$@" ;;
     plugin-proposal) cmd_plugin_proposal "$@" ;;
     site-upload-report) cmd_site_upload_report "$@" ;;
     copias-release) cmd_copias_release "$@" ;;

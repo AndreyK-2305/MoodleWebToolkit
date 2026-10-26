@@ -267,6 +267,71 @@ class RemoteDestinationTest extends DomainTestCase
         $this->assertSame([true, false, 0], [$report['engine_intact'], $report['destination_written'], $report['copias_packages']]);
     }
 
+    public function test_the_real_agent_pages_the_category_proposal_and_writes_the_map_in_parts(): void
+    {
+        $this->requireRoot();
+        if (trim((string) shell_exec('command -v python3')) === '') {
+            $this->markTestSkipped('Estos subcomandos usan python3, que la comprobación del destino exige.');
+        }
+        DeployRemoteTool::dispatchSync($this->server->getKey(), $this->distribution->getKey(), null);
+        $runtime = $this->root.'/srv/campus';
+        $this->assertSame(0, $this->helper(['campus', '--public-url', self::URL, '--admin-email', 'admin@example.edu', '--runtime-dir', $runtime])->getExitCode());
+        $courses = array_map(fn (int $index): array => ['id' => $index, 'shortname' => 'CURSO-'.$index, 'fullname' => str_repeat('Curso largo ', 8).$index], range(1, 50));
+        $categories = array_map(fn (int $id): array => ['id' => $id, 'parent_id' => 0, 'name' => 'Categoría «'.$id.'»', 'idnumber' => '', 'depth' => 1,
+            'course_count' => 50, 'courses' => $courses], range(1, 12));
+        $proposal = (string) json_encode(['schema_version' => '1.0', 'phase' => 'v8-category-map-proposal',
+            'sources' => [['source' => 'pregrado', 'alias' => 'PRE', 'name' => 'Pregrado', 'categories' => $categories]],
+            'existing' => [['id' => 1, 'parent_id' => 0, 'name' => 'Categoría 1', 'idnumber' => '', 'depth' => 1, 'course_count' => 0]],
+            'pilot' => ['source' => 'pregrado', 'source_course_id' => 3, 'shortname' => 'CURSO-3', 'source_category_id' => 2],
+            'suggestions' => [], 'destination_write_performed' => false], JSON_UNESCAPED_UNICODE);
+        mkdir($runtime.'/exports/category-map', 0755, true);
+        file_put_contents($runtime.'/exports/category-map/proposal.json', $proposal);
+
+        // Every page fits one answer: twelve categories of fifty courses take several.
+        $items = [];
+        $header = null;
+        $offset = 0;
+        $pages = 0;
+        do {
+            $page = $this->agent()->call($this->target(), 'category-map-proposal', ['campus', (string) $offset]);
+            $this->assertTrue($page->ok, (string) $page->errorCode);
+            $items = [...$items, ...$page->data['items']];
+            $header ??= $page->data['header'];
+            $offset = $page->data['next'];
+            $pages++;
+        } while ($offset < $page->data['total']);
+        $this->assertGreaterThan(1, $pages);
+        $this->assertSame([13, hash('sha256', $proposal), 'PRE', 2], [count($items), $header['proposal_sha256'], $header['sources'][0]['alias'],
+            $header['pilot']['source_category_id']]);
+        $this->assertSame(['e', 'Categoría «1»', 20], [$items[0]['k'], $items[1]['name'], count($items[1]['courses'])]);
+
+        $answers = ['proposal_sha256' => hash('sha256', $proposal), 'operator' => 'Admin <admin@example.edu>',
+            'decision_timestamp_utc' => '2026-10-25T15:00:00Z', 'evidence_reference' => 'plataforma',
+            'nodes' => [['E-1', null, null, 1], ['W-1', 'Ingeniería', '@top', null]],
+            'assignments' => array_map(fn (int $id): array => ['pregrado', $id, $id === 1 ? 'E-1' : 'W-1'], range(1, 12))];
+        $encode = fn (array $value): array => array_chunk(str_split(rtrim(strtr(base64_encode((string) json_encode($value, JSON_UNESCAPED_UNICODE)), '+/', '-_'), '='), 150), 3);
+        // A map drawn on another proposal is refused.
+        $stale = $encode([...$answers, 'proposal_sha256' => str_repeat('0', 64)]);
+        foreach ($stale as $index => $chunks) {
+            $response = $this->agent()->call($this->target(), 'category-map-submit', ['campus', 'aaaaaaaaaaaaaaaa', (string) $index, (string) count($stale), ...$chunks]);
+        }
+        $this->assertSame('category_map_invalid', $response->errorCode);
+        $this->assertFileDoesNotExist($runtime.'/config/category-map.json');
+
+        $parts = $encode($answers);
+        $this->assertGreaterThan(1, count($parts));
+        foreach ($parts as $index => $chunks) {
+            $response = $this->agent()->call($this->target(), 'category-map-submit', ['campus', 'bbbbbbbbbbbbbbbb', (string) $index, (string) count($parts), ...$chunks]);
+            $this->assertTrue($response->ok, (string) $response->errorCode);
+        }
+        $written = json_decode((string) file_get_contents($runtime.'/config/category-map.json'), true);
+        $this->assertSame([['key' => 'E-1', 'existing_category_id' => 1], ['key' => 'W-1', 'name' => 'Ingeniería', 'parent' => '@top']], $written['nodes']);
+        $this->assertSame(['source' => 'pregrado', 'source_category_id' => 2, 'node' => 'W-1'], $written['assignments'][1]);
+        $this->assertSame(hash_file('sha256', $runtime.'/config/category-map.json'), $response->data['written']['sha256']);
+        $this->assertSame('mwt-campus', posix_getpwuid(fileowner($runtime.'/config/category-map.json'))['name']);
+        $this->assertDirectoryDoesNotExist($runtime.'/exports/category-map/incoming-bbbbbbbbbbbbbbbb');
+    }
+
     public function test_the_real_agent_reads_the_review_and_writes_the_administrators_answers(): void
     {
         $this->requireRoot();

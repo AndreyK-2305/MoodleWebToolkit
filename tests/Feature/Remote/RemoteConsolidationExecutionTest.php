@@ -134,14 +134,14 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertSame(RemoteConsolidationPreparation::ADAPTER_KEY, $execution->toolBinding->adapter_key);
         $this->assertSame('consolidator-remote.v1', $execution->toolBinding->configuration_snapshot['schema_version']);
         $this->assertSame(['campus', 'auto'], [$run->evidence['parameters']['destination'], $run->evidence['parameters']['workers']]);
-        $this->assertCount(21, $execution->steps);
+        $this->assertCount(23, $execution->steps);
 
         // The assistant imported the packages and moved on to OAuth2.
         $this->queueStatus(alive: true);
         $this->queueReport(['stage' => '02-oauth2', 'status' => 'running', 'message' => '2. Configurar y validar Google OAuth2']);
         dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
         $execution->refresh();
-        $this->assertSame(5, $execution->progress);
+        $this->assertSame(4, $execution->progress);
         $this->assertSame([ExecutionStepStatus::SUCCESS, ExecutionStepStatus::RUNNING],
             [$this->stepStatus($execution, '01-importar-paquetes'), $this->stepStatus($execution, '02-oauth2')]);
 
@@ -574,6 +574,56 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
             ['Idempotency-Key' => 'consolidation-theme-second'])->assertSuccessful();
         $this->assertStringContainsString("'theme-policy-set' 'campus' 'classic' '0'", implode("\n", $this->transport->scripts));
         $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $this->assertSame(0, $this->transport->pending());
+    }
+
+    public function test_the_category_map_is_drawn_in_the_platform_checked_and_written_on_the_destination(): void
+    {
+        [$execution, $run] = $this->startExecution();
+        $this->queueStatus(alive: false, exit: ['exit_code' => 22, 'cancel_requested' => false, 'finished_at' => '2026-10-25T12:00:00Z']);
+        $this->queueReport(['stage' => '05a-mapa-categorias', 'status' => 'waiting_manual',
+            'message' => 'V8_CATEGORY_MAP_REQUIRED: CATEGORY_MAP_PROPOSAL_READY; WAITING_USER_ACTION. Revise exports/category-map/proposal.json.']);
+        $sha = str_repeat('c', 64);
+        $category = fn (string $source, int $id, string $name): array => ['k' => 'c', 'source' => $source, 'id' => $id, 'parent_id' => 0, 'name' => $name,
+            'depth' => 1, 'course_count' => 1, 'courses' => [['id' => $id * 10, 'shortname' => 'ING-101', 'fullname' => 'Ingeniería I']]];
+        // Two pages: the header and the existing category first, then the rest.
+        $this->transport->ok('category-map-proposal', ['total' => 4, 'offset' => 0, 'next' => 2, 'header' => ['proposal_sha256' => $sha,
+            'sources' => [['source' => 'posgrado', 'alias' => 'POS', 'name' => 'Posgrado'], ['source' => 'pregrado', 'alias' => 'PRE', 'name' => 'Pregrado']],
+            'pilot' => ['source' => 'posgrado', 'source_category_id' => 7, 'shortname' => 'ING-101'], 'issues' => []],
+            'items' => [['k' => 'e', 'id' => 1, 'parent_id' => 0, 'name' => 'Categoría 1', 'depth' => 1, 'course_count' => 0], $category('posgrado', 7, 'Ingeniería')]]);
+        $this->transport->ok('category-map-proposal', ['total' => 4, 'offset' => 2, 'next' => 4, 'header' => null,
+            'items' => [$category('pregrado', 2, 'Ingenieria'), ['k' => 's', 'kind' => 'same', 'score' => 1, 'a' => ['source' => 'posgrado', 'id' => 7],
+                'b' => ['source' => 'pregrado', 'id' => 2]]]]);
+        dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
+        $conflict = $execution->conflicts()->sole();
+        $this->assertSame(['CATEGORY_MAP', true, 2, 1, ['APPLY_ANSWERS', 'CONFIRM_COMPLETED']], [$conflict->type, $conflict->details['map_complete'],
+            count($conflict->details['categories']), count($conflict->details['suggestions']), $conflict->details['allowed_decisions']]);
+        $this->assertSame(ExecutionStepStatus::WAITING_USER, $this->stepStatus($execution, '05a-mapa-categorias'));
+
+        $url = route('projects.executions.conflicts.answers', [$this->project, $execution, $conflict->id]);
+        $nodes = [['key' => 'ING', 'name' => 'Ingeniería', 'parent' => '@top']];
+        $assignments = [['source' => 'posgrado', 'source_category_id' => 7, 'node' => 'ING'], ['source' => 'pregrado', 'source_category_id' => 2, 'node' => 'ING']];
+        // A map that leaves a source category without destination is refused before anything travels.
+        $this->postJson($url, ['conflict_version' => 1, 'nodes' => $nodes, 'assignments' => [$assignments[0]], 'confirm' => true],
+            ['Idempotency-Key' => 'category-map-unmapped'])->assertJsonValidationErrors('category_map');
+        // A new category beside the existing «Categoría 1» with its name is refused too.
+        $this->postJson($url, ['conflict_version' => 1, 'nodes' => [['key' => 'ING', 'name' => 'categoría 1', 'parent' => '@top']],
+            'assignments' => $assignments, 'confirm' => true], ['Idempotency-Key' => 'category-map-homonym'])->assertJsonValidationErrors('category_map');
+
+        $this->transport->ok('category-map-submit', ['destination' => 'campus', 'received' => 1, 'total' => 1,
+            'written' => ['nodes' => 1, 'assignments' => 2, 'sha256' => str_repeat('d', 64)]]);
+        $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
+        $this->queueLaunch();
+        $this->postJson($url, ['conflict_version' => 1, 'nodes' => $nodes, 'assignments' => $assignments, 'confirm' => true,
+            'operations' => ['Unir «Ingenieria» con «Ingeniería»']], ['Idempotency-Key' => 'category-map-valid'])->assertSuccessful();
+        $submit = collect($this->transport->scripts)->first(fn (string $script): bool => str_contains($script, "'category-map-submit'"));
+        $this->assertStringContainsString("'category-map-submit' 'campus' ", (string) $submit);
+        $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
+        $audit = AuditLog::query()->where('action', 'CATEGORY_MAP_SUBMITTED')->sole();
+        $this->assertSame([$sha, str_repeat('d', 64), 1, 2, ['Unir «Ingenieria» con «Ingeniería»']], [$audit->payload['proposal_sha256'],
+            $audit->payload['category_map_sha256'], $audit->payload['categories'], $audit->payload['assignments'], $audit->payload['operations']]);
+        $this->assertSame(['categories' => 1, 'merged' => 1], array_intersect_key(
+            RemoteConsolidationInterventions::present($conflict->fresh()->details)['answer_summary'], ['categories' => 0, 'merged' => 0]));
         $this->assertSame(0, $this->transport->pending());
     }
 

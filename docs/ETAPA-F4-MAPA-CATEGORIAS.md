@@ -121,12 +121,18 @@ distribución.
 
 - **Agente 1.15.0**:
     - `category-map-proposal <destino> <offset>` devuelve la propuesta por
-      páginas, con campos cerrados y límites: nombres hasta 255 caracteres y
-      hasta 50 cursos listados por categoría, más el conteo total.
-    - `category-map-submit <destino> <chunks…>` recibe trozos base64url, igual
-      que `identity-review-submit`. Valida la estructura con Python y escribe
-      `config/category-map.json` de forma atómica. Lo rechaza si ya existe
-      `destination-write.lock`.
+      páginas de hasta 14 000 bytes, para que cada respuesta quepa en la salida
+      de SSM. La primera página trae la cabecera (hash de la propuesta,
+      orígenes, piloto y problemas de la última validación). Siguen las
+      categorías existentes del destino, cada categoría de origen con hasta 20
+      cursos listados (y el total) y las sugerencias. Todos los campos son
+      cerrados.
+    - `category-map-submit <destino> <envío> <parte> <total> <chunks…>` recibe
+      trozos base64url, como `identity-review-submit`. El mapa viaja en partes
+      de 40 trozos para no superar el tamaño de una llamada. La última parte
+      los une desde un archivo (nunca desde argv), comprueba la estructura y el
+      hash de la propuesta, escribe `config/category-map.json` de forma atómica
+      y devuelve su hash. Lo rechaza si ya existe `destination-write.lock`.
     - `consolidator-run` exporta `CONSOLIDATION_CATEGORY_MAP=required`.
 - **Intervención `CATEGORY_MAP`**:
     - se abre en `05a-mapa-categorias` con `V8_CATEGORY_MAP_REQUIRED` o
@@ -142,7 +148,8 @@ distribución.
     - al enviar, se registra `CATEGORY_MAP_SUBMITTED` con ese registro, el hash
       del mapeo y los totales; además queda la auditoría estándar de la
       resolución del conflicto;
-    - los borradores se guardan en el navegador y no se auditan hasta enviarse.
+    - si el Consolidador rechaza el mapa, la intervención nueva arranca desde la
+      respuesta anterior de la misma ejecución, no desde cero.
 - **Editor React** (`resources/js/components/category-map-editor.tsx` y
   lógica pura en `resources/js/lib/category-map.ts`, con Vitest):
     - árbol destino accesible según el patrón WAI-ARIA _tree_: `role="tree"`,
@@ -173,6 +180,20 @@ Resultado esperado (`LAB-ORIGENES-SINTETICOS.md`, «Categorías esperadas»):
 
 El piloto (POS-EDU-501) queda en Educación. `phase6-verify` aprueba el
 resultado.
+
+Pasos de la prueba en AWS:
+
+1. Actualizar el agente del destino a 1.15.0 («Instalar/Actualizar agente»).
+2. Restablecer el destino y lanzar la consolidación remota desde la web.
+3. En `05a-mapa-categorias`:
+    - aplicar las sugerencias de Ingeniería y Ciencias Básicas;
+    - unir las dos «Category 1» con la «Categoría 1» existente;
+    - comprobar que el piloto se anuncia en Educación;
+    - aprobar el mapa.
+4. Confirmar que `07b-categorias-piloto` crea Educación y que el piloto se
+   restaura allí.
+5. Al cerrar, revisar en Moodle el árbol anterior y que cada curso esté en su
+   categoría.
 
 ## 5. Entregas
 

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { CategoryMapEditor } from '@/components/category-map-editor';
 import InputError from '@/components/input-error';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -32,6 +33,7 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog';
+import type { CategoryMapDetails } from '@/lib/category-map';
 import { echo } from '@/lib/echo';
 import {
     executionScopeReplacement,
@@ -203,58 +205,63 @@ type ConflictData = {
     message: string | null;
     allowed_decisions: string[];
     resolved_at: string | null;
-    intervention: {
-        kind?: string;
-        stage?: string | null;
-        message?: string | null;
-        server_message?: string | null;
-        review_paths?: string[];
-        instructions?: string | null;
-        server_instructions?: string | null;
-        callback_uri?: string | null;
-        issues?: string[];
-        needs?: {
-            component: string;
-            display_name: string | null;
-            observed_state: string | null;
-        }[];
-        new_plugins?: string[];
-        updated_plugins?: string[];
-        removed_plugins?: string[];
-        technical_issues?: string[];
-        checkpoint_status?: string | null;
-        plugins_none?: boolean;
-        candidates?: IdentityCandidate[];
-        answer_summary?: AnswerSummary;
-        candidate_total?: number | null;
-        candidates_complete?: boolean;
-        themes?: string[];
-        theme_selected?: string | null;
-        theme_default?: string | null;
-        legacy_sources?: { source: string; collector_version: string | null }[];
-        legacy_accepted?: boolean;
-        unknown?: string[];
-        inspections?: Record<
-            string,
-            {
-                state: string;
-                repository: string;
-                commit: string;
-                message: string | null;
-            }
-        >;
-        proposals?: Record<
-            string,
-            {
-                version: number;
-                requires: number | null;
-                release: string | null;
-                path: string | null;
-                tree_sha256: string | null;
-                dependencies: string[];
-            }
-        >;
-    } | null;
+    intervention:
+        | (CategoryMapDetails & {
+              kind?: string;
+              stage?: string | null;
+              message?: string | null;
+              server_message?: string | null;
+              review_paths?: string[];
+              instructions?: string | null;
+              server_instructions?: string | null;
+              callback_uri?: string | null;
+              issues?: string[];
+              needs?: {
+                  component: string;
+                  display_name: string | null;
+                  observed_state: string | null;
+              }[];
+              new_plugins?: string[];
+              updated_plugins?: string[];
+              removed_plugins?: string[];
+              technical_issues?: string[];
+              checkpoint_status?: string | null;
+              plugins_none?: boolean;
+              candidates?: IdentityCandidate[];
+              answer_summary?: AnswerSummary;
+              candidate_total?: number | null;
+              candidates_complete?: boolean;
+              themes?: string[];
+              theme_selected?: string | null;
+              theme_default?: string | null;
+              legacy_sources?: {
+                  source: string;
+                  collector_version: string | null;
+              }[];
+              legacy_accepted?: boolean;
+              unknown?: string[];
+              inspections?: Record<
+                  string,
+                  {
+                      state: string;
+                      repository: string;
+                      commit: string;
+                      message: string | null;
+                  }
+              >;
+              proposals?: Record<
+                  string,
+                  {
+                      version: number;
+                      requires: number | null;
+                      release: string | null;
+                      path: string | null;
+                      tree_sha256: string | null;
+                      dependencies: string[];
+                  }
+              >;
+          })
+        | null;
 };
 
 type AnswerSummary = {
@@ -264,6 +271,8 @@ type AnswerSummary = {
     ignore: number;
     theme: string | null;
     promoted: number;
+    categories?: number;
+    merged?: number;
 };
 
 const resolutionOptions = Object.entries(resolutionLabels) as [
@@ -1849,9 +1858,11 @@ const consolidationStages: Record<string, string> = {
     '03b-oauth2-final': 'Confirmar OAuth y proxy',
     '04-identidades': 'Identidades',
     '05-plan-usuarios': 'Plan de usuarios',
+    '05a-mapa-categorias': 'Mapa de categorías',
     '05b-readiness': 'Readiness',
     '06-aplicar-usuarios': 'Aplicar usuarios',
     '07-verificar-usuarios': 'Verificar usuarios',
+    '07b-categorias-piloto': 'Categorías del piloto',
     '08-plan-piloto': 'Plan del piloto',
     '09-aplicar-piloto': 'Restaurar el piloto',
     '09b-themes-piloto': 'Temas del piloto',
@@ -2289,6 +2300,21 @@ function ConflictAction({
     if (
         conflict.intervention &&
         conflict.allowed_decisions.includes('APPLY_ANSWERS') &&
+        conflict.type === 'CATEGORY_MAP'
+    ) {
+        return (
+            <CategoryMapIntervention
+                projectUuid={projectUuid}
+                executionUuid={executionUuid}
+                conflict={conflict}
+                disabled={disabled}
+            />
+        );
+    }
+
+    if (
+        conflict.intervention &&
+        conflict.allowed_decisions.includes('APPLY_ANSWERS') &&
         ['IDENTITY_REVIEW', 'THEME_SELECTION'].includes(conflict.type)
     ) {
         return conflict.type === 'IDENTITY_REVIEW' ? (
@@ -2391,6 +2417,7 @@ const interventionTitles: Record<string, string> = {
     PLUGIN_INTERVENTION: 'Plugins requeridos por los orígenes',
     IDENTITY_REVIEW: 'Revisar posibles identidades duplicadas',
     THEME_SELECTION: 'Elegir el theme del Moodle consolidado',
+    CATEGORY_MAP: 'Revisar el mapa de categorías del destino',
     CONSOLIDATOR_INTERVENTION: 'Intervención solicitada por el Consolidador',
 };
 
@@ -2824,6 +2851,10 @@ function AnswersSent({ summary }: { summary?: AnswerSummary | null }) {
               summary.theme && `apariencia «${summary.theme}»`,
               summary.promoted > 0 &&
                   `${summary.promoted} plugins agregados al catálogo`,
+              (summary.categories ?? 0) > 0 &&
+                  `${summary.categories} categorías en el mapa`,
+              (summary.merged ?? 0) > 0 &&
+                  `${summary.merged} con categorías unidas`,
           ].filter(Boolean)
         : [];
 
@@ -3375,6 +3406,59 @@ function ThemeSelection({
             >
                 Aplicar y continuar
             </Button>
+        </div>
+    );
+}
+
+/** The destination category map, drawn and approved before any category is written. */
+function CategoryMapIntervention({
+    projectUuid,
+    executionUuid,
+    conflict,
+    disabled,
+}: {
+    projectUuid: string;
+    executionUuid: string;
+    conflict: ConflictData;
+    disabled: boolean;
+}) {
+    const details = conflict.intervention ?? {};
+    const { send, processing, errors, sent } = useInterventionAnswers(
+        projectUuid,
+        executionUuid,
+        conflict,
+    );
+
+    if (sent) {
+        return <AnswersSent summary={details.answer_summary} />;
+    }
+
+    return (
+        <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-900 dark:bg-amber-950/30">
+            <p className="font-medium">{interventionTitles[conflict.type]}</p>
+            {details.message && (
+                <p className="text-muted-foreground text-xs">
+                    {details.message}
+                </p>
+            )}
+            <p className="text-xs">
+                Así quedarán las categorías del Moodle consolidado. Una las
+                categorías que representan lo mismo en varios orígenes, cambie
+                nombres o ubicaciones y apruebe el mapa: el Consolidador crea
+                las categorías y restaura cada curso en la suya.
+            </p>
+            <CategoryMapEditor
+                details={details}
+                disabled={disabled}
+                processing={processing}
+                errors={errors}
+                onSubmit={(answer) => send(answer)}
+            />
+            <ServerDetails
+                message={details.server_message}
+                instructions={details.server_instructions}
+                paths={details.review_paths}
+            />
         </div>
     );
 }
