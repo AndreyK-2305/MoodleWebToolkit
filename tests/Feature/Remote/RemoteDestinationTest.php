@@ -381,11 +381,25 @@ class RemoteDestinationTest extends DomainTestCase
         file_put_contents($runtime.'/exports/phase2/plugin_inventory_after.json', (string) json_encode(['plugins' => [
             ['component' => 'theme_boost', 'installation_status' => 'installed'], ['component' => 'theme_classic', 'installation_status' => 'installed'],
             ['component' => 'theme_moove', 'installation_status' => 'missing'], ['component' => 'mod_quiz', 'installation_status' => 'installed']]]));
+        // Agent 1.16.0: each source's customization of each installed theme, as counts only.
+        mkdir($runtime.'/exports/packages/pregrado', 0755, true);
+        file_put_contents($runtime.'/exports/packages/pregrado/manifest.json', (string) json_encode(['source_id' => 'pregrado']));
+        file_put_contents($runtime.'/exports/packages/pregrado/inventario-origen.json', (string) json_encode(['themes' => ['profiles' => [
+            'classic' => ['component' => 'theme_classic', 'settings' => ['scss' => ['state' => 'config_value', 'value' => '.x{}'],
+                'brandcolor' => ['state' => 'config_value', 'value' => '#123456'], 'logo' => ['state' => 'file_reference', 'value' => '/l.png'],
+                'version' => ['state' => 'config_value', 'value' => '2024100700']]],
+            'moove' => ['component' => 'theme_moove', 'settings' => ['scss' => ['state' => 'config_value', 'value' => '.y{}']]]]]]));
         $options = $this->agent()->call($this->target(), 'theme-options', ['campus']);
         $this->assertSame([['boost', 'classic'], 'boost'], [$options->data['themes'], $options->data['default']]);
+        $this->assertSame([['source' => 'pregrado', 'theme' => 'classic', 'settings' => 2, 'skipped' => 2, 'scss' => true]], $options->data['profiles']);
+        $this->assertStringNotContainsString('#123456', (string) json_encode($options->data));
         $this->assertTrue($this->agent()->call($this->target(), 'theme-policy-set', ['campus', 'classic', '0'])->ok);
         $policy = json_decode((string) file_get_contents($runtime.'/config/theme-policy.json'), true);
-        $this->assertSame(['classic', 'operator'], [$policy['global_theme_selection'], $policy['selection_source']]);
+        $this->assertSame(['classic', 'operator', ''], [$policy['global_theme_selection'], $policy['selection_source'], $policy['global_theme_profile_source']]);
+        $this->assertSame('invalid_arguments', $this->agent()->call($this->target(), 'theme-policy-set', ['campus', 'classic', '0', '../x'])->errorCode);
+        $this->assertTrue($this->agent()->call($this->target(), 'theme-policy-set', ['campus', 'classic', '0', 'pregrado'])->ok);
+        $policy = json_decode((string) file_get_contents($runtime.'/config/theme-policy.json'), true);
+        $this->assertSame('pregrado', $policy['global_theme_profile_source']);
 
         // Once the Consolidator wrote to the destination, its review and policy are fixed.
         file_put_contents($runtime.'/reports/destination-write.lock.json', '{}');

@@ -88,6 +88,7 @@ php tests/rc23-phase6-effective-inventory.php
 php tests/rc23-quiz-attempt-contract.php
 php tests/rc24-phase13-contracts.php
 php tests/v8-contracts.php
+php tests/v8-820-theme-profile.php
 php tests/v8-fuzzy-reconciliation.php
 php tests/v8-rc1-regressions.php
 printf '%s\n' RC1_REGRESSION_OK

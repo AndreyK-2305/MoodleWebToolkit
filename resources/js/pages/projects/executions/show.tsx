@@ -239,6 +239,15 @@ type ConflictData = {
                   collector_version: string | null;
               }[];
               legacy_accepted?: boolean;
+              /** Agent 1.16.0: what each source customized in each theme, as counts. */
+              theme_profiles?: {
+                  source: string;
+                  theme: string;
+                  settings: number;
+                  skipped: number;
+                  scss: boolean;
+              }[];
+              theme_profile_source?: string | null;
               unknown?: string[];
               inspections?: Record<
                   string,
@@ -270,6 +279,7 @@ type AnswerSummary = {
     keep_separate: number;
     ignore: number;
     theme: string | null;
+    profile_source?: string | null;
     promoted: number;
     categories?: number;
     merged?: number;
@@ -2888,7 +2898,10 @@ function AnswersSent({ summary }: { summary?: AnswerSummary | null }) {
               summary.merge > 0 && `${summary.merge} unidas`,
               summary.keep_separate > 0 && `${summary.keep_separate} separadas`,
               summary.ignore > 0 && `${summary.ignore} sin cambios`,
-              summary.theme && `apariencia «${summary.theme}»`,
+              summary.theme &&
+                  (summary.profile_source
+                      ? `apariencia «${summary.theme}» con la personalización de ${summary.profile_source}`
+                      : `apariencia «${summary.theme}»`),
               summary.promoted > 0 &&
                   `${summary.promoted} plugins agregados al catálogo`,
               (summary.categories ?? 0) > 0 &&
@@ -3363,6 +3376,25 @@ function ThemeSelection({
               : (themes[0] ?? ''),
     );
     const [acceptLegacy, setAcceptLegacy] = useState(false);
+    // null follows the theme: its saved choice, else the first source that customized it.
+    const [profileChoice, setProfileChoice] = useState<string | null>(null);
+    const customized = (details.theme_profiles ?? []).filter(
+        (profile) => profile.theme === theme && profile.settings > 0,
+    );
+    const profileSource =
+        profileChoice !== null &&
+        (profileChoice === '' ||
+            customized.some((profile) => profile.source === profileChoice))
+            ? profileChoice
+            : customized.some(
+                    (profile) =>
+                        profile.source === details.theme_profile_source,
+                )
+              ? (details.theme_profile_source ?? '')
+              : (customized[0]?.source ?? '');
+    const chosenProfile = customized.find(
+        (profile) => profile.source === profileSource,
+    );
     const { send, processing, errors, sent } = useInterventionAnswers(
         projectUuid,
         executionUuid,
@@ -3404,6 +3436,43 @@ function ThemeSelection({
                     cuando el destino los tiene instalados.
                 </span>
             </label>
+            {customized.length > 0 ? (
+                <label className="block space-y-1">
+                    <span className="text-xs font-medium">
+                        Personalización del theme
+                    </span>
+                    <select
+                        className="border-input bg-background w-full rounded-md border px-2 py-1 text-sm"
+                        value={profileSource}
+                        onChange={(event) =>
+                            setProfileChoice(event.target.value)
+                        }
+                    >
+                        {customized.map((profile) => (
+                            <option key={profile.source} value={profile.source}>
+                                Copiar la de {profile.source} (
+                                {profile.settings}{' '}
+                                {profile.settings === 1 ? 'ajuste' : 'ajustes'}
+                                {profile.scss ? ', con SCSS' : ''})
+                            </option>
+                        ))}
+                        <option value="">
+                            No copiar: apariencia de fábrica de {theme}
+                        </option>
+                    </select>
+                    <span className="text-muted-foreground block text-xs">
+                        {chosenProfile
+                            ? `Se copian los colores, el SCSS y los presets que ${chosenProfile.source} tenía en ${theme}. Los logos e imágenes no viajan: súbalos después en Moodle (Apariencia › Temas). Todo se puede cambiar luego sin reinstalar.`
+                            : `El destino usa ${theme} con su configuración por defecto; se puede personalizar luego en Moodle (Apariencia › Temas).`}
+                    </span>
+                </label>
+            ) : (
+                <p className="text-muted-foreground text-xs">
+                    Ningún origen trae personalización de{' '}
+                    {theme || 'este theme'}: se usará su configuración por
+                    defecto, que se puede cambiar luego en Moodle.
+                </p>
+            )}
             {legacy && (
                 <div className="space-y-1 text-xs">
                     <p>
@@ -3433,7 +3502,10 @@ function ThemeSelection({
             )}
             <InputError
                 message={
-                    errors.theme ?? errors.accept_legacy ?? errors.conflict
+                    errors.theme ??
+                    errors.accept_legacy ??
+                    errors.profile_source ??
+                    errors.conflict
                 }
             />
             <Button
@@ -3443,7 +3515,14 @@ function ThemeSelection({
                     theme === '' ||
                     (legacy && !acceptLegacy)
                 }
-                onClick={() => send({ theme, accept_legacy: acceptLegacy })}
+                onClick={() =>
+                    send({
+                        theme,
+                        accept_legacy: acceptLegacy,
+                        profile_source:
+                            profileSource === '' ? null : profileSource,
+                    })
+                }
             >
                 Aplicar y continuar
             </Button>

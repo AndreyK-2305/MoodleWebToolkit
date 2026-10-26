@@ -1,4 +1,6 @@
-8.1.0-linux
+8.2.0-linux
+Origen: 8.1.0-linux + personalización del theme global copiada de un origen elegido (global_theme_profile_source)
+Estado: versión menor sobre 8.1.0; sin origen elegido el flujo es idéntico a 8.1.0, se valida con la prueba de copias institucionales
 Origen: 8.0.0-linux + mapa de categorías destino declarado antes de escribir (CONSOLIDATION_CATEGORY_MAP=required o config/category-map.json)
 Estado: versión menor sobre la final 8.0.0; sin mapa el flujo es idéntico a 8.0.0, se valida de punta a punta con el laboratorio sintético desde MoodleWebToolkit
 Origen: 8.0.0-linux-rc13 + reconstrucción de moodle-target cuando cambian los pins sin plugins instalados

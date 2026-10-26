@@ -71,14 +71,14 @@ class ToolDistributionDeploymentTest extends DomainTestCase
     {
         $execution = $this->execution($this->project());
         $this->approveCapacity($execution);
-        $distribution = ToolDistribution::query()->where('key', 'moodle-consolidador-8.1.0-linux-tree')->firstOrFail();
+        $distribution = ToolDistribution::query()->where('key', 'moodle-consolidador-8.2.0-linux-tree')->firstOrFail();
         $result = app(DeployToolDistribution::class)->deploy($execution, $distribution);
 
         $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config.yaml');
         $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config/phase5-pilot-package.json');
         $this->assertFileDoesNotExist($result['path'].DIRECTORY_SEPARATOR.'config/phase6-batch.json');
         $this->assertSame([], $result['evidence']['workspace_overlays']);
-        $this->assertSame(259, $result['evidence']['deployed_file_count']);
+        $this->assertSame(262, $result['evidence']['deployed_file_count']);
         $activeConfig = app(ExecutionWorkspaceManager::class)->resolve(
             $execution,
             'state',
@@ -102,7 +102,7 @@ class ToolDistributionDeploymentTest extends DomainTestCase
     {
         $execution = $this->execution($this->project());
         $this->approveCapacity($execution);
-        $version = ToolDistribution::query()->where('key', 'moodle-consolidador-8.1.0-linux-tree')->firstOrFail()->toolVersion;
+        $version = ToolDistribution::query()->where('key', 'moodle-consolidador-8.2.0-linux-tree')->firstOrFail()->toolVersion;
         foreach (['pregrado-2026-03-04-directo', 'posgrados-2025-05-02-directo', 'benchmark-operator'] as $forbidden) {
             try {
                 app(ApproveGeneratedRuntimeConfiguration::class)->approve($execution, $version, ['source_id' => $forbidden], 'synthetic.v1', 'synthetic fixture', $execution->creator);
@@ -118,7 +118,7 @@ class ToolDistributionDeploymentTest extends DomainTestCase
     {
         $execution = $this->execution($this->project());
         $this->approveCapacity($execution);
-        $distribution = ToolDistribution::query()->where('key', 'moodle-consolidador-8.1.0-linux-tree')->firstOrFail();
+        $distribution = ToolDistribution::query()->where('key', 'moodle-consolidador-8.2.0-linux-tree')->firstOrFail();
         $version = $distribution->toolVersion;
         $version->forceFill(['enabled' => true])->save();
         $version->compatibilities()->firstOrFail()->forceFill(['status' => ToolCompatibilityStatus::LABORATORY])->save();
