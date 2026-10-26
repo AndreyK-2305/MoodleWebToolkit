@@ -19,7 +19,10 @@ import type { CollectorLab } from '@/components/collector-configuration-form';
 import RemoteAccessPanel from '@/components/remote-access-panel';
 import RemoteCollectionForm from '@/components/remote-collection-form';
 import RemoteConsolidationForm from '@/components/remote-consolidation-form';
-import type { RemoteConsolidationOptions } from '@/components/remote-consolidation-form';
+import type {
+    ConsolidationSources,
+    RemoteConsolidationOptions,
+} from '@/components/remote-consolidation-form';
 import type { RemoteCollectionOptions } from '@/components/remote-collection-form';
 import type { RemoteAccess } from '@/components/remote-access-panel';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -99,6 +102,8 @@ type Props = {
     project: ProjectData;
     projectTypes: { value: ProjectType; label: string }[];
     remoteAccess?: RemoteAccess;
+    consolidationSources?: ConsolidationSources | null;
+    linkedConsolidations?: { uuid: string; name: string }[];
 };
 
 function wizardSteps(simulated: boolean, remoteMode: string | null): string[] {
@@ -184,6 +189,8 @@ export default function ProjectShow({
     projectTypes,
     collectorLab,
     remoteAccess,
+    consolidationSources = null,
+    linkedConsolidations = [],
 }: Props) {
     // A preflight with errors keeps the wizard on step 4, where they are listed: the
     // confirmation stays closed until a new preflight passes.
@@ -266,6 +273,37 @@ export default function ProjectShow({
                     )}
                 </div>
 
+                {linkedConsolidations.length > 0 && (
+                    <Alert className="border-sky-300 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/30">
+                        <CircleDot />
+                        <AlertTitle>
+                            Recolección para una consolidación
+                        </AlertTitle>
+                        <AlertDescription>
+                            <p>
+                                Cuando esta recolección se complete, sus
+                                paquetes pasan solos a{' '}
+                                {linkedConsolidations.map(
+                                    (consolidation, index) => (
+                                        <span key={consolidation.uuid}>
+                                            {index > 0 && ', '}
+                                            <Link
+                                                href={`/projects/${consolidation.uuid}`}
+                                                className="font-medium underline underline-offset-2"
+                                            >
+                                                {consolidation.name}
+                                            </Link>
+                                        </span>
+                                    ),
+                                )}
+                                . Instale el agente en cada origen, despliegue
+                                el Recolector, compruebe los perfiles, ejecute
+                                el preflight, confirme e inicie.
+                            </p>
+                        </AlertDescription>
+                    </Alert>
+                )}
+
                 {remoteAccess?.enabled ? (
                     <>
                         <RemoteAccessPanel
@@ -289,6 +327,8 @@ export default function ProjectShow({
                                 }
                                 servers={remoteAccess.servers}
                                 packages={remoteAccess.available_packages}
+                                sources={consolidationSources}
+                                defaultRegion={remoteAccess.default_region}
                                 editable={project.can_edit}
                             />
                         )}
@@ -370,6 +410,7 @@ export default function ProjectShow({
                 {activeStep === 3 && remoteMode && (
                     <RemoteOptionsStep
                         consolidation={remoteConsolidation}
+                        waiting={pendingSources(consolidationSources)}
                         configured={
                             mode ===
                             (remoteConsolidation
@@ -399,6 +440,7 @@ export default function ProjectShow({
                     <ConfirmationStep
                         project={project}
                         remoteConsolidation={remoteConsolidation}
+                        waiting={pendingSources(consolidationSources)}
                         onBack={() => setActiveStep(4)}
                     />
                 )}
@@ -469,6 +511,13 @@ function BasicsStep({
                                 </option>
                             ))}
                         </select>
+                        <p className="text-muted-foreground text-xs">
+                            {form.data.type === 'COLLECT'
+                                ? 'Recolectar: saca un paquete sellado de cada Moodle de origen.'
+                                : form.data.type === 'CONSOLIDATE'
+                                  ? 'Consolidar: une en un Moodle destino los paquetes de varios orígenes; puede recolectarlos desde aquí.'
+                                  : 'Integrar ya no está disponible para proyectos nuevos.'}
+                        </p>
                         <InputError message={form.errors.type} />
                     </div>
                     <div className="grid gap-2 md:col-span-2">
@@ -567,14 +616,14 @@ function InstancesStep({
                     <Alert className="mb-4">
                         <CircleDot />
                         <AlertTitle>
-                            Los orígenes son los paquetes sellados
+                            Los orígenes se eligen en la tarjeta de la
+                            consolidación
                         </AlertTitle>
                         <AlertDescription>
-                            La consolidación remota no se conecta a los Moodle
-                            de origen: importa en el destino los paquetes que el
-                            Recolector ya selló en S3, uno por origen. Los
-                            paquetes se eligen en la tarjeta «Consolidación en
-                            el servidor de destino».
+                            Aquí solo se registra el servidor de destino. En la
+                            tarjeta «Consolidación en el servidor de destino»
+                            elija de dónde salen los orígenes: de una
+                            recolección ya completada o recolectándolos ahora.
                             {sourceCount > 0 &&
                                 ' Quite las instancias origen registradas antes: ya no se usan.'}
                         </AlertDescription>
@@ -851,11 +900,13 @@ function InstanceField({
 function RemoteOptionsStep({
     consolidation,
     configured,
+    waiting,
     onBack,
     onNext,
 }: {
     consolidation: boolean;
     configured: boolean;
+    waiting: string | null;
     onBack: () => void;
     onNext: () => void;
 }) {
@@ -870,13 +921,14 @@ function RemoteOptionsStep({
                 </CardTitle>
                 <p className="text-muted-foreground text-sm">
                     {consolidation
-                        ? 'La configuración de este proyecto se define en la tarjeta «Consolidación en el servidor de destino»: destino, perfil, paquetes y workers.'
+                        ? 'La configuración de este proyecto se define en la tarjeta «Consolidación en el servidor de destino»: destino, perfil, de dónde salen los orígenes y workers.'
                         : 'La configuración de este proyecto se define en la tarjeta «Recolección desde los servidores de origen»: servidor, perfil, workers y nombre del paquete.'}{' '}
                     No hay escenarios simulados que elegir.
                 </p>
             </CardHeader>
             <CardContent className="space-y-4">
-                {!configured && (
+                {waiting && <WaitingForSources detail={waiting} />}
+                {!configured && !waiting && (
                     <Alert>
                         <CircleDot />
                         <AlertTitle>Configuración pendiente</AlertTitle>
@@ -1392,10 +1444,12 @@ function CheckRow({ check }: { check: PreflightCheck }) {
 function ConfirmationStep({
     project,
     remoteConsolidation,
+    waiting,
     onBack,
 }: {
     project: ProjectData;
     remoteConsolidation: boolean;
+    waiting: string | null;
     onBack: () => void;
 }) {
     const warnings =
@@ -1420,6 +1474,7 @@ function ConfirmationStep({
                 </p>
             </CardHeader>
             <CardContent className="space-y-5">
+                {waiting && <WaitingForSources detail={waiting} />}
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                     <Summary label="Operación" value={project.type_label} />
                     {remoteConsolidation ? (
@@ -1600,6 +1655,34 @@ function StartExecutionPanel({ project }: { project: ProjectData }) {
             <InputError message={fieldErrors.project} />
             <InputError message={fieldErrors.confirmation} />
         </div>
+    );
+}
+
+/** What a consolidation still waits for before it can start, or null. */
+function pendingSources(sources: ConsolidationSources | null): string | null {
+    const link = sources?.link;
+    if (link?.mode === 'COLLECT_NOW' && link.picked_up_at === null) {
+        return (
+            link.waiting ?? 'Esperando a que la recolección vinculada termine.'
+        );
+    }
+    if (
+        sources &&
+        ['FETCHING', 'FAILED', 'BLOCKED'].includes(sources.copias.state)
+    ) {
+        return sources.copias.detail;
+    }
+
+    return null;
+}
+
+function WaitingForSources({ detail }: { detail: string }) {
+    return (
+        <Alert className="border-sky-300 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/30">
+            <CircleDot />
+            <AlertTitle>La consolidación aún no puede iniciar</AlertTitle>
+            <AlertDescription>{detail}</AlertDescription>
+        </Alert>
     );
 }
 

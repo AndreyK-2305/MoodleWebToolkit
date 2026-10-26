@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Domain\Projects\ProjectWizard;
 use App\Domain\Projects\SimulatedUrlSafety;
+use App\Domain\Remote\RemoteConsolidationCopias;
 use App\Enums\MoodleInstanceRole;
 use App\Enums\ProjectType;
 use App\Models\Project;
@@ -20,11 +21,13 @@ class ProjectWizardController extends Controller
     public function basics(Request $request, Project $project, ProjectWizard $wizard): RedirectResponse
     {
         Gate::authorize('update', $project);
+        // An INTEGRATE project may keep its operation, but no project switches to it.
+        $types = array_values(array_unique([...ProjectType::creatableValues(), $project->type->value]));
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:160'],
-            'type' => ['required', Rule::enum(ProjectType::class)],
+            'type' => ['required', Rule::in($types)],
             'description' => ['nullable', 'string', 'max:2000'],
-        ]);
+        ], ['type.in' => 'Elija Recolección o Consolidación: la integración no está disponible para proyectos nuevos.']);
         /** @var User $actor */
         $actor = $request->user();
         /** @var array{name: string, type: string, description?: string|null} $validated */
@@ -99,11 +102,15 @@ class ProjectWizardController extends Controller
         return to_route('projects.show', $project->uuid);
     }
 
-    public function preflight(Request $request, Project $project, ProjectWizard $wizard): RedirectResponse
+    public function preflight(Request $request, Project $project, ProjectWizard $wizard, RemoteConsolidationCopias $copias): RedirectResponse
     {
         Gate::authorize('update', $project);
         /** @var User $actor */
         $actor = $request->user();
+        // A remote consolidation first asks the destination for its missing packages; the preflight reports the transfer.
+        if ($project->type === ProjectType::CONSOLIDATE && $actor->can('update', $project)) {
+            $copias->advance($project, $actor);
+        }
         $wizard->runPreflight($project, $actor);
 
         Inertia::flash('toast', ['type' => 'success', 'message' => 'Preflight actualizado.']);

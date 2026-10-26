@@ -1,6 +1,19 @@
 import { test, expect, login, request, snapshot, wizard } from './helpers';
 
-for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
+test('un proyecto nuevo elige solo entre Recolectar y Consolidar', async ({
+    page,
+    password,
+}) => {
+    await login(page, password);
+    await page.goto('/projects');
+    await expect(page.locator('#project-type option')).toHaveText([
+        'Recolectar',
+        'Consolidar',
+    ]);
+});
+
+// INTEGRATE is no longer offered for new projects; PHPUnit covers the existing ones.
+for (const type of ['COLLECT', 'CONSOLIDATE']) {
     for (const scenario of ['SUCCESS', 'WARNING', 'ERROR']) {
         test(`wizard ${type} ${scenario}: persistencia, navegación y confirmación`, async ({
             page,

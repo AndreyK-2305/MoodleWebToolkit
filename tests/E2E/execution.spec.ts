@@ -15,7 +15,8 @@ import {
     wizard,
 } from './helpers';
 
-for (const type of ['COLLECT', 'CONSOLIDATE', 'INTEGRATE']) {
+// INTEGRATE is no longer offered for new projects; PHPUnit covers the existing ones.
+for (const type of ['COLLECT', 'CONSOLIDATE']) {
     test(`vertical completa ${type}: wizard, Redis, worker, Reverb, review y cierre inmutable`, async ({
         page,
         password,

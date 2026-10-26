@@ -3,6 +3,7 @@
 namespace App\Domain\Executions;
 
 use App\Enums\ExecutionStatus;
+use App\Events\ExecutionCompleted;
 use App\Exceptions\InvalidStateTransition;
 use App\Models\Execution;
 use App\Models\Project;
@@ -98,6 +99,10 @@ class ExecutionLifecycle
 
         $lockedExecution->transitionTo($target);
         $lockedProject->transitionTo($projectTarget);
+
+        if ($target === ExecutionStatus::COMPLETED) {
+            ExecutionCompleted::dispatch((int) $lockedExecution->getKey(), (int) $lockedProject->getKey());
+        }
 
         return $lockedExecution->refresh();
     }
