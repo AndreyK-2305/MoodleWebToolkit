@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { awaitingFollowUp } from '@/lib/remote-follow-up';
 import { cn } from '@/lib/utils';
 
 type ConnectionType = 'aws-ssm' | 'ssh';
@@ -244,7 +245,8 @@ export default function RemoteAccessPanel({
                     ) ||
                     destination.fetches.some((fetch) =>
                         ['STARTING', 'RUNNING'].includes(fetch.state ?? ''),
-                    ),
+                    ) ||
+                    awaitingFollowUp(destination, Date.now()),
             ),
     );
     const [wasBusy, setWasBusy] = useState(busy);

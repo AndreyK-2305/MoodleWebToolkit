@@ -36,6 +36,8 @@ import {
     move,
     pathOf,
     pendingSuggestions,
+    emptyCategories,
+    generalCategory,
     pilotNode,
     remove,
     rename,
@@ -99,6 +101,11 @@ export function CategoryMapEditor({
         () => pendingSuggestions(details, state),
         [details, state],
     );
+    const empties = useMemo(
+        () => emptyCategories(details, state),
+        [details, state],
+    );
+    const general = generalCategory(state);
     const rows = useMemo(() => {
         const list: Row[] = [];
         const walk = (parent: string, level: number) => {
@@ -319,6 +326,51 @@ export function CategoryMapEditor({
                 </section>
             )}
 
+            {empties.length > 0 && (
+                <section aria-labelledby="category-map-empty">
+                    <h4 id="category-map-empty" className="text-xs font-medium">
+                        Categorías sin cursos ({empties.length})
+                    </h4>
+                    <p className="text-muted-foreground text-xs">
+                        No reciben ningún curso: se crearían vacías en el
+                        destino. Puede dejarlas así o unirlas con la categoría
+                        general.
+                    </p>
+                    <ul className="mt-1 space-y-1">
+                        {empties.map((empty) => (
+                            <li
+                                key={empty.key}
+                                className="flex flex-wrap items-center gap-2 text-xs"
+                            >
+                                <span>«{pathOf(state, empty.key)}»</span>
+                                {general && (
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={disabled}
+                                        onClick={() => {
+                                            if (
+                                                apply(
+                                                    merge(
+                                                        state,
+                                                        empty.key,
+                                                        general.key,
+                                                    ),
+                                                )
+                                            ) {
+                                                setSelected(general.key);
+                                            }
+                                        }}
+                                    >
+                                        Unir con «{general.name}»
+                                    </Button>
+                                )}
+                            </li>
+                        ))}
+                    </ul>
+                </section>
+            )}
+
             <div className="grid gap-4 lg:grid-cols-2">
                 <section aria-labelledby="category-map-before">
                     <h4
@@ -391,7 +443,9 @@ export function CategoryMapEditor({
                                     expanded={!collapsed.has(row.key)}
                                     pilot={row.key === pilot}
                                     invalid={issues.some(
-                                        (issue) => issue.node === row.key,
+                                        (issue) =>
+                                            issue.node === row.key ||
+                                            issue.nodes?.includes(row.key),
                                     )}
                                     disabled={disabled}
                                     onSelect={() => setSelected(row.key)}
