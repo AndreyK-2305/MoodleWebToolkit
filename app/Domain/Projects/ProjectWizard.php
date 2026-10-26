@@ -69,7 +69,19 @@ class ProjectWizard
         });
     }
 
-    /** @param array{name: string, type: string, description?: string|null} $data */
+    /**
+     * With the remote agent a collection or consolidation registers bare servers:
+     * the agent reaches them by their connection, and the Moodle URL and versions
+     * come from the checked profiles. Host, URL, version and the review tick are
+     * only used by the simulated preflight.
+     */
+    public static function registersRemoteServers(ProjectType $type): bool
+    {
+        return (bool) config('toolkit.features.remote_agent.enabled')
+            && in_array($type, [ProjectType::COLLECT, ProjectType::CONSOLIDATE], true);
+    }
+
+    /** @param array{name: string, type: string, description?: string|null, destination_label?: string|null} $data */
     public function saveBasics(Project $project, User $actor, array $data): Project
     {
         return DB::transaction(function () use ($project, $actor, $data): Project {
@@ -102,6 +114,11 @@ class ProjectWizard
                 ]);
             } else {
                 $this->updateSettings($configuration, 2, false);
+            }
+
+            // A remote consolidation has exactly one destination, named here or after the project.
+            if ($locked->type === ProjectType::CONSOLIDATE && self::registersRemoteServers($locked->type)) {
+                $this->nameDestination($locked, $actor, $this->nullableTrim($data['destination_label'] ?? null));
             }
 
             return $locked->fresh(['configuration', 'moodleInstances.server']) ?? $locked;
@@ -143,6 +160,86 @@ class ProjectWizard
             ]);
 
             return $locked->fresh(['configuration', 'moodleInstances.server']) ?? $locked;
+        });
+    }
+
+    /**
+     * Remote mode: the servers of the project by their label only. A collection
+     * registers its sources, a consolidation its single destination; an empty
+     * label takes a default from the project name.
+     *
+     * @param  list<array{server_uuid?: string|null, role: string, name?: string|null}>  $servers
+     */
+    public function saveRemoteServers(Project $project, User $actor, array $servers): Project
+    {
+        return DB::transaction(function () use ($project, $actor, $servers): Project {
+            $locked = $this->lockedEditableProject($project, $actor);
+            $configuration = $this->lockedConfiguration($locked);
+            $role = $locked->type === ProjectType::COLLECT ? ServerRole::SOURCE : ServerRole::DESTINATION;
+            $maximum = $role === ServerRole::SOURCE ? RemoteCollectionConfiguration::MAX_SOURCES : 1;
+
+            if (count($servers) < 1 || count($servers) > $maximum
+                || collect($servers)->contains(fn (array $server): bool => $server['role'] !== $role->value)) {
+                throw ValidationException::withMessages(['instances' => $role === ServerRole::SOURCE
+                    ? 'Recolectar necesita de 1 a '.$maximum.' servidores de origen y ningún destino.'
+                    : 'Consolidar registra un solo servidor de destino; los orígenes se eligen en su paso.']);
+            }
+
+            $names = [];
+            foreach ($servers as $index => $server) {
+                $names[] = $this->nullableTrim($server['name'] ?? null) ?? $this->defaultServerName($locked, $role, $index + 1);
+            }
+            if (count(array_unique(array_map('mb_strtolower', $names))) !== count($names)) {
+                throw ValidationException::withMessages(['instances' => 'Cada servidor necesita una etiqueta distinta.']);
+            }
+
+            $existing = $locked->servers()->where('role', $role->value)->lockForUpdate()->get()->keyBy('uuid');
+            $kept = [];
+            foreach ($servers as $index => $server) {
+                $uuid = $this->nullableTrim($server['server_uuid'] ?? null);
+                if ($uuid !== null && ! $existing->has($uuid)) {
+                    throw ValidationException::withMessages(["instances.{$index}.server_uuid" => 'El servidor indicado no pertenece a este proyecto.']);
+                }
+                $kept[$index] = $uuid === null ? null : $existing->get($uuid);
+            }
+            $keptUuids = collect($kept)->filter()->map(fn (Server $server): string => $server->uuid)->all();
+            $removed = $existing->reject(fn (Server $server): bool => in_array($server->uuid, $keptUuids, true));
+            foreach ($removed as $server) {
+                $server->delete();
+            }
+
+            // Two labels may swap: free every kept name before writing the new ones.
+            $syncToken = Str::uuid()->toString();
+            foreach ($kept as $index => $server) {
+                $server?->update(['name' => "__wizard_sync_server_{$index}_{$syncToken}"]);
+            }
+            $created = 0;
+            foreach ($kept as $index => $server) {
+                if ($server === null) {
+                    $locked->servers()->create(['name' => $names[$index], 'role' => $role, 'host' => null, 'port' => null,
+                        'metadata' => ['simulated' => false]]);
+                    $created++;
+                } else {
+                    $server->update(['name' => $names[$index]]);
+                }
+            }
+
+            // A new or removed server changes what the preflight checks; a new label does not.
+            $relevant = $created > 0 || $removed->isNotEmpty();
+            if ($relevant) {
+                $this->markConfiguring($locked);
+                $locked->save();
+            }
+            $this->updateSettings($configuration, 3, $relevant);
+            $this->audit($actor, $locked, 'PROJECT_SERVERS_UPDATED', [
+                'configuration_version' => $configuration->version,
+                'role' => $role->value,
+                'servers' => count($names),
+                'created' => $created,
+                'removed' => $removed->count(),
+            ]);
+
+            return $locked->fresh(['configuration', 'servers']) ?? $locked;
         });
     }
 
@@ -786,6 +883,36 @@ class ProjectWizard
             $instance->delete();
             $server?->delete();
         }
+
+        // Remote servers have no Moodle instance: with another operation their roles no longer fit.
+        if (config('toolkit.features.remote_agent.enabled')) {
+            $project->servers()->get()->each(fn (Server $server) => $server->delete());
+        }
+    }
+
+    private function defaultServerName(Project $project, ServerRole $role, int $sequence): string
+    {
+        return $role === ServerRole::DESTINATION
+            ? mb_substr($project->name, 0, 120)
+            : mb_substr($project->name, 0, 104).' · origen '.$sequence;
+    }
+
+    /** Creates or renames the single destination of a remote consolidation. */
+    private function nameDestination(Project $project, User $actor, ?string $label): void
+    {
+        $name = $label ?? $this->defaultServerName($project, ServerRole::DESTINATION, 1);
+        $destination = $project->servers()->where('role', ServerRole::DESTINATION->value)->orderBy('id')->lockForUpdate()->first();
+
+        if ($destination === null) {
+            $destination = $project->servers()->create(['name' => $name, 'role' => ServerRole::DESTINATION, 'host' => null, 'port' => null,
+                'metadata' => ['simulated' => false]]);
+        } elseif ($destination->name === $name) {
+            return;
+        } else {
+            $destination->update(['name' => $name]);
+        }
+
+        $this->audit($actor, $project, 'PROJECT_DESTINATION_NAMED', ['server_uuid' => $destination->uuid, 'default' => $label === null]);
     }
 
     /** @param array<string, mixed> $payload */

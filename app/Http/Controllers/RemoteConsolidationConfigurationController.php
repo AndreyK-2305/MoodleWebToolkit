@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Domain\Remote\RemoteConsolidationConfiguration;
 use App\Domain\Remote\RemoteConsolidationCopias;
+use App\Domain\Remote\RemoteConsolidationSources;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
@@ -16,6 +17,7 @@ final class RemoteConsolidationConfigurationController extends Controller
         Request $request,
         Project $project,
         RemoteConsolidationConfiguration $configurations,
+        RemoteConsolidationSources $sources,
         RemoteConsolidationCopias $copias,
     ): RedirectResponse {
         Gate::authorize('update', $project);
@@ -26,14 +28,20 @@ final class RemoteConsolidationConfigurationController extends Controller
         $validated = $request->validate([
             'server_uuid' => ['required', 'uuid'],
             'destination_profile' => ['required', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D'],
-            'source_packages' => ['required', 'array', 'list', 'min:'.RemoteConsolidationConfiguration::MIN_PACKAGES, 'max:'.RemoteConsolidationConfiguration::MAX_PACKAGES],
+            'source_packages' => ['sometimes', 'array', 'list', 'min:'.RemoteConsolidationConfiguration::MIN_PACKAGES, 'max:'.RemoteConsolidationConfiguration::MAX_PACKAGES],
             'source_packages.*' => ['required', 'uuid', 'distinct'],
             'workers' => ['required', 'string', 'regex:/^(auto|[1-4])$/D'],
             'source_project' => ['nullable', 'uuid'],
         ]);
         /** @var User $actor */
         $actor = $request->user();
-        $configurations->save($project, $actor, $validated);
+        if (array_key_exists('source_packages', $validated)) {
+            $configurations->save($project, $actor, $validated);
+        } else {
+            // The destination step: the sources are the ones chosen in the sources step.
+            /** @var array{server_uuid: string, destination_profile: string, workers: string} $validated */
+            $sources->saveDestination($project, $actor, $validated);
+        }
         // The chosen packages start travelling to copias/ right away when the destination allows it.
         $copias->advance($project->refresh(), $actor);
 

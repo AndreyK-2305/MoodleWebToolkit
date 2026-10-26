@@ -160,8 +160,8 @@ export default function RemoteCollectionForm({
                 </p>
                 {sources.length === 0 ? (
                     <p className="text-sm">
-                        Registre al menos un servidor de origen en el paso de
-                        instancias y configure su conexión para habilitar la
+                        Agregue al menos un servidor de origen en el paso
+                        «Orígenes» y configure su conexión para habilitar la
                         recolección.
                     </p>
                 ) : (
@@ -225,7 +225,7 @@ export default function RemoteCollectionForm({
                                             </Label>
                                             <select
                                                 id={`remote-server-${index}`}
-                                                className="border-input rounded-md border p-2"
+                                                className="border-input w-full min-w-0 rounded-md border p-2"
                                                 value={row.server_uuid}
                                                 disabled={!editable}
                                                 onChange={(event) => {

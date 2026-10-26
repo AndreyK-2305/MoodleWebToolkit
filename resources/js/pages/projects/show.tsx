@@ -5,6 +5,7 @@ import {
     ArrowRight,
     CheckCircle2,
     CircleDot,
+    CircleHelp,
     Plus,
     Play,
     Server,
@@ -13,12 +14,16 @@ import {
     TriangleAlert,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import InputError from '@/components/input-error';
 import CollectorConfigurationForm from '@/components/collector-configuration-form';
 import type { CollectorLab } from '@/components/collector-configuration-form';
 import RemoteAccessPanel from '@/components/remote-access-panel';
 import RemoteCollectionForm from '@/components/remote-collection-form';
-import RemoteConsolidationForm from '@/components/remote-consolidation-form';
+import {
+    ConsolidationDestinationForm,
+    ConsolidationSourcesForm,
+} from '@/components/remote-consolidation-form';
 import type {
     ConsolidationSources,
     RemoteConsolidationOptions,
@@ -32,6 +37,19 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
+    canOpenStep,
+    initialStep,
+    remoteWizardSteps,
+    stepBlocker,
+    wizardServer,
+} from '@/lib/remote-wizard';
+import type { WizardStep } from '@/lib/remote-wizard';
 import { cn } from '@/lib/utils';
 
 type ProjectType = 'COLLECT' | 'CONSOLIDATE' | 'INTEGRATE';
@@ -213,6 +231,10 @@ export default function ProjectShow({
         mode === 'REMOTE' ||
         remoteConsolidation ||
         (!simulated && project.type === 'COLLECT' && !mode);
+    // With real servers a collection or consolidation follows the steps of the remote wizard.
+    const remoteWizard =
+        !simulated &&
+        (project.type === 'COLLECT' || project.type === 'CONSOLIDATE');
     const steps = wizardSteps(
         simulated,
         remoteConsolidation
@@ -304,165 +326,636 @@ export default function ProjectShow({
                     </Alert>
                 )}
 
-                {remoteAccess?.enabled ? (
+                {remoteWizard && remoteAccess ? (
+                    <RemoteWizard
+                        project={project}
+                        projectTypes={projectTypes}
+                        access={remoteAccess}
+                        sources={consolidationSources}
+                    />
+                ) : (
                     <>
-                        <RemoteAccessPanel
-                            projectUuid={project.uuid}
-                            access={remoteAccess}
-                            editable={project.can_edit}
-                        />
-                        {project.type === 'COLLECT' && (
-                            <RemoteCollectionForm
+                        {remoteAccess?.enabled ? (
+                            <RemoteAccessPanel
                                 projectUuid={project.uuid}
-                                options={project.options}
-                                servers={remoteAccess.servers}
+                                access={remoteAccess}
                                 editable={project.can_edit}
                             />
+                        ) : (
+                            <Alert className="border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30">
+                                <ShieldCheck className="text-amber-700 dark:text-amber-400" />
+                                <AlertTitle>
+                                    Entorno completamente simulado
+                                </AlertTitle>
+                                <AlertDescription>
+                                    No se realizan conexiones SSH/SFTP, no se
+                                    solicitan secretos. Confirmar sólo deja el
+                                    proyecto listo; el inicio asíncrono es una
+                                    acción posterior e independiente.
+                                </AlertDescription>
+                            </Alert>
                         )}
-                        {project.type === 'CONSOLIDATE' && (
-                            <RemoteConsolidationForm
-                                projectUuid={project.uuid}
-                                options={
-                                    project.options as RemoteConsolidationOptions
+
+                        <nav
+                            aria-label="Pasos del wizard"
+                            className="grid gap-2 sm:grid-cols-5"
+                        >
+                            {steps.map((label, index) => {
+                                const number = index + 1;
+                                const selected = activeStep === number;
+                                const closed = reachable(number) !== number;
+
+                                return (
+                                    <button
+                                        key={label}
+                                        type="button"
+                                        aria-current={
+                                            selected ? 'step' : undefined
+                                        }
+                                        disabled={closed}
+                                        title={
+                                            closed
+                                                ? 'Corrija los errores del preflight para continuar'
+                                                : undefined
+                                        }
+                                        onClick={() => setActiveStep(number)}
+                                        className={cn(
+                                            'flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
+                                            selected
+                                                ? 'border-amber-500 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100'
+                                                : 'border-border hover:bg-muted',
+                                        )}
+                                    >
+                                        <span
+                                            className={cn(
+                                                'flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
+                                                selected
+                                                    ? 'bg-amber-600 text-white'
+                                                    : 'bg-muted text-muted-foreground',
+                                            )}
+                                        >
+                                            {number}
+                                        </span>
+                                        <span className="hidden lg:inline">
+                                            {label}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </nav>
+
+                        {activeStep === 1 && (
+                            <BasicsStep
+                                project={project}
+                                projectTypes={projectTypes}
+                                onNext={() => setActiveStep(2)}
+                            />
+                        )}
+                        {activeStep === 2 && (
+                            <InstancesStep
+                                project={project}
+                                simulated={simulated}
+                                onBack={() => setActiveStep(1)}
+                                onNext={() => setActiveStep(3)}
+                            />
+                        )}
+                        {activeStep === 3 && remoteMode && (
+                            <RemoteOptionsStep
+                                consolidation={remoteConsolidation}
+                                waiting={pendingSources(consolidationSources)}
+                                configured={
+                                    mode ===
+                                    (remoteConsolidation
+                                        ? 'REMOTE_CONSOLIDATION'
+                                        : 'REMOTE')
                                 }
-                                servers={remoteAccess.servers}
-                                packages={remoteAccess.available_packages}
-                                sources={consolidationSources}
-                                defaultRegion={remoteAccess.default_region}
-                                editable={project.can_edit}
+                                onBack={() => setActiveStep(2)}
+                                onNext={() => setActiveStep(4)}
+                            />
+                        )}
+                        {activeStep === 3 && !remoteMode && (
+                            <OptionsStep
+                                project={project}
+                                onBack={() => setActiveStep(2)}
+                                onNext={() => setActiveStep(4)}
+                            />
+                        )}
+                        {activeStep === 4 && (
+                            <PreflightStep
+                                project={project}
+                                simulated={simulated && !remoteMode}
+                                onBack={() => setActiveStep(3)}
+                                onNext={() => setActiveStep(5)}
+                            />
+                        )}
+                        {activeStep === 5 && (
+                            <ConfirmationStep
+                                project={project}
+                                remoteConsolidation={remoteConsolidation}
+                                waiting={pendingSources(consolidationSources)}
+                                onBack={() => setActiveStep(4)}
                             />
                         )}
                     </>
-                ) : (
-                    <Alert className="border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30">
-                        <ShieldCheck className="text-amber-700 dark:text-amber-400" />
-                        <AlertTitle>Entorno completamente simulado</AlertTitle>
-                        <AlertDescription>
-                            No se realizan conexiones SSH/SFTP, no se solicitan
-                            secretos. Confirmar sólo deja el proyecto listo; el
-                            inicio asíncrono es una acción posterior e
-                            independiente.
-                        </AlertDescription>
-                    </Alert>
-                )}
-
-                <nav
-                    aria-label="Pasos del wizard"
-                    className="grid gap-2 sm:grid-cols-5"
-                >
-                    {steps.map((label, index) => {
-                        const number = index + 1;
-                        const selected = activeStep === number;
-                        const closed = reachable(number) !== number;
-
-                        return (
-                            <button
-                                key={label}
-                                type="button"
-                                aria-current={selected ? 'step' : undefined}
-                                disabled={closed}
-                                title={
-                                    closed
-                                        ? 'Corrija los errores del preflight para continuar'
-                                        : undefined
-                                }
-                                onClick={() => setActiveStep(number)}
-                                className={cn(
-                                    'flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
-                                    selected
-                                        ? 'border-amber-500 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100'
-                                        : 'border-border hover:bg-muted',
-                                )}
-                            >
-                                <span
-                                    className={cn(
-                                        'flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
-                                        selected
-                                            ? 'bg-amber-600 text-white'
-                                            : 'bg-muted text-muted-foreground',
-                                    )}
-                                >
-                                    {number}
-                                </span>
-                                <span className="hidden lg:inline">
-                                    {label}
-                                </span>
-                            </button>
-                        );
-                    })}
-                </nav>
-
-                {activeStep === 1 && (
-                    <BasicsStep
-                        project={project}
-                        projectTypes={projectTypes}
-                        onNext={() => setActiveStep(2)}
-                    />
-                )}
-                {activeStep === 2 && (
-                    <InstancesStep
-                        project={project}
-                        simulated={simulated}
-                        onBack={() => setActiveStep(1)}
-                        onNext={() => setActiveStep(3)}
-                    />
-                )}
-                {activeStep === 3 && remoteMode && (
-                    <RemoteOptionsStep
-                        consolidation={remoteConsolidation}
-                        waiting={pendingSources(consolidationSources)}
-                        configured={
-                            mode ===
-                            (remoteConsolidation
-                                ? 'REMOTE_CONSOLIDATION'
-                                : 'REMOTE')
-                        }
-                        onBack={() => setActiveStep(2)}
-                        onNext={() => setActiveStep(4)}
-                    />
-                )}
-                {activeStep === 3 && !remoteMode && (
-                    <OptionsStep
-                        project={project}
-                        onBack={() => setActiveStep(2)}
-                        onNext={() => setActiveStep(4)}
-                    />
-                )}
-                {activeStep === 4 && (
-                    <PreflightStep
-                        project={project}
-                        simulated={simulated && !remoteMode}
-                        onBack={() => setActiveStep(3)}
-                        onNext={() => setActiveStep(5)}
-                    />
-                )}
-                {activeStep === 5 && (
-                    <ConfirmationStep
-                        project={project}
-                        remoteConsolidation={remoteConsolidation}
-                        waiting={pendingSources(consolidationSources)}
-                        onBack={() => setActiveStep(4)}
-                    />
                 )}
             </div>
         </>
     );
 }
 
+const destinationLabelHelp =
+    'Es solo una etiqueta para identificar este servidor dentro del proceso. Si se deja vacío se usa el nombre del proyecto. No tiene relación con el nombre que tendrá el sitio consolidado.';
+const sourceLabelHelp =
+    'Es solo una etiqueta para identificar este origen dentro del proceso. Si se deja vacía se usa el nombre del proyecto con el número del origen. No cambia nada en el servidor.';
+
+/**
+ * The wizard with real servers. The stepper leads the page, each step shows
+ * its real state and the work happens inside the steps: the remote cards are
+ * the steps' content. A step opens once every earlier step is complete.
+ */
+function RemoteWizard({
+    project,
+    projectTypes,
+    access,
+    sources,
+}: {
+    project: ProjectData;
+    projectTypes: Props['projectTypes'];
+    access: RemoteAccess;
+    sources: ConsolidationSources | null;
+}) {
+    const type = project.type === 'COLLECT' ? 'COLLECT' : 'CONSOLIDATE';
+    const options = project.options as RemoteConsolidationOptions &
+        RemoteCollectionOptions;
+    const steps = remoteWizardSteps({
+        type,
+        basicsSaved: project.current_step > 1,
+        configurationVersion: project.configuration_version,
+        options,
+        servers: access.servers.map(wizardServer),
+        selection: sources?.selection ?? null,
+        link: sources?.link ?? null,
+        preflight: project.preflight,
+        confirmation: project.confirmation,
+    });
+    const [active, setActive] = useState(() => initialStep(steps));
+    const step = steps[Math.min(active, steps.length - 1)];
+    const index = steps.indexOf(step);
+    const go = (target: number) => {
+        if (
+            target >= 0 &&
+            target < steps.length &&
+            canOpenStep(steps, target)
+        ) {
+            setActive(target);
+        }
+    };
+    const back = () => go(index - 1);
+    const next = () => go(index + 1);
+    const waiting = type === 'CONSOLIDATE' ? pendingSources(sources) : null;
+    const destination = access.servers.find(
+        (server) => server.role === 'DESTINATION',
+    );
+
+    return (
+        <div className="space-y-6">
+            <nav aria-label="Pasos del asistente">
+                <ol
+                    className={cn(
+                        'grid gap-2',
+                        steps.length === 5
+                            ? 'sm:grid-cols-5'
+                            : 'sm:grid-cols-4',
+                    )}
+                >
+                    {steps.map((item, position) => {
+                        const selected = position === index;
+                        const open = canOpenStep(steps, position);
+
+                        return (
+                            <li key={item.key}>
+                                <button
+                                    type="button"
+                                    aria-current={selected ? 'step' : undefined}
+                                    disabled={!open}
+                                    title={
+                                        open
+                                            ? undefined
+                                            : (stepBlocker(steps, position) ??
+                                              undefined)
+                                    }
+                                    onClick={() => go(position)}
+                                    className={cn(
+                                        'flex h-full w-full items-start gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                                        selected
+                                            ? 'border-amber-500 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100'
+                                            : 'border-border hover:bg-muted',
+                                    )}
+                                >
+                                    <span
+                                        className={cn(
+                                            'flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
+                                            item.complete
+                                                ? 'bg-emerald-600 text-white'
+                                                : selected
+                                                  ? 'bg-amber-600 text-white'
+                                                  : 'bg-muted text-muted-foreground',
+                                        )}
+                                    >
+                                        {item.complete ? (
+                                            <CheckCircle2 className="size-4" />
+                                        ) : (
+                                            position + 1
+                                        )}
+                                    </span>
+                                    <span className="min-w-0">
+                                        <span className="block font-medium">
+                                            {item.label}
+                                        </span>
+                                        <span className="text-muted-foreground block text-xs">
+                                            {item.status}
+                                        </span>
+                                    </span>
+                                </button>
+                            </li>
+                        );
+                    })}
+                </ol>
+            </nav>
+
+            {step.key === 'basics' && (
+                <BasicsStep
+                    project={project}
+                    projectTypes={projectTypes}
+                    destinationLabel={
+                        destination && destination.name !== project.name
+                            ? destination.name
+                            : ''
+                    }
+                    onNext={() => setActive(1)}
+                />
+            )}
+            {step.key === 'sources' && type === 'COLLECT' && (
+                <StepFrame
+                    number={index + 1}
+                    title="Orígenes"
+                    description="Agregue cada servidor de origen, conéctelo por AWS Systems Manager, despliegue el Recolector y compruebe su perfil. Después guarde la recolección: un paquete por origen."
+                    step={step}
+                    onBack={back}
+                    onNext={next}
+                >
+                    <CollectionSourcesStep project={project} access={access} />
+                </StepFrame>
+            )}
+            {step.key === 'sources' && type === 'CONSOLIDATE' && (
+                <StepFrame
+                    number={index + 1}
+                    title="Orígenes"
+                    description="Elija de dónde salen los paquetes sellados que se consolidan, uno por origen."
+                    step={step}
+                    onBack={back}
+                    onNext={next}
+                >
+                    <ConsolidationSourcesForm
+                        projectUuid={project.uuid}
+                        options={options}
+                        servers={access.servers}
+                        packages={access.available_packages}
+                        sources={sources}
+                        defaultRegion={access.default_region}
+                        editable={project.can_edit}
+                    />
+                </StepFrame>
+            )}
+            {step.key === 'destination' && (
+                <StepFrame
+                    number={index + 1}
+                    title="Destino"
+                    description="Conecte el servidor de destino, instale su agente, despliegue el Consolidador y prepare o compruebe un perfil. Después elija el perfil y los workers."
+                    step={step}
+                    onBack={back}
+                    onNext={next}
+                >
+                    <RemoteAccessPanel
+                        projectUuid={project.uuid}
+                        access={access}
+                        editable={project.can_edit}
+                        role="DESTINATION"
+                        title="Conexión del destino"
+                        emptyMessage="Guarde los datos básicos para registrar el servidor de destino."
+                    />
+                    <ConsolidationDestinationForm
+                        projectUuid={project.uuid}
+                        options={options}
+                        servers={access.servers}
+                        sources={sources}
+                        editable={project.can_edit}
+                    />
+                </StepFrame>
+            )}
+            {step.key === 'preflight' && (
+                <>
+                    {waiting && <WaitingForSources detail={waiting} />}
+                    <PreflightStep
+                        number={index + 1}
+                        project={project}
+                        simulated={false}
+                        onBack={back}
+                        onNext={next}
+                    />
+                </>
+            )}
+            {step.key === 'confirmation' && (
+                <ConfirmationStep
+                    number={index + 1}
+                    project={project}
+                    remoteConsolidation={type === 'CONSOLIDATE'}
+                    waiting={waiting}
+                    onBack={back}
+                />
+            )}
+        </div>
+    );
+}
+
+/** A remote step: its title, its content and the way on, which the step's state blocks. */
+function StepFrame({
+    number,
+    title,
+    description,
+    step,
+    onBack,
+    onNext,
+    children,
+}: {
+    number: number;
+    title: string;
+    description: string;
+    step: WizardStep;
+    onBack: () => void;
+    onNext: () => void;
+    children: ReactNode;
+}) {
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle className="flex flex-wrap items-center gap-2">
+                    {number}. {title}
+                    <Badge variant={step.complete ? 'default' : 'secondary'}>
+                        {step.complete ? 'Completo' : 'Pendiente'}
+                    </Badge>
+                </CardTitle>
+                <p className="text-muted-foreground text-sm">{description}</p>
+            </CardHeader>
+            <CardContent className="space-y-6">
+                {children}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+                    <Button type="button" variant="outline" onClick={onBack}>
+                        <ArrowLeft /> Atrás
+                    </Button>
+                    <div className="flex flex-wrap items-center justify-end gap-3">
+                        {step.blocker && (
+                            <p
+                                id={`step-${step.key}-blocker`}
+                                className="text-muted-foreground text-sm"
+                            >
+                                {step.blocker}
+                            </p>
+                        )}
+                        <Button
+                            type="button"
+                            disabled={!step.complete}
+                            aria-describedby={
+                                step.blocker
+                                    ? `step-${step.key}-blocker`
+                                    : undefined
+                            }
+                            onClick={onNext}
+                        >
+                            Continuar <ArrowRight />
+                        </Button>
+                    </div>
+                </div>
+            </CardContent>
+        </Card>
+    );
+}
+
+/** A help icon whose explanation opens on hover and on keyboard focus. */
+function HelpTip({ label, text }: { label: string; text: string }) {
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <button
+                    type="button"
+                    aria-label={label}
+                    className="text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex rounded-full focus-visible:ring-2 focus-visible:outline-none"
+                >
+                    <CircleHelp className="size-4" />
+                </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">{text}</TooltipContent>
+        </Tooltip>
+    );
+}
+
+type SourceDraft = { server_uuid: string | null; role: 'SOURCE'; name: string };
+
+/**
+ * COLLECT sources step: the source servers by label, then each one's
+ * connection, Recolector and profile, then the collection itself.
+ */
+function CollectionSourcesStep({
+    project,
+    access,
+}: {
+    project: ProjectData;
+    access: RemoteAccess;
+}) {
+    const servers = access.servers.filter((server) => server.role === 'SOURCE');
+    // New or removed servers start the forms below again with their rows.
+    const registered = servers.map((server) => server.uuid).join('|');
+
+    return (
+        <>
+            <SourceLabels
+                key={registered}
+                project={project}
+                servers={servers.map((server) => ({
+                    server_uuid: server.uuid,
+                    role: 'SOURCE',
+                    name: server.name,
+                }))}
+            />
+            <RemoteAccessPanel
+                projectUuid={project.uuid}
+                access={access}
+                editable={project.can_edit}
+                role="SOURCE"
+                title="Conexión de cada origen"
+                emptyMessage="Guarde los orígenes para conectar cada servidor."
+            />
+            {servers.length > 0 && (
+                <RemoteCollectionForm
+                    key={registered}
+                    projectUuid={project.uuid}
+                    options={project.options}
+                    servers={access.servers}
+                    editable={project.can_edit}
+                />
+            )}
+        </>
+    );
+}
+
+function SourceLabels({
+    project,
+    servers,
+}: {
+    project: ProjectData;
+    servers: SourceDraft[];
+}) {
+    const form = useForm<{ instances: SourceDraft[] }>({
+        instances:
+            servers.length > 0
+                ? servers
+                : [{ server_uuid: null, role: 'SOURCE', name: '' }],
+    });
+    const errors = form.errors as Record<string, string>;
+    const rows = form.data.instances;
+    const changed =
+        JSON.stringify(rows) !== JSON.stringify(servers) ||
+        servers.length === 0;
+
+    return (
+        <fieldset className="space-y-3 rounded-lg border p-4">
+            <legend className="px-1 font-medium">Servidores de origen</legend>
+            {rows.map((row, index) => (
+                <div
+                    key={row.server_uuid ?? `new-${index}`}
+                    className="flex flex-wrap items-end gap-3"
+                >
+                    <div className="grid min-w-60 flex-1 gap-2">
+                        <div className="flex items-center gap-1.5">
+                            <Label htmlFor={`source-label-${index}`}>
+                                Nombre de referencia del origen {index + 1}
+                            </Label>
+                            <HelpTip
+                                label={`Qué es el nombre de referencia del origen ${index + 1}`}
+                                text={sourceLabelHelp}
+                            />
+                        </div>
+                        <Input
+                            id={`source-label-${index}`}
+                            value={row.name}
+                            placeholder={`${project.name} · origen ${index + 1}`}
+                            disabled={!project.can_edit}
+                            onChange={(event) =>
+                                form.setData((data) => ({
+                                    instances: data.instances.map(
+                                        (item, position) =>
+                                            position === index
+                                                ? {
+                                                      ...item,
+                                                      name: event.target.value,
+                                                  }
+                                                : item,
+                                    ),
+                                }))
+                            }
+                        />
+                        <InputError
+                            message={
+                                errors[`instances.${index}.name`] ??
+                                errors[`instances.${index}.server_uuid`]
+                            }
+                        />
+                    </div>
+                    {project.can_edit && rows.length > 1 && (
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                                form.setData((data) => ({
+                                    instances: data.instances.filter(
+                                        (_, position) => position !== index,
+                                    ),
+                                }))
+                            }
+                        >
+                            <Trash2 /> Quitar
+                        </Button>
+                    )}
+                </div>
+            ))}
+            <InputError message={errors.instances} />
+            {project.can_edit && (
+                <div className="flex flex-wrap gap-2">
+                    {rows.length < 8 && (
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() =>
+                                form.setData((data) => ({
+                                    instances: [
+                                        ...data.instances,
+                                        {
+                                            server_uuid: null,
+                                            role: 'SOURCE',
+                                            name: '',
+                                        },
+                                    ],
+                                }))
+                            }
+                        >
+                            <Plus /> Agregar origen
+                        </Button>
+                    )}
+                    <Button
+                        type="button"
+                        disabled={form.processing || !changed}
+                        onClick={() =>
+                            form.put(
+                                `/projects/${project.uuid}/wizard/instances`,
+                                { preserveScroll: true },
+                            )
+                        }
+                    >
+                        Guardar orígenes
+                    </Button>
+                </div>
+            )}
+            {rows.some((row) => row.server_uuid === null) && (
+                <p className="text-muted-foreground text-xs">
+                    Al guardar, cada origen nuevo aparece abajo para conectar su
+                    servidor.
+                </p>
+            )}
+        </fieldset>
+    );
+}
+
 function BasicsStep({
     project,
     projectTypes,
+    destinationLabel = null,
     onNext,
 }: {
     project: ProjectData;
     projectTypes: Props['projectTypes'];
+    /** With real servers, the label of the destination of a consolidation. */
+    destinationLabel?: string | null;
     onNext: () => void;
 }) {
     const form = useForm({
         name: project.name,
         type: project.type,
         description: project.description ?? '',
+        destination_label: destinationLabel ?? '',
     });
+    const labelled =
+        destinationLabel !== null && form.data.type === 'CONSOLIDATE';
 
     return (
         <Card>
@@ -474,6 +967,9 @@ function BasicsStep({
                     className="grid gap-4 md:grid-cols-2"
                     onSubmit={(event) => {
                         event.preventDefault();
+                        form.transform(({ destination_label, ...data }) =>
+                            labelled ? { ...data, destination_label } : data,
+                        );
                         form.patch(`/projects/${project.uuid}/wizard/basics`, {
                             onSuccess: onNext,
                         });
@@ -520,6 +1016,38 @@ function BasicsStep({
                         </p>
                         <InputError message={form.errors.type} />
                     </div>
+                    {labelled && (
+                        <div className="grid gap-2 md:col-span-2">
+                            <div className="flex items-center gap-1.5">
+                                <Label htmlFor="wizard-destination-label">
+                                    Nombre de referencia del servidor de destino
+                                    (opcional)
+                                </Label>
+                                <HelpTip
+                                    label="Qué es el nombre de referencia del servidor de destino"
+                                    text={destinationLabelHelp}
+                                />
+                            </div>
+                            <Input
+                                id="wizard-destination-label"
+                                disabled={!project.can_edit}
+                                placeholder={form.data.name || project.name}
+                                value={form.data.destination_label}
+                                onChange={(event) =>
+                                    form.setData(
+                                        'destination_label',
+                                        event.target.value,
+                                    )
+                                }
+                            />
+                            <InputError
+                                message={
+                                    (form.errors as Record<string, string>)
+                                        .destination_label
+                                }
+                            />
+                        </div>
+                    )}
                     <div className="grid gap-2 md:col-span-2">
                         <Label htmlFor="wizard-description">
                             Descripción opcional
@@ -1236,11 +1764,13 @@ function SelectField({
 }
 
 function PreflightStep({
+    number = 4,
     project,
     simulated,
     onBack,
     onNext,
 }: {
+    number?: number;
     project: ProjectData;
     simulated: boolean;
     onBack: () => void;
@@ -1255,7 +1785,7 @@ function PreflightStep({
         <Card>
             <CardHeader>
                 <CardTitle>
-                    {simulated ? '4. Preflight simulado' : '4. Preflight'}
+                    {number}. {simulated ? 'Preflight simulado' : 'Preflight'}
                 </CardTitle>
                 <p className="text-muted-foreground text-sm">
                     Cada comprobación informa un resultado estructurado. Los
@@ -1442,11 +1972,13 @@ function CheckRow({ check }: { check: PreflightCheck }) {
 }
 
 function ConfirmationStep({
+    number = 5,
     project,
     remoteConsolidation,
     waiting,
     onBack,
 }: {
+    number?: number;
     project: ProjectData;
     remoteConsolidation: boolean;
     waiting: string | null;
@@ -1467,7 +1999,7 @@ function ConfirmationStep({
     return (
         <Card>
             <CardHeader>
-                <CardTitle>5. Confirmación</CardTitle>
+                <CardTitle>{number}. Confirmación</CardTitle>
                 <p className="text-muted-foreground text-sm">
                     Confirmar deja el proyecto en READY. No crea ejecuciones ni
                     inicia procesos.

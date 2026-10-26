@@ -27,10 +27,11 @@ class ProjectWizardController extends Controller
             'name' => ['required', 'string', 'max:160'],
             'type' => ['required', Rule::in($types)],
             'description' => ['nullable', 'string', 'max:2000'],
+            'destination_label' => ['nullable', 'string', 'max:120'],
         ], ['type.in' => 'Elija Recolección o Consolidación: la integración no está disponible para proyectos nuevos.']);
         /** @var User $actor */
         $actor = $request->user();
-        /** @var array{name: string, type: string, description?: string|null} $validated */
+        /** @var array{name: string, type: string, description?: string|null, destination_label?: string|null} $validated */
         $wizard->saveBasics($project, $actor, $validated);
 
         Inertia::flash('toast', ['type' => 'success', 'message' => 'Datos básicos guardados.']);
@@ -45,6 +46,9 @@ class ProjectWizardController extends Controller
         SimulatedUrlSafety $urlSafety,
     ): RedirectResponse {
         Gate::authorize('update', $project);
+        if (ProjectWizard::registersRemoteServers($project->type)) {
+            return $this->remoteServers($request, $project, $wizard);
+        }
         $validated = $request->validate([
             'instances' => ['present', 'array', 'max:12'],
             'instances.*.uuid' => ['nullable', 'uuid'],
@@ -74,6 +78,25 @@ class ProjectWizardController extends Controller
         $wizard->saveInstances($project, $actor, $validated['instances']);
 
         Inertia::flash('toast', ['type' => 'success', 'message' => 'Instancias guardadas.']);
+
+        return to_route('projects.show', $project->uuid);
+    }
+
+    /** With real servers only the label is registered; the connection is configured per server. */
+    private function remoteServers(Request $request, Project $project, ProjectWizard $wizard): RedirectResponse
+    {
+        $validated = $request->validate([
+            'instances' => ['present', 'array', 'list', 'max:8'],
+            'instances.*.server_uuid' => ['nullable', 'uuid', 'distinct'],
+            'instances.*.role' => ['required', Rule::enum(MoodleInstanceRole::class)],
+            'instances.*.name' => ['nullable', 'string', 'max:120'],
+        ]);
+        /** @var User $actor */
+        $actor = $request->user();
+        /** @var array{instances: list<array{server_uuid?: string|null, role: string, name?: string|null}>} $validated */
+        $wizard->saveRemoteServers($project, $actor, $validated['instances']);
+
+        Inertia::flash('toast', ['type' => 'success', 'message' => 'Servidores guardados.']);
 
         return to_route('projects.show', $project->uuid);
     }

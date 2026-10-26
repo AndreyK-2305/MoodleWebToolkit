@@ -58,26 +58,61 @@ final class RemoteConsolidationConfiguration
     public function save(Project $project, User $actor, array $input): Project
     {
         $options = $this->normalize($project, $input);
-        foreach ($options['source_packages'] as $package) {
+        $source = $this->authorizeSources($actor, $options['source_packages'], $options['source_project_uuid'] ?? null);
+
+        return DB::transaction(function () use ($project, $actor, $options, $source): Project {
+            $saved = $this->revisions->persist($project, $actor, $options);
+            // A pending «Recolectar ahora» stays while it is that same collection; any other choice becomes the selection of the sources step.
+            $locked = Project::query()->lockForUpdate()->findOrFail((int) $project->getKey());
+            $keepLink = $source !== null && $locked->source_project_id === $source->getKey()
+                && ($locked->source_link['mode'] ?? null) === RemoteConsolidationSources::MODE_COLLECT_NOW;
+            $locked->forceFill(['source_project_id' => $source?->getKey(), 'source_link' => $keepLink
+                ? $locked->source_link
+                : RemoteConsolidationSources::selectionLink($actor, array_column($options['source_packages'], 'uuid'))])->save();
+
+            return $saved->refresh()->load('configuration');
+        });
+    }
+
+    /**
+     * The sources step alone: the packages and, when given, the completed
+     * collection they belong to, without a destination yet.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array{packages: list<ConsolidationPackage>, source: Project|null}
+     */
+    public function sources(User $actor, array $input): array
+    {
+        $uuids = $input['source_packages'] ?? null;
+        if (array_diff(array_keys($input), ['source_packages', 'source_project']) !== [] || ! is_array($uuids) || ! array_is_list($uuids)
+            || count($uuids) < self::MIN_PACKAGES || count($uuids) > self::MAX_PACKAGES || count(array_unique($uuids, SORT_REGULAR)) !== count($uuids)) {
+            throw ValidationException::withMessages(['source_packages' => 'Elija de '.self::MIN_PACKAGES.' a '.self::MAX_PACKAGES.' paquetes distintos.']);
+        }
+        [$packages, $source] = $this->packages($uuids, $input['source_project'] ?? null);
+        $this->authorizeSources($actor, $packages, $source?->uuid);
+
+        return ['packages' => $packages, 'source' => $source];
+    }
+
+    /**
+     * Who configures must be able to view every package, and a collection chosen as a whole must be completed.
+     *
+     * @param  list<ConsolidationPackage>  $packages
+     */
+    private function authorizeSources(User $actor, array $packages, ?string $sourceProjectUuid): ?Project
+    {
+        foreach ($packages as $package) {
             $model = SourcePackage::query()->with('project')->where('uuid', $package['uuid'])->firstOrFail();
             if ($model->project === null || ! $actor->can('view', $model->project)) {
                 throw ValidationException::withMessages(['consolidation' => 'Uno de los paquetes pertenece a un proyecto que no puede ver.']);
             }
         }
-        $source = isset($options['source_project_uuid']) ? Project::query()->where('uuid', $options['source_project_uuid'])->first() : null;
+        $source = $sourceProjectUuid !== null ? Project::query()->where('uuid', $sourceProjectUuid)->first() : null;
         if ($source !== null && (! $actor->can('view', $source) || $source->status !== ProjectStatus::COMPLETED)) {
             throw ValidationException::withMessages(['consolidation' => 'La recolección elegida debe estar completada y usted debe poder verla.']);
         }
 
-        return DB::transaction(function () use ($project, $actor, $options, $source): Project {
-            $saved = $this->revisions->persist($project, $actor, $options);
-            // A choice made here replaces a pending «Recolectar ahora» unless it is that same collection.
-            $locked = Project::query()->lockForUpdate()->findOrFail((int) $project->getKey());
-            $keepLink = $source !== null && $locked->source_project_id === $source->getKey() && is_array($locked->source_link);
-            $locked->forceFill(['source_project_id' => $source?->getKey(), 'source_link' => $keepLink ? $locked->source_link : null])->save();
-
-            return $saved->refresh()->load('configuration');
-        });
+        return $source;
     }
 
     /** @return ConsolidationSettings */
@@ -124,9 +159,25 @@ final class RemoteConsolidationConfiguration
             throw ValidationException::withMessages(['consolidation' => 'La consolidación remota requiere el servidor de destino del proyecto, un perfil, de '
                 .self::MIN_PACKAGES.' a '.self::MAX_PACKAGES.' paquetes distintos y workers auto o de 1 a 4.']);
         }
+        [$packages, $source] = $this->packages($uuids, $input['source_project'] ?? null);
+
+        return [
+            'schema_version' => self::SCHEMA, 'mode' => self::MODE, 'server_uuid' => $server->uuid,
+            'destination_profile' => $input['destination_profile'], 'source_packages' => $packages, 'workers' => $workers,
+            'distribution_key' => CheckRemoteDestination::DISTRIBUTION_KEY, 'workflow_key' => self::WORKFLOW,
+            ...($source === null ? [] : ['source_project_uuid' => $source->uuid]),
+        ];
+    }
+
+    /**
+     * @param  list<mixed>  $uuids
+     * @return array{0: list<ConsolidationPackage>, 1: Project|null}
+     */
+    private function packages(array $uuids, mixed $sourceProject): array
+    {
         $source = null;
-        if (($input['source_project'] ?? null) !== null) {
-            $source = is_string($input['source_project']) ? Project::query()->where('uuid', $input['source_project'])->first() : null;
+        if ($sourceProject !== null) {
+            $source = is_string($sourceProject) ? Project::query()->where('uuid', $sourceProject)->first() : null;
             if ($source === null || $source->type !== ProjectType::COLLECT) {
                 throw ValidationException::withMessages(['consolidation' => 'Los orígenes deben salir de un proyecto de recolección.']);
             }
@@ -149,11 +200,6 @@ final class RemoteConsolidationConfiguration
         }
         usort($packages, fn (array $left, array $right): int => strcmp($left['uuid'], $right['uuid']));
 
-        return [
-            'schema_version' => self::SCHEMA, 'mode' => self::MODE, 'server_uuid' => $server->uuid,
-            'destination_profile' => $input['destination_profile'], 'source_packages' => $packages, 'workers' => $workers,
-            'distribution_key' => CheckRemoteDestination::DISTRIBUTION_KEY, 'workflow_key' => self::WORKFLOW,
-            ...($source === null ? [] : ['source_project_uuid' => $source->uuid]),
-        ];
+        return [$packages, $source];
     }
 }

@@ -506,21 +506,116 @@ class ProjectWizardTest extends TestCase
         $operator = $this->user(UserRole::OPERATOR);
         $project = $this->createProject($operator, ProjectType::CONSOLIDATE);
 
-        // Its sources are the sealed packages of the consolidation card, never Moodle instances.
+        // Its sources are the sealed packages of the sources step, never servers of its own.
         $this->actingAs($operator)
             ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [
-                $this->instancePayload('SOURCE', 1),
-                $this->instancePayload('SOURCE', 2),
-                $this->instancePayload('DESTINATION', 3, 'PREPARED'),
+                ['role' => 'SOURCE', 'name' => 'Pregrado'],
+                ['role' => 'DESTINATION', 'name' => 'Campus'],
             ]])
-            ->assertSessionHasErrors(['instances' => 'La consolidación remota no registra instancias origen: los orígenes son los paquetes sellados que se eligen en la consolidación. Quite los orígenes y deje solo el destino.']);
-        $this->assertSame(0, $project->moodleInstances()->count());
+            ->assertSessionHasErrors(['instances' => 'Consolidar registra un solo servidor de destino; los orígenes se eligen en su paso.']);
+        $this->assertSame(0, $project->servers()->count());
 
         $this->actingAs($operator)
-            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$this->instancePayload('DESTINATION', 3, 'PREPARED')]])
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [['role' => 'DESTINATION', 'name' => 'Campus']]])
             ->assertSessionHasNoErrors();
-        $this->assertSame([MoodleInstanceRole::DESTINATION], $project->moodleInstances()->pluck('role')->all());
-        $this->assertSame([ServerRole::DESTINATION], $project->servers()->pluck('role')->all());
+        $this->assertSame(0, $project->moodleInstances()->count());
+        $this->assertSame([[ServerRole::DESTINATION, 'Campus', null]],
+            $project->servers()->get()->map(fn ($server): array => [$server->role, $server->name, $server->host])->all());
+    }
+
+    public function test_remote_collection_registers_sources_by_label_only(): void
+    {
+        config(['toolkit.features.remote_agent.enabled' => true]);
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+        $version = $project->fresh()->configuration->version;
+        $url = route('projects.wizard.instances', $project->uuid);
+
+        // No host, URL, Moodle version or review tick: the agent and the profile checks provide them.
+        $this->actingAs($operator)
+            ->put($url, ['instances' => [['role' => 'SOURCE', 'name' => 'Pregrado'], ['role' => 'SOURCE', 'name' => '']]])
+            ->assertRedirect(route('projects.show', $project->uuid))
+            ->assertSessionHasNoErrors();
+        $servers = $project->servers()->orderBy('id')->get();
+        $this->assertSame(['Pregrado', $project->name.' · origen 2'], $servers->pluck('name')->all());
+        $this->assertSame([null, null], $servers->pluck('host')->all());
+        $this->assertSame(0, $project->moodleInstances()->count());
+        $this->assertSame($version + 1, $project->fresh()->configuration->version);
+        $this->assertDatabaseHas('audit_logs', ['project_id' => $project->getKey(), 'action' => 'PROJECT_SERVERS_UPDATED']);
+
+        // A new label alone keeps the configuration version; removing a server changes it.
+        $this->actingAs($operator)
+            ->put($url, ['instances' => [
+                ['server_uuid' => $servers[1]->uuid, 'role' => 'SOURCE', 'name' => 'Pregrado'],
+                ['server_uuid' => $servers[0]->uuid, 'role' => 'SOURCE', 'name' => 'Posgrado'],
+            ]])
+            ->assertSessionHasNoErrors();
+        $this->assertSame(['Posgrado', 'Pregrado'], $project->servers()->orderBy('id')->pluck('name')->all());
+        $this->assertSame($version + 1, $project->fresh()->configuration->version);
+        $this->actingAs($operator)
+            ->put($url, ['instances' => [['server_uuid' => $servers[0]->uuid, 'role' => 'SOURCE', 'name' => 'Posgrado']]])
+            ->assertSessionHasNoErrors();
+        $this->assertSame([$servers[0]->uuid], $project->servers()->pluck('uuid')->all());
+        $this->assertSame($version + 2, $project->fresh()->configuration->version);
+
+        $this->actingAs($operator)
+            ->put($url, ['instances' => [['role' => 'SOURCE', 'name' => 'Igual'], ['role' => 'SOURCE', 'name' => 'igual']]])
+            ->assertSessionHasErrors(['instances' => 'Cada servidor necesita una etiqueta distinta.']);
+        $this->actingAs($operator)
+            ->put($url, ['instances' => [['role' => 'DESTINATION', 'name' => 'Destino']]])
+            ->assertSessionHasErrors('instances');
+        $this->actingAs($operator)->put($url, ['instances' => []])->assertSessionHasErrors('instances');
+        $this->assertSame(1, $project->servers()->count());
+    }
+
+    public function test_simulated_mode_still_requires_the_simulated_instance_fields(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::COLLECT);
+
+        $this->actingAs($operator)
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [['role' => 'SOURCE', 'name' => 'Pregrado']]])
+            ->assertSessionHasErrors(['instances.0.server_host', 'instances.0.base_url', 'instances.0.moodle_version', 'instances.0.validated']);
+        $this->assertSame(0, $project->servers()->count());
+    }
+
+    public function test_remote_consolidation_names_its_destination_in_the_basics(): void
+    {
+        config(['toolkit.features.remote_agent.enabled' => true]);
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::CONSOLIDATE);
+        $url = route('projects.wizard.basics', $project->uuid);
+
+        // Without a label the destination takes the project name, and follows it.
+        $this->actingAs($operator)->patch($url, ['name' => 'Campus unificado', 'type' => 'CONSOLIDATE'])->assertSessionHasNoErrors();
+        $this->assertSame([[ServerRole::DESTINATION, 'Campus unificado']],
+            $project->servers()->get()->map(fn ($server): array => [$server->role, $server->name])->all());
+        $this->actingAs($operator)->patch($url, ['name' => 'Campus 2026', 'type' => 'CONSOLIDATE', 'destination_label' => ' '])->assertSessionHasNoErrors();
+        $this->assertSame(['Campus 2026'], $project->servers()->pluck('name')->all());
+
+        $destination = $project->servers()->sole();
+        $this->actingAs($operator)->patch($url, ['name' => 'Campus 2026', 'type' => 'CONSOLIDATE', 'destination_label' => 'EC2 campus'])
+            ->assertSessionHasNoErrors();
+        $this->assertSame([[$destination->uuid, 'EC2 campus']], $project->servers()->get()->map(fn ($server): array => [$server->uuid, $server->name])->all());
+        $this->assertDatabaseHas('audit_logs', ['project_id' => $project->getKey(), 'action' => 'PROJECT_DESTINATION_NAMED']);
+
+        $this->actingAs($operator)->patch($url, ['name' => 'Campus 2026', 'type' => 'CONSOLIDATE', 'destination_label' => str_repeat('x', 121)])
+            ->assertSessionHasErrors('destination_label');
+
+        // Another operation drops the servers that no longer fit it.
+        $this->actingAs($operator)->patch($url, ['name' => 'Campus 2026', 'type' => 'COLLECT'])->assertSessionHasNoErrors();
+        $this->assertSame(0, $project->servers()->count());
+    }
+
+    public function test_simulated_consolidation_basics_register_no_server(): void
+    {
+        $operator = $this->user(UserRole::OPERATOR);
+        $project = $this->createProject($operator, ProjectType::CONSOLIDATE);
+
+        $this->actingAs($operator)
+            ->patch(route('projects.wizard.basics', $project->uuid), ['name' => 'Campus', 'type' => 'CONSOLIDATE', 'destination_label' => 'EC2'])
+            ->assertSessionHasNoErrors();
+        $this->assertSame(0, $project->servers()->count());
     }
 
     public function test_remote_consolidation_preflight_asks_for_the_packages_and_not_for_source_instances(): void
@@ -529,7 +624,7 @@ class ProjectWizardTest extends TestCase
         $operator = $this->user(UserRole::OPERATOR);
         $project = $this->createProject($operator, ProjectType::CONSOLIDATE);
         $this->actingAs($operator)
-            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [$this->instancePayload('DESTINATION', 3, 'PREPARED')]])
+            ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [['role' => 'DESTINATION', 'name' => 'Campus']]])
             ->assertSessionHasNoErrors();
 
         $this->actingAs($operator)->post(route('projects.wizard.preflight', $project->uuid))->assertSessionHasNoErrors();

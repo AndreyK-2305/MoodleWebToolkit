@@ -9,7 +9,6 @@ import type {
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -53,6 +52,7 @@ export type ConsolidationSourceLink = {
     pickup_error: string | null;
     waiting: string | null;
     destination_profile: string | null;
+    destination_chosen: boolean;
 };
 
 export type ConsolidationCopias = {
@@ -68,6 +68,10 @@ export type ConsolidationSources = {
     link: ConsolidationSourceLink | null;
     collections: CompletedCollection[];
     copias: ConsolidationCopias;
+    selection: {
+        source_project_uuid: string | null;
+        packages: string[];
+    } | null;
     min_sources: number;
     max_sources: number;
 };
@@ -90,12 +94,36 @@ const modes: { value: SourceMode; title: string; description: string }[] = [
     },
 ];
 
+type FormProps = {
+    projectUuid: string;
+    options: RemoteConsolidationOptions;
+    servers: RemoteServer[];
+    sources: ConsolidationSources | null;
+    editable: boolean;
+};
+
+/** The destination saved in the configuration, or the first one registered. */
+function savedDestination(
+    options: RemoteConsolidationOptions,
+    servers: RemoteServer[],
+): RemoteServer | undefined {
+    const destinations = servers.filter(
+        (server) => server.role === 'DESTINATION',
+    );
+
+    return (
+        destinations.find((server) => server.uuid === options.server_uuid) ??
+        destinations[0]
+    );
+}
+
 /**
- * Chooses the destination profile and where the sealed packages the
- * Consolidator V8 consolidates there come from. Only identifiers are sent;
- * the site's configuration and secrets stay on the servers.
+ * Sources step of a remote consolidation: where the sealed packages come
+ * from. Either a completed collection, loose packages («Avanzado») or a
+ * collection created now and linked to this consolidation. It is saved on
+ * its own; the destination step completes the configuration.
  */
-export default function RemoteConsolidationForm({
+export function ConsolidationSourcesForm({
     projectUuid,
     options,
     servers,
@@ -103,54 +131,42 @@ export default function RemoteConsolidationForm({
     sources,
     defaultRegion,
     editable,
-}: {
-    projectUuid: string;
-    options: RemoteConsolidationOptions;
-    servers: RemoteServer[];
-    packages: AvailablePackage[];
-    sources: ConsolidationSources | null;
-    defaultRegion: string;
-    editable: boolean;
-}) {
-    const destinations = servers.filter(
-        (server) => server.role === 'DESTINATION',
-    );
+}: FormProps & { packages: AvailablePackage[]; defaultRegion: string }) {
     const current = options.mode === 'REMOTE_CONSOLIDATION';
     const collections = sources?.collections ?? [];
     const link = sources?.link ?? null;
+    const selection = sources?.selection ?? null;
     const pendingLink =
         link?.mode === 'COLLECT_NOW' && link.picked_up_at === null;
+    const chosenProject = selection
+        ? selection.source_project_uuid
+        : current
+          ? (options.source_project_uuid ?? null)
+          : null;
     const [mode, setMode] = useState<SourceMode>(() =>
         initialSourceMode({
             linkMode: pendingLink ? 'COLLECT_NOW' : null,
-            sourceProjectUuid: current
-                ? (options.source_project_uuid ?? null)
-                : null,
-            configured: current,
+            sourceProjectUuid: chosenProject,
+            configured: current || selection !== null,
             collections: collections.length,
         }),
     );
     const firstCollection =
-        collections.find((item) => item.uuid === options.source_project_uuid) ??
+        collections.find((item) => item.uuid === chosenProject) ??
         collections[0];
     // The saved packages reopen as they were; a collection not saved yet starts with all of its packages.
-    const savedPackages =
-        current &&
-        (!options.source_project_uuid ||
-            options.source_project_uuid === firstCollection?.uuid);
+    const savedPackages = selection
+        ? selection.packages
+        : current
+          ? (options.source_packages ?? []).map((item) => item.uuid)
+          : null;
+    const keepSaved =
+        savedPackages !== null &&
+        (!chosenProject || chosenProject === firstCollection?.uuid);
     const form = useForm({
-        server_uuid: current
-            ? (options.server_uuid ?? '')
-            : (destinations[0]?.uuid ?? ''),
-        destination_profile: current
-            ? (options.destination_profile ?? '')
-            : (link?.destination_profile ??
-              destinations[0]?.destinations.find((item) => item.ready)?.id ??
-              ''),
-        workers: current ? String(options.workers ?? 'auto') : 'auto',
         source_project: firstCollection?.uuid ?? '',
-        source_packages: savedPackages
-            ? (options.source_packages ?? []).map((item) => item.uuid)
+        source_packages: keepSaved
+            ? savedPackages
             : preselectedPackages(firstCollection),
     });
     const linked = useForm<{
@@ -165,15 +181,20 @@ export default function RemoteConsolidationForm({
     });
     const errors = form.errors as Record<string, string>;
     const linkedErrors = linked.errors as Record<string, string>;
-    const server = destinations.find(
-        (item) => item.uuid === form.data.server_uuid,
-    );
-    const profile = server?.destinations.find(
-        (item) => item.id === form.data.destination_profile,
-    );
-    const inCopias = new Set(
-        (profile?.copias?.packages ?? []).map((item) => item.sidecar_sha256),
-    );
+    // Packages already in the saved destination's copias/ are marked in the lists.
+    const destination = savedDestination(options, servers);
+    const profile = current
+        ? destination?.destinations.find(
+              (item) => item.id === options.destination_profile,
+          )
+        : undefined;
+    const inCopias = profile
+        ? new Set(
+              (profile.copias?.packages ?? []).map(
+                  (item) => item.sidecar_sha256,
+              ),
+          )
+        : null;
     const collection = collections.find(
         (item) => item.uuid === form.data.source_project,
     );
@@ -185,22 +206,6 @@ export default function RemoteConsolidationForm({
                 : form.data.source_packages.filter((item) => item !== uuid),
         );
     const count = form.data.source_packages.length;
-    // A destination that finishes preparing reports its profile later: choose it once it arrives.
-    const available = (server?.destinations ?? [])
-        .map((item) => `${item.id}:${item.ready}`)
-        .join('|');
-    useEffect(() => {
-        if (form.data.destination_profile !== '' || !server) {
-            return;
-        }
-        const first =
-            server.destinations.find((item) => item.ready) ??
-            server.destinations[0];
-        if (first) {
-            form.setData('destination_profile', first.id);
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [available]);
 
     const chooseMode = (next: SourceMode) => {
         setMode(next);
@@ -223,20 +228,16 @@ export default function RemoteConsolidationForm({
                 collections.find((item) => item.uuid === uuid),
             ),
         }));
-    const saveConfiguration = () => {
+    const saveSources = () => {
         form.transform((data) => ({
-            server_uuid: data.server_uuid,
-            destination_profile: data.destination_profile,
-            workers: data.workers,
             source_packages: data.source_packages,
             ...(mode === 'PROJECT'
                 ? { source_project: data.source_project }
                 : {}),
         }));
-        form.put(
-            `/projects/${projectUuid}/consolidation/remote-configuration`,
-            { preserveScroll: true },
-        );
+        form.put(`/projects/${projectUuid}/consolidation/sources`, {
+            preserveScroll: true,
+        });
     };
     const updateSource = <K extends keyof LinkedSource>(
         index: number,
@@ -272,219 +273,267 @@ export default function RemoteConsolidationForm({
         minSources,
         maxSources,
     );
-    const createLinked = () => {
-        linked.transform((data) => ({
-            ...data,
-            server_uuid: form.data.server_uuid,
-            destination_profile: form.data.destination_profile,
-            workers: form.data.workers,
-        }));
+    // The destination is chosen in its own step; a destination saved before is kept.
+    const createLinked = () =>
         linked.post(
             `/projects/${projectUuid}/consolidation/linked-collection`,
             { preserveScroll: true },
         );
-    };
-    const destinationErrors = [
-        errors.server_uuid ?? linkedErrors.server_uuid,
-        errors.destination_profile ?? linkedErrors.destination_profile,
-    ].filter(Boolean);
 
     return (
-        <Card>
-            <CardHeader>
-                <CardTitle>Consolidación en el servidor de destino</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-5">
-                <p className="text-muted-foreground text-sm">
-                    El Consolidador V8 se ejecuta en el destino mediante su
-                    agente. Elija el destino y de dónde salen los orígenes; la
-                    plataforma trae los paquetes elegidos a su{' '}
-                    <code>copias/</code> al guardar y al ejecutar el preflight.
-                    La ejecución se detendrá para que el administrador configure
-                    OAuth2 en Moodle.
-                    {current &&
-                        ' Esta es la configuración vigente del proyecto.'}
-                </p>
-                {destinations.length === 0 ? (
-                    <p className="text-sm">
-                        Registre el servidor de destino en el paso de instancias
-                        y prepare su perfil para habilitar la consolidación.
+        <div className="space-y-5">
+            {link && <SourceLinkPanel link={link} />}
+
+            <fieldset className="space-y-3">
+                <legend className="text-base font-medium">
+                    ¿De dónde salen los orígenes?
+                </legend>
+                <div className="grid gap-3 md:grid-cols-2">
+                    {modes.map((item) => (
+                        <label
+                            key={item.value}
+                            className={cn(
+                                'flex cursor-pointer items-start gap-3 rounded-lg border p-4 text-sm',
+                                mode === item.value
+                                    ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30'
+                                    : 'border-border hover:bg-muted',
+                            )}
+                        >
+                            <input
+                                type="radio"
+                                name="consolidation-source-mode"
+                                className="mt-1"
+                                checked={mode === item.value}
+                                disabled={!editable}
+                                onChange={() => chooseMode(item.value)}
+                            />
+                            <span>
+                                <span className="block font-medium">
+                                    {item.title}
+                                </span>
+                                <span className="text-muted-foreground block">
+                                    {item.description}
+                                </span>
+                            </span>
+                        </label>
+                    ))}
+                </div>
+                <button
+                    type="button"
+                    disabled={!editable}
+                    className="text-muted-foreground text-xs underline-offset-2 hover:underline"
+                    onClick={() =>
+                        chooseMode(mode === 'MANUAL' ? 'PROJECT' : 'MANUAL')
+                    }
+                >
+                    {mode === 'MANUAL'
+                        ? 'Volver a las dos opciones principales'
+                        : 'Avanzado: elegir paquetes sueltos de varias recolecciones'}
+                </button>
+            </fieldset>
+
+            {mode === 'PROJECT' && (
+                <ProjectMode
+                    collections={collections}
+                    collection={collection}
+                    selected={form.data.source_packages}
+                    sourceProject={form.data.source_project}
+                    inCopias={inCopias}
+                    editable={editable}
+                    onCollection={chooseCollection}
+                    onToggle={toggle}
+                />
+            )}
+
+            {mode === 'MANUAL' && (
+                <ManualMode
+                    packages={packages}
+                    selected={form.data.source_packages}
+                    inCopias={inCopias}
+                    editable={editable}
+                    onToggle={toggle}
+                />
+            )}
+
+            {mode !== 'COLLECT_NOW' && (
+                <>
+                    <InputError message={errors.consolidation} />
+                    <InputError message={errors.source_packages} />
+                    {editable && (
+                        <Button
+                            type="button"
+                            onClick={saveSources}
+                            disabled={
+                                form.processing ||
+                                count < MIN_PACKAGES ||
+                                count > MAX_PACKAGES ||
+                                (mode === 'PROJECT' && !collection)
+                            }
+                        >
+                            Guardar orígenes
+                        </Button>
+                    )}
+                </>
+            )}
+
+            {mode === 'COLLECT_NOW' &&
+                (pendingLink ? (
+                    <p className="text-muted-foreground text-sm">
+                        La recolección vinculada ya existe. Ábrala para conectar
+                        los orígenes e iniciarla; cuando se complete, esta
+                        consolidación toma sus paquetes sola. Mientras tanto
+                        puede preparar el destino.
                     </p>
                 ) : (
-                    <>
-                        <DestinationFields
-                            destinations={destinations}
-                            server={server}
-                            data={form.data}
-                            editable={editable}
-                            onChange={(field, value) =>
-                                form.setData(field, value)
-                            }
-                        />
-                        {destinationErrors.map((message) => (
-                            <InputError key={message} message={message} />
-                        ))}
+                    <CollectNowMode
+                        sources={linked.data.sources}
+                        workers={linked.data.collection_workers}
+                        errors={linkedErrors}
+                        problem={linkedProblem}
+                        maxSources={maxSources}
+                        defaultRegion={defaultRegion}
+                        editable={editable}
+                        processing={linked.processing}
+                        onSource={updateSource}
+                        onAdd={() =>
+                            linked.setData((data) => ({
+                                ...data,
+                                sources: [
+                                    ...data.sources,
+                                    blankLinkedSource(
+                                        data.sources.length + 1,
+                                        defaultRegion,
+                                    ),
+                                ],
+                            }))
+                        }
+                        onRemove={(index) =>
+                            linked.setData((data) => ({
+                                ...data,
+                                sources: data.sources.filter(
+                                    (_, position) => position !== index,
+                                ),
+                            }))
+                        }
+                        onWorkers={(value) =>
+                            linked.setData('collection_workers', value)
+                        }
+                        onSubmit={createLinked}
+                    />
+                ))}
+        </div>
+    );
+}
 
-                        {link && <SourceLinkPanel link={link} />}
-                        {sources && current && (
-                            <CopiasProgressPanel copias={sources.copias} />
-                        )}
+/**
+ * Destination step of a remote consolidation: the destination profile and
+ * the restore workers. Saving it completes the configuration with the
+ * sources of the previous step; the platform then brings the packages to
+ * its copias/.
+ */
+export function ConsolidationDestinationForm({
+    projectUuid,
+    options,
+    servers,
+    sources,
+    editable,
+}: FormProps) {
+    const destinations = servers.filter(
+        (server) => server.role === 'DESTINATION',
+    );
+    const current = options.mode === 'REMOTE_CONSOLIDATION';
+    const link = sources?.link ?? null;
+    const form = useForm({
+        server_uuid: current
+            ? (options.server_uuid ?? '')
+            : (destinations[0]?.uuid ?? ''),
+        destination_profile: current
+            ? (options.destination_profile ?? '')
+            : (link?.destination_profile ??
+              destinations[0]?.destinations.find((item) => item.ready)?.id ??
+              ''),
+        workers: current ? String(options.workers ?? 'auto') : 'auto',
+    });
+    const errors = form.errors as Record<string, string>;
+    const server = destinations.find(
+        (item) => item.uuid === form.data.server_uuid,
+    );
+    // A destination that finishes preparing reports its profile later: choose it once it arrives.
+    const available = (server?.destinations ?? [])
+        .map((item) => `${item.id}:${item.ready}`)
+        .join('|');
+    useEffect(() => {
+        if (form.data.destination_profile !== '' || !server) {
+            return;
+        }
+        const first =
+            server.destinations.find((item) => item.ready) ??
+            server.destinations[0];
+        if (first) {
+            form.setData('destination_profile', first.id);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [available]);
+    const hasSources =
+        current || sources?.selection != null || link?.mode === 'COLLECT_NOW';
 
-                        <fieldset className="space-y-3">
-                            <legend className="text-base font-medium">
-                                ¿De dónde salen los orígenes?
-                            </legend>
-                            <div className="grid gap-3 md:grid-cols-2">
-                                {modes.map((item) => (
-                                    <label
-                                        key={item.value}
-                                        className={cn(
-                                            'flex cursor-pointer items-start gap-3 rounded-lg border p-4 text-sm',
-                                            mode === item.value
-                                                ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30'
-                                                : 'border-border hover:bg-muted',
-                                        )}
-                                    >
-                                        <input
-                                            type="radio"
-                                            name="consolidation-source-mode"
-                                            className="mt-1"
-                                            checked={mode === item.value}
-                                            disabled={!editable}
-                                            onChange={() =>
-                                                chooseMode(item.value)
-                                            }
-                                        />
-                                        <span>
-                                            <span className="block font-medium">
-                                                {item.title}
-                                            </span>
-                                            <span className="text-muted-foreground block">
-                                                {item.description}
-                                            </span>
-                                        </span>
-                                    </label>
-                                ))}
-                            </div>
-                            <button
-                                type="button"
-                                disabled={!editable}
-                                className="text-muted-foreground text-xs underline-offset-2 hover:underline"
-                                onClick={() =>
-                                    chooseMode(
-                                        mode === 'MANUAL'
-                                            ? 'PROJECT'
-                                            : 'MANUAL',
-                                    )
-                                }
-                            >
-                                {mode === 'MANUAL'
-                                    ? 'Volver a las dos opciones principales'
-                                    : 'Avanzado: elegir paquetes sueltos de varias recolecciones'}
-                            </button>
-                        </fieldset>
+    if (destinations.length === 0) {
+        return (
+            <p className="text-sm">
+                Guarde los datos básicos para registrar el servidor de destino.
+            </p>
+        );
+    }
 
-                        {mode === 'PROJECT' && (
-                            <ProjectMode
-                                collections={collections}
-                                collection={collection}
-                                selected={form.data.source_packages}
-                                sourceProject={form.data.source_project}
-                                inCopias={profile ? inCopias : null}
-                                editable={editable}
-                                onCollection={chooseCollection}
-                                onToggle={toggle}
-                            />
-                        )}
-
-                        {mode === 'MANUAL' && (
-                            <ManualMode
-                                packages={packages}
-                                selected={form.data.source_packages}
-                                inCopias={profile ? inCopias : null}
-                                editable={editable}
-                                onToggle={toggle}
-                            />
-                        )}
-
-                        {mode !== 'COLLECT_NOW' && (
-                            <>
-                                <InputError message={errors.consolidation} />
-                                <InputError message={errors.source_packages} />
-                                {editable && (
-                                    <Button
-                                        type="button"
-                                        onClick={saveConfiguration}
-                                        disabled={
-                                            form.processing ||
-                                            count < MIN_PACKAGES ||
-                                            count > MAX_PACKAGES ||
-                                            form.data.destination_profile ===
-                                                '' ||
-                                            (mode === 'PROJECT' && !collection)
-                                        }
-                                    >
-                                        Guardar configuración de consolidación
-                                    </Button>
-                                )}
-                            </>
-                        )}
-
-                        {mode === 'COLLECT_NOW' &&
-                            (pendingLink ? (
-                                <p className="text-muted-foreground text-sm">
-                                    La recolección vinculada ya existe. Siga su
-                                    avance arriba; cuando se complete, esta
-                                    consolidación toma sus paquetes sola.
-                                </p>
-                            ) : (
-                                <CollectNowMode
-                                    sources={linked.data.sources}
-                                    workers={linked.data.collection_workers}
-                                    errors={linkedErrors}
-                                    problem={linkedProblem}
-                                    maxSources={maxSources}
-                                    defaultRegion={defaultRegion}
-                                    editable={editable}
-                                    processing={linked.processing}
-                                    profileChosen={
-                                        form.data.destination_profile !== ''
-                                    }
-                                    onSource={updateSource}
-                                    onAdd={() =>
-                                        linked.setData((data) => ({
-                                            ...data,
-                                            sources: [
-                                                ...data.sources,
-                                                blankLinkedSource(
-                                                    data.sources.length + 1,
-                                                    defaultRegion,
-                                                ),
-                                            ],
-                                        }))
-                                    }
-                                    onRemove={(index) =>
-                                        linked.setData((data) => ({
-                                            ...data,
-                                            sources: data.sources.filter(
-                                                (_, position) =>
-                                                    position !== index,
-                                            ),
-                                        }))
-                                    }
-                                    onWorkers={(value) =>
-                                        linked.setData(
-                                            'collection_workers',
-                                            value,
-                                        )
-                                    }
-                                    onSubmit={createLinked}
-                                />
-                            ))}
-                    </>
-                )}
-            </CardContent>
-        </Card>
+    return (
+        <div className="space-y-4">
+            <p className="text-muted-foreground text-sm">
+                El Consolidador V8 se ejecuta en el destino mediante su agente.
+                Al guardar, la plataforma trae los paquetes elegidos a su{' '}
+                <code>copias/</code>; también lo hace al ejecutar el preflight.
+                La ejecución se detendrá para que el administrador configure
+                OAuth2 en Moodle.
+                {current && ' Esta es la configuración vigente del proyecto.'}
+            </p>
+            <DestinationFields
+                destinations={destinations}
+                server={server}
+                data={form.data}
+                editable={editable}
+                onChange={(field, value) => form.setData(field, value)}
+            />
+            <InputError message={errors.server_uuid} />
+            <InputError message={errors.destination_profile} />
+            <InputError message={errors.consolidation} />
+            {sources && current && (
+                <CopiasProgressPanel copias={sources.copias} />
+            )}
+            {editable && (
+                <div className="space-y-1">
+                    <Button
+                        type="button"
+                        disabled={
+                            form.processing ||
+                            !hasSources ||
+                            form.data.destination_profile === ''
+                        }
+                        onClick={() =>
+                            form.put(
+                                `/projects/${projectUuid}/consolidation/remote-configuration`,
+                                { preserveScroll: true },
+                            )
+                        }
+                    >
+                        Guardar destino
+                    </Button>
+                    {!hasSources && (
+                        <p className="text-muted-foreground text-xs">
+                            Elija primero los orígenes (paso 2).
+                        </p>
+                    )}
+                </div>
+            )}
+        </div>
     );
 }
 
@@ -512,7 +561,7 @@ function DestinationFields({
                 </Label>
                 <select
                     id="consolidation-server"
-                    className="border-input rounded-md border p-2"
+                    className="border-input w-full min-w-0 rounded-md border p-2"
                     value={data.server_uuid}
                     disabled={!editable}
                     onChange={(event) =>
@@ -530,7 +579,7 @@ function DestinationFields({
                 <Label htmlFor="consolidation-profile">Perfil de destino</Label>
                 <select
                     id="consolidation-profile"
-                    className="border-input rounded-md border p-2"
+                    className="border-input w-full min-w-0 rounded-md border p-2"
                     value={data.destination_profile}
                     disabled={!editable}
                     onChange={(event) =>
@@ -552,7 +601,7 @@ function DestinationFields({
                 </Label>
                 <select
                     id="consolidation-workers"
-                    className="border-input rounded-md border p-2"
+                    className="border-input w-full min-w-0 rounded-md border p-2"
                     value={data.workers}
                     disabled={!editable}
                     onChange={(event) =>
@@ -571,7 +620,7 @@ function DestinationFields({
     );
 }
 
-/** «Paso 1: recolección» and what the consolidation waits for. */
+/** The linked or chosen collection and what the consolidation waits for. */
 function SourceLinkPanel({ link }: { link: ConsolidationSourceLink }) {
     const done = link.picked_up_at !== null;
 
@@ -586,7 +635,7 @@ function SourceLinkPanel({ link }: { link: ConsolidationSourceLink }) {
             <CircleDot />
             <AlertTitle>
                 {link.mode === 'COLLECT_NOW'
-                    ? `Paso 1: recolección (${link.sources_collected}/${link.sources_total} orígenes)`
+                    ? `Recolección vinculada (${link.sources_collected}/${link.sources_total} orígenes)`
                     : 'Orígenes de una recolección completada'}
             </AlertTitle>
             <AlertDescription className="space-y-1">
@@ -604,7 +653,7 @@ function SourceLinkPanel({ link }: { link: ConsolidationSourceLink }) {
                 {link.mode === 'COLLECT_NOW' && (
                     <p>
                         {done
-                            ? 'Paso 2: consolidación. Los paquetes de la recolección ya están en esta configuración; ejecute el preflight, confirme e inicie.'
+                            ? 'Los paquetes de la recolección ya están en esta configuración; continúe con el destino y el preflight.'
                             : (link.waiting ??
                               'Esperando a que la recolección vinculada termine.')}
                     </p>
@@ -684,7 +733,7 @@ function ProjectMode({
                 </Label>
                 <select
                     id="consolidation-collection"
-                    className="border-input rounded-md border p-2"
+                    className="border-input w-full min-w-0 rounded-md border p-2"
                     value={sourceProject}
                     disabled={!editable}
                     onChange={(event) => onCollection(event.target.value)}
@@ -830,7 +879,6 @@ function CollectNowMode({
     defaultRegion,
     editable,
     processing,
-    profileChosen,
     onSource,
     onAdd,
     onRemove,
@@ -845,7 +893,6 @@ function CollectNowMode({
     defaultRegion: string;
     editable: boolean;
     processing: boolean;
-    profileChosen: boolean;
     onSource: <K extends keyof LinkedSource>(
         index: number,
         field: K,
@@ -974,19 +1021,14 @@ function CollectNowMode({
                 <div className="space-y-1">
                     <Button
                         type="button"
-                        disabled={
-                            processing || problem !== null || !profileChosen
-                        }
+                        disabled={processing || problem !== null}
                         onClick={onSubmit}
                     >
                         Crear la recolección vinculada
                     </Button>
-                    {(problem ??
-                        (!profileChosen
-                            ? 'Elija el perfil de destino.'
-                            : null)) && (
+                    {problem && (
                         <p className="text-muted-foreground text-xs">
-                            {problem ?? 'Elija el perfil de destino.'}
+                            {problem}
                         </p>
                     )}
                 </div>
