@@ -199,3 +199,43 @@ caso evidente»). La lógica está en `evidentCases` y `mergeEvident` (`identity
   abierto y su evento sin recargar. Corre en CI porque no hay Docker local.
 - No se agregó una prueba Playwright. La suite e2e no tiene fixtures de consolidación remota. La
   próxima prueba en AWS confirma el flujo en el navegador.
+
+## F5: personalización del theme global (2026-10-26)
+
+En el laboratorio, el theme elegido quedaba con su apariencia de fábrica. El Recolector 7.4.2 ya
+inventaría el perfil de configuración de cada theme, pero el Consolidador solo lo validaba y lo
+sellaba como evidencia. El usuario pidió copiar al menos el SCSS para que el Moodle consolidado
+conserve la identidad visual de la institución.
+
+### Consolidador 8.2.0-linux
+
+- `config/theme-policy.json` admite `global_theme_profile_source`. Vacío, el flujo es idéntico a
+  8.1.0. Con el `source_id` de un paquete, se copia el perfil que ese origen tenía para el theme
+  global.
+- El plan de themes sella `global_theme_profile`: los ajustes que se aplican (solo
+  `config_value`) y los que nunca, con su motivo. Nunca se aplican los secretos redactados, las
+  referencias a archivos (logos, fondos), los valores nulos ni la versión del plugin.
+- `scripts/v8-theme-profile.php` los escribe en la etapa `09b-themes-piloto` con `set_config`, los
+  verifica, recompila el SCSS y deja `exports/theme-profile-application.json`.
+- Los valores quedan en `config_plugins`, así que el administrador puede cambiarlos después desde
+  Moodle. Los themes no elegidos siguen instalados.
+- Detalle en `CAMBIOS-8.2.0.md`.
+
+### Plataforma y agente 1.16.0
+
+- `theme-options` devuelve, por origen y por theme, cuántos ajustes se copiarían, cuántos no y si
+  hay SCSS. Solo viajan los conteos; los valores no salen del destino.
+- `theme-policy-set` acepta un cuarto argumento con el origen elegido (`-` = ninguno).
+- La intervención «Elegir el theme» añade «Personalización del theme». Por defecto se elige el
+  primer origen que personalizó el theme elegido, y se puede dejar la apariencia de fábrica. La
+  plataforma solo acepta un origen que traiga ajustes para ese theme.
+
+### Verificación
+
+- Pruebas: `tests/v8-820-theme-profile.php` (Consolidador) y las pruebas Feature de la intervención
+  y del agente.
+- Por decisión del usuario, la prueba de punta a punta queda para la prueba con las copias
+  institucionales: elegir un origen, revisar en Moodle que el SCSS y los colores quedaron
+  aplicados y subir a mano los logos.
+- Antes de esa prueba hay que actualizar el agente del destino a 1.16.0 y re-apuntar el perfil al
+  árbol de 8.2.0.

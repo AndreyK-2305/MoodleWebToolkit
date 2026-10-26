@@ -169,6 +169,7 @@ class RemoteConsolidationInterventions
         $presented = array_intersect_key($details, array_flip(['kind', 'stage', 'message', 'review_paths', 'instructions', 'callback_uri', 'issues',
             'needs', 'new_plugins', 'updated_plugins', 'removed_plugins', 'technical_issues', 'checkpoint_status', 'plugins_none',
             'candidates', 'candidate_total', 'candidates_complete', 'themes', 'theme_selected', 'theme_default', 'legacy_sources', 'legacy_accepted',
+            'theme_profiles', 'theme_profile_source',
             'unknown', 'inspections', 'proposals', 'proposal_sha256', 'map_sources', 'existing', 'categories', 'suggestions', 'pilot', 'map_issues',
             'map_complete', 'previous_map']));
         // The web user answers in the platform; the console wording goes to the technical details.
@@ -186,6 +187,7 @@ class RemoteConsolidationInterventions
             $presented['answer_summary'] = ['answered_at' => is_string($answers['answered_at'] ?? null) ? $answers['answered_at'] : null,
                 'merge' => count(array_keys($resolutions, 'MERGE', true)), 'keep_separate' => count(array_keys($resolutions, 'KEEP_SEPARATE', true)),
                 'ignore' => count(array_keys($resolutions, 'IGNORE', true)), 'theme' => is_string($answers['theme'] ?? null) ? $answers['theme'] : null,
+                'profile_source' => is_string($answers['profile_source'] ?? null) ? $answers['profile_source'] : null,
                 'promoted' => is_array($answers['promote'] ?? null) ? count($answers['promote']) : 0,
                 'categories' => is_array($answers['nodes'] ?? null) ? count($answers['nodes']) : 0,
                 'merged' => is_array($answers['nodes'] ?? null) && is_array($answers['assignments'] ?? null)
@@ -472,9 +474,20 @@ class RemoteConsolidationInterventions
             }
         }
 
+        $source = fn (mixed $value): ?string => is_string($value) && preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/D', $value) === 1 ? $value : null;
+        // Agent 1.16.0: each source's customization of each theme, counts only (Consolidator 8.2.0 copies the chosen one).
+        $profiles = [];
+        foreach (is_array($data['profiles'] ?? null) ? array_slice($data['profiles'], 0, 100) : [] as $profile) {
+            if (is_array($profile) && $source($profile['source'] ?? null) !== null && $name($profile['theme'] ?? null) !== null) {
+                $profiles[] = ['source' => $profile['source'], 'theme' => $profile['theme'], 'settings' => max(0, (int) ($profile['settings'] ?? 0)),
+                    'skipped' => max(0, (int) ($profile['skipped'] ?? 0)), 'scss' => ($profile['scss'] ?? false) === true];
+            }
+        }
+
         return ['themes' => array_values(array_filter(array_map($name, is_array($data['themes'] ?? null) ? $data['themes'] : []))),
             'theme_selected' => $name($data['selected'] ?? null), 'theme_default' => $name($data['default'] ?? null),
-            'legacy_sources' => $legacy, 'legacy_accepted' => ($data['legacy_accepted'] ?? false) === true];
+            'legacy_sources' => $legacy, 'legacy_accepted' => ($data['legacy_accepted'] ?? false) === true,
+            'theme_profiles' => $profiles, 'theme_profile_source' => $source($data['profile_source'] ?? null)];
     }
 
     /** @param array<string, mixed> $settings */

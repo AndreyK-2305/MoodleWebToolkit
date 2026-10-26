@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.15.0"
+readonly AGENT_VERSION="1.16.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -1438,7 +1438,7 @@ cmd_theme_options() {
     command -v python3 >/dev/null 2>&1 || fail python3_missing
     local out
     out=$(python3 -I - "$DST_RUNTIME_DIR" <<'PY'
-import json, os, re, sys
+import glob, json, os, re, sys
 root = sys.argv[1]
 def read(name):
     try:
@@ -1457,9 +1457,27 @@ for plugin in read("exports/plugin-lock.json").get("plugins", []) or []:
 policy = read("config/theme-policy.json")
 legacy = [{"source": str(item.get("source", ""))[:64], "collector_version": str(item.get("collector_version", ""))[:32]}
     for item in read("exports/theme-inventory-status.json").get("legacy_sources", []) or [] if isinstance(item, dict)]
+# Consolidator 8.2.0: each source's customization of each theme, as counts only
+# (the values stay on the destination): what would be copied and what never is.
+profiles = []
+for manifest_path in sorted(glob.glob(os.path.join(root, "exports/packages/*/manifest.json")))[:20]:
+    base = os.path.dirname(manifest_path)
+    source = str(read(os.path.relpath(manifest_path, root)).get("source_id") or "")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", source):
+        continue
+    inventory = read(os.path.relpath(os.path.join(base, "inventario-origen.json"), root))
+    for name, profile in sorted(((inventory.get("themes") or {}).get("profiles") or {}).items()):
+        if name not in themes or not isinstance(profile, dict) or not isinstance(profile.get("settings"), dict):
+            continue
+        settings = profile["settings"]
+        applicable = [key for key, value in settings.items() if isinstance(value, dict)
+            and value.get("state") == "config_value" and key != "version" and value.get("value") is not None]
+        profiles.append({"source": source, "theme": name, "settings": len(applicable),
+            "skipped": len(settings) - len(applicable), "scss": any(key in ("scss", "scsspre") for key in applicable)})
 print(json.dumps({"themes": sorted(t for t in themes if re.fullmatch(r"[a-z][a-z0-9_]{0,60}", t)),
     "selected": str(policy.get("global_theme_selection") or "")[:60], "default": str(policy.get("global_theme") or "")[:60],
-    "legacy_sources": legacy[:20], "legacy_accepted": policy.get("theme_inventory_legacy_accepted") is True},
+    "legacy_sources": legacy[:20], "legacy_accepted": policy.get("theme_inventory_legacy_accepted") is True,
+    "profiles": profiles[:100], "profile_source": str(policy.get("global_theme_profile_source") or "")[:64]},
     separators=(",", ":")))
 PY
 ) || fail theme_options_invalid
@@ -1620,22 +1638,27 @@ PY
 }
 
 # Records the administrator's theme decisions in the Consolidator's own policy, as
-# its interactive mode does (selection_source=operator).
+# its interactive mode does (selection_source=operator). From 1.16.0 a fourth
+# argument names the source whose customization of the global theme the
+# Consolidator 8.2.0 copies ("-" keeps the theme's defaults).
 cmd_theme_policy_set() {
-    (($# == 3)) || fail invalid_arguments
+    (($# == 3 || $# == 4)) || fail invalid_arguments
+    local profile_source=${4:--}
     [[ $2 =~ ^[a-z][a-z0-9_]{0,60}$ && $3 =~ ^[01]$ ]] || fail invalid_arguments
+    [[ $profile_source == - || $profile_source =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail invalid_arguments
     load_destination "$1"
     command -v python3 >/dev/null 2>&1 || fail python3_missing
     [[ ! -e $DST_RUNTIME_DIR/reports/destination-write.lock.json ]] || fail destination_already_written
     local policy="$DST_RUNTIME_DIR/config/theme-policy.json"
     [[ -f $policy && ! -L $policy ]] || fail theme_policy_missing
-    python3 -I - "$DST_RUNTIME_DIR" "$2" "$3" <<'PY' || fail theme_policy_invalid
+    python3 -I - "$DST_RUNTIME_DIR" "$2" "$3" "$profile_source" <<'PY' || fail theme_policy_invalid
 import json, os, sys
-root, theme, legacy = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+root, theme, legacy, profile_source = sys.argv[1], sys.argv[2], sys.argv[3] == "1", sys.argv[4]
 path = os.path.join(root, "config/theme-policy.json")
 policy = json.load(open(path, encoding="utf-8-sig"))
 policy["global_theme_selection"] = theme
 policy["selection_source"] = "operator"
+policy["global_theme_profile_source"] = "" if profile_source == "-" else profile_source
 if legacy:
     try:
         status = json.load(open(os.path.join(root, "exports/theme-inventory-status.json"), encoding="utf-8-sig"))
@@ -1649,7 +1672,7 @@ with open(temporary, "w", encoding="utf-8") as handle:
 os.replace(temporary, path)
 PY
     [[ $(id -u) != 0 ]] || chown "$DST_RUN_AS:" "$policy"
-    respond_ok theme-policy-set "{\"destination\":\"$1\",\"theme\":\"$2\",\"legacy_accepted\":$(bool "$3")}"
+    respond_ok theme-policy-set "{\"destination\":\"$1\",\"theme\":\"$2\",\"legacy_accepted\":$(bool "$3"),\"profile_source\":\"${profile_source#-}\"}"
 }
 
 # The proposal an inspection wrote for one component: the catalog entry to confirm.

@@ -792,6 +792,8 @@ function v8p_theme_plan(array $sources, array $policy, array $lock,
     }
     ksort($siteThemes, SORT_STRING);
     ksort($courseRows, SORT_STRING);
+    $globalProfile = v8p_global_theme_profile($sources, $global,
+        trim((string)($policy['global_theme_profile_source'] ?? '')));
     return [
         'schema_version' => '1.0',
         'assignment_policy' => 'preserve_course_assignments',
@@ -809,6 +811,7 @@ function v8p_theme_plan(array $sources, array $policy, array $lock,
         'source_theme_inventory' => $inventoryStates,
         'site_themes' => $siteThemes,
         'profiles' => $profiles,
+        'global_theme_profile' => $globalProfile,
         'course_rows' => $courseRows,
         'user_assignments_raw' => $rawUsers,
         'category_assignments_raw' => $rawCategories,
@@ -825,6 +828,54 @@ function v8p_theme_plan(array $sources, array $policy, array $lock,
         'course_theme_transport_plan_ready' => $inventoryReady && $explicitSelection &&
             $targetPolicyVerified,
     ];
+}
+
+/**
+ * 8.2.0: la personalización del theme global (SCSS, colores, presets) que el
+ * operador eligió copiar de un origen. Solo viajan los valores de
+ * configuración; los secretos redactados, las referencias a archivos (logos,
+ * fondos) y la versión del plugin nunca se aplican.
+ */
+function v8p_global_theme_profile(array $sources, string $global, string $source): array {
+    $result = ['source'=>$source, 'theme'=>$global, 'state'=>'not_requested',
+        'profile_sha256'=>'', 'settings'=>[], 'skipped'=>[]];
+    if ($source === '') {
+        return $result;
+    }
+    if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/D', $source) || !isset($sources[$source])) {
+        throw new V8PreparationException(
+            "V8_THEME_PROFILE_SOURCE_INVALID: el origen $source no está entre los paquetes.");
+    }
+    $profile = $sources[$source]['profiles'][$global] ?? null;
+    if ($global === '' || !is_array($profile) || !is_array($profile['settings'] ?? null)) {
+        throw new V8PreparationException(
+            "V8_THEME_PROFILE_SOURCE_INVALID: $source no trae perfil de theme_$global.");
+    }
+    $settings = [];
+    $skipped = [];
+    foreach ($profile['settings'] as $name => $setting) {
+        $name = (string)$name;
+        $state = (string)($setting['state'] ?? '');
+        $value = $setting['value'] ?? null;
+        if (!preg_match('/^[a-z0-9_]{1,100}$/D', $name)) {
+            $skipped[$name] = 'invalid_name';
+        } elseif ($name === 'version') {
+            $skipped[$name] = 'plugin_version';
+        } elseif ($state !== 'config_value') {
+            $skipped[$name] = $state;
+        } elseif ($value === null || !is_scalar($value)) {
+            $skipped[$name] = 'not_available';
+        } else {
+            $settings[$name] = is_bool($value) ? ($value ? '1' : '0') : (string)$value;
+        }
+    }
+    ksort($settings, SORT_STRING);
+    ksort($skipped, SORT_STRING);
+    $result['state'] = 'requested';
+    $result['profile_sha256'] = v8p_theme_value_sha256($profile);
+    $result['settings'] = $settings;
+    $result['skipped'] = $skipped;
+    return $result;
 }
 
 function v8p_write_theme_artifacts(string $exports, array $plan): array {

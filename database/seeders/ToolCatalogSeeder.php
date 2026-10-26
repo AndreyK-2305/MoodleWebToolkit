@@ -35,11 +35,11 @@ class ToolCatalogSeeder extends Seeder
         ],
         [
             'tool' => ['key' => 'moodle-consolidador', 'name' => 'Consolidador Moodle', 'description' => 'Consolidación académica Moodle 5.2.1 sobre Linux.'],
-            'version' => '8.1.0-linux',
+            'version' => '8.2.0-linux',
             'source_path' => 'BaseLine/Consolidador/Consolidador-v8.0.0',
-            'tree_sha256' => '949e906903e903df4d9f0cf27d832cfe139c056f56025001e784cf772809ac98',
-            'manifest_sha256' => 'bc1768ecd5e5e91ee08ac47788b33167627bed0556a06b2c79d6de7955920df0',
-            'file_count' => 273,
+            'tree_sha256' => '912c34bd889d786aec64f41a88c7f4cd25fa4b5a6d423b92af899008f9ee76e9',
+            'manifest_sha256' => 'd16023be8ee0f98ee36245c1d279a04ac215b7a1927f7f1a5e037c6954bbe77b',
+            'file_count' => 276,
             'mutable_paths' => ['config/phase5-pilot-package.json', 'config/phase6-batch.json'],
             'deployment_exclusions' => [
                 'config.yaml',
@@ -64,6 +64,7 @@ class ToolCatalogSeeder extends Seeder
                 ['course.worker.manual_wait', 'SUPPORTED', 'CODE', 'course-worker-states', 'WAITING_MANUAL pertenece al worker y no necesariamente detiene la operación global.'],
                 ['runtime.cancel', 'UNKNOWN', 'DOC', 'DETENER.sh', 'El script detiene el runtime completo; no equivale a cancelar un curso.'],
                 ['categories.map', 'SUPPORTED', 'CODE', 'scripts/v8-category-map.php', 'Mapa de categorías destino declarado antes de escribir; sin mapa conserva la jerarquía 8.0.0.'],
+                ['themes.global_profile', 'SUPPORTED', 'CODE', 'scripts/v8-theme-profile.php', 'Copia SCSS, colores y presets del theme global desde un origen elegido; logos e imágenes no viajan.'],
             ],
         ],
         [

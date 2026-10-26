@@ -22,7 +22,7 @@ class ToolCatalogTest extends DomainTestCase
         $this->seed(ToolCatalogSeeder::class);
 
         $recolector = Tool::query()->where('key', 'moodle-recolector')->firstOrFail()->versions()->where('version', '7.4.2-linux')->firstOrFail();
-        $consolidador = Tool::query()->where('key', 'moodle-consolidador')->firstOrFail()->versions()->where('version', '8.1.0-linux')->firstOrFail();
+        $consolidador = Tool::query()->where('key', 'moodle-consolidador')->firstOrFail()->versions()->where('version', '8.2.0-linux')->firstOrFail();
         $integrador = Tool::query()->where('key', 'moodle-integrador-incremental')->firstOrFail()->versions()->where('version', '1.1.5-linux')->firstOrFail();
 
         $this->assertFalse($recolector->enabled);
@@ -110,7 +110,7 @@ class ToolCatalogTest extends DomainTestCase
 
         $this->seed(ToolCatalogSeeder::class);
         $this->assertTrue($recolector->fresh()->enabled);
-        $this->assertFalse(ToolVersion::query()->where('version', '8.1.0-linux')->sole()->enabled);
+        $this->assertFalse(ToolVersion::query()->where('version', '8.2.0-linux')->sole()->enabled);
 
         // Another tree under the same version is a different release: it starts closed again.
         $recolector->forceFill(['tree_sha256' => str_repeat('0', 64)])->save();

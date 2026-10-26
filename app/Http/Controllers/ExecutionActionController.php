@@ -95,7 +95,13 @@ class ExecutionActionController extends Controller
         } elseif ($conflict->type === RemoteConsolidationInterventions::THEMES) {
             $input = $request->validate([...$base, 'theme' => ['required', 'string', Rule::in($details['themes'] ?? [])],
                 'accept_legacy' => [($details['legacy_sources'] ?? []) !== [] && ($details['legacy_accepted'] ?? false) !== true ? 'accepted' : 'boolean']]);
-            $answers = ['theme' => (string) $input['theme'], 'accept_legacy' => (bool) ($input['accept_legacy'] ?? false)];
+            // The customization travels only from a source that brings some for the chosen theme.
+            $customized = collect(is_array($details['theme_profiles'] ?? null) ? $details['theme_profiles'] : [])
+                ->filter(fn (mixed $profile): bool => is_array($profile) && ($profile['theme'] ?? null) === $input['theme'] && (int) ($profile['settings'] ?? 0) > 0)
+                ->pluck('source')->all();
+            $input += $request->validate(['profile_source' => ['nullable', 'string', Rule::in($customized)]]);
+            $answers = ['theme' => (string) $input['theme'], 'accept_legacy' => (bool) ($input['accept_legacy'] ?? false),
+                'profile_source' => isset($input['profile_source']) ? (string) $input['profile_source'] : null];
         } else {
             $candidates = is_array($details['candidates'] ?? null) ? array_values(array_filter($details['candidates'], 'is_array')) : [];
             $groups = collect($candidates)->keyBy('group');

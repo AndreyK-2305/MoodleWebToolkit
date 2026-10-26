@@ -451,7 +451,8 @@ class RemoteConsolidationWorkflow
                 return;
             }
             if ($conflict->type === RemoteConsolidationInterventions::THEMES) {
-                $this->agentStep($target, 'theme-policy-set', [$profile, (string) ($answers['theme'] ?? ''), ($answers['accept_legacy'] ?? false) === true ? '1' : '0']);
+                $this->agentStep($target, 'theme-policy-set', [$profile, (string) ($answers['theme'] ?? ''), ($answers['accept_legacy'] ?? false) === true ? '1' : '0',
+                    is_string($answers['profile_source'] ?? null) && $answers['profile_source'] !== '' ? $answers['profile_source'] : '-']);
                 $this->resume($execution, $actor);
 
                 return;

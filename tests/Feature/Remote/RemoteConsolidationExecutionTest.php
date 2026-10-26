@@ -545,10 +545,15 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->queueReport(['stage' => '05b-readiness', 'status' => 'blocked',
             'message' => 'V8_THEME_SELECTION_REQUIRED: defina global_theme_selection; selection_source se registrará como config.']);
         $this->transport->ok('theme-options', ['themes' => ['boost', 'classic'], 'selected' => '', 'default' => 'boost',
-            'legacy_sources' => [], 'legacy_accepted' => false]);
+            'legacy_sources' => [], 'legacy_accepted' => false, 'profile_source' => '',
+            'profiles' => [['source' => 'pregrado', 'theme' => 'classic', 'settings' => 3, 'skipped' => 2, 'scss' => true],
+                ['source' => 'posgrado', 'theme' => 'classic', 'settings' => 0, 'skipped' => 1, 'scss' => false],
+                ['source' => '../x', 'theme' => 'classic', 'settings' => 9, 'skipped' => 0, 'scss' => true]]]);
         dispatch_sync(new ReconcileRemoteAgentOperation($run->id));
         $conflict = $execution->conflicts()->sole();
         $this->assertSame(['THEME_SELECTION', ['boost', 'classic'], 'boost'], [$conflict->type, $conflict->details['themes'], $conflict->details['theme_default']]);
+        // Only well-formed sources reach the page, as counts.
+        $this->assertSame(['pregrado', 'posgrado'], array_column($conflict->details['theme_profiles'], 'source'));
         $url = route('projects.executions.conflicts.answers', [$this->project, $execution, $conflict->id]);
         $this->postJson($url, ['conflict_version' => 1, 'theme' => 'moove'], ['Idempotency-Key' => 'consolidation-theme-unknown'])
             ->assertJsonValidationErrors('theme');
@@ -567,12 +572,20 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->assertGreaterThan($execution->events()->where('type', 'consolidator.continue_blocked')->value('sequence'),
             $execution->events()->where('type', 'consolidator.intervention_opened')->max('sequence'));
 
-        $this->transport->ok('theme-policy-set', ['destination' => 'campus', 'theme' => 'classic', 'legacy_accepted' => false]);
+        $answersUrl = route('projects.executions.conflicts.answers', [$this->project, $execution, $again->id]);
+        // A customization comes only from a source that brings some for the chosen theme.
+        foreach (['posgrado', 'otro'] as $invalid) {
+            $this->postJson($answersUrl, ['conflict_version' => 1, 'theme' => 'classic', 'profile_source' => $invalid],
+                ['Idempotency-Key' => 'consolidation-theme-'.$invalid])->assertJsonValidationErrors('profile_source');
+        }
+        $this->postJson($answersUrl, ['conflict_version' => 1, 'theme' => 'boost', 'profile_source' => 'pregrado'],
+            ['Idempotency-Key' => 'consolidation-theme-boost'])->assertJsonValidationErrors('profile_source');
+        $this->transport->ok('theme-policy-set', ['destination' => 'campus', 'theme' => 'classic', 'legacy_accepted' => false, 'profile_source' => 'pregrado']);
         $this->transport->ok('copias-list', ['write_locked' => false, 'packages' => $this->listing()]);
         $this->queueLaunch();
-        $this->postJson(route('projects.executions.conflicts.answers', [$this->project, $execution, $again->id]), ['conflict_version' => 1, 'theme' => 'classic'],
+        $this->postJson($answersUrl, ['conflict_version' => 1, 'theme' => 'classic', 'profile_source' => 'pregrado'],
             ['Idempotency-Key' => 'consolidation-theme-second'])->assertSuccessful();
-        $this->assertStringContainsString("'theme-policy-set' 'campus' 'classic' '0'", implode("\n", $this->transport->scripts));
+        $this->assertStringContainsString("'theme-policy-set' 'campus' 'classic' '0' 'pregrado'", implode("\n", $this->transport->scripts));
         $this->assertSame(ExecutionStatus::RUNNING, $execution->fresh()->status);
         $this->assertSame(0, $this->transport->pending());
     }
