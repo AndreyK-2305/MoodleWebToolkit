@@ -71,7 +71,7 @@ class ProjectController extends Controller
         /** @var array{name: string, type: string, description?: string|null} $validated */
         $project = $wizard->create($actor, $validated);
 
-        Inertia::flash('toast', ['type' => 'success', 'message' => 'Proyecto creado. Continúe con las instancias.']);
+        Inertia::flash('toast', ['type' => 'success', 'message' => 'Proyecto creado. Continúe con el asistente.']);
 
         return to_route('projects.show', $project->uuid);
     }
@@ -159,6 +159,7 @@ class ProjectController extends Controller
 
         return [
             'link' => $sources->presentLink($project),
+            'selection' => $sources->presentSelection($project),
             'collections' => $sources->completedCollections($actor),
             'copias' => app(RemoteConsolidationCopias::class)->progress($project),
             'min_sources' => RemoteConsolidationSources::MIN_SOURCES,
@@ -177,7 +178,8 @@ class ProjectController extends Controller
             return [];
         }
 
-        return array_values(Project::query()->where('source_project_id', $project->getKey())->whereNotNull('source_link')->get()
+        return array_values(Project::query()->where('source_project_id', $project->getKey())
+            ->where('source_link->mode', RemoteConsolidationSources::MODE_COLLECT_NOW)->get()
             ->filter(fn (Project $consolidation): bool => $actor->can('view', $consolidation))
             ->map(fn (Project $consolidation): array => ['uuid' => $consolidation->uuid, 'name' => $consolidation->name])
             ->all());

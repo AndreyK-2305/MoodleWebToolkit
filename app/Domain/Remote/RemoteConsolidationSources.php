@@ -29,13 +29,17 @@ use Throwable;
  * packages as the consolidation's configuration. Collection and consolidation
  * keep separate life cycles.
  *
- * The link lives on the consolidation: `source_project_id` and, for
- * «Recolectar ahora», `source_link` with the consolidation choices made while
- * the collection runs and the outcome of the pick-up.
+ * The link lives on the consolidation: `source_project_id` and `source_link`.
+ * For «Recolectar ahora» the link keeps the destination chosen while the
+ * collection runs and the outcome of the pick-up. For packages chosen in the
+ * sources step (`SELECTION`) it keeps them until the destination is saved, so
+ * sources and destination are separate steps of the wizard.
  */
 class RemoteConsolidationSources
 {
     public const MODE_COLLECT_NOW = 'COLLECT_NOW';
+
+    public const MODE_SELECTION = 'SELECTION';
 
     public const MIN_SOURCES = RemoteConsolidationConfiguration::MIN_PACKAGES;
 
@@ -87,10 +91,95 @@ class RemoteConsolidationSources
     }
 
     /**
+     * @param  list<string>  $packages
+     * @return array<string, mixed>
+     */
+    public static function selectionLink(User $actor, array $packages): array
+    {
+        return ['mode' => self::MODE_SELECTION, 'packages' => $packages, 'requested_by' => $actor->getKey(),
+            'chosen_at' => now()->utc()->toIso8601String()];
+    }
+
+    /**
+     * Sources step: the packages of a completed collection, or loose ones
+     * («Avanzado»). With a destination already saved the configuration is saved
+     * again with them; otherwise they wait for the destination step.
+     *
+     * @param  array{source_project?: string|null, source_packages: list<string>}  $input
+     */
+    public function chooseSources(Project $consolidation, User $actor, array $input): Project
+    {
+        $selection = $this->consolidations->sources($actor, $input);
+
+        return DB::transaction(function () use ($consolidation, $actor, $selection): Project {
+            $locked = $this->lockedConsolidation($consolidation, $actor);
+            $current = $this->savedDestination($locked);
+            $uuids = array_column($selection['packages'], 'uuid');
+            if ($current !== null) {
+                return $this->consolidations->save($locked, $actor, [...$current, 'source_packages' => $uuids,
+                    ...($selection['source'] === null ? [] : ['source_project' => $selection['source']->uuid])]);
+            }
+            $locked->forceFill(['source_project_id' => $selection['source']?->getKey(), 'source_link' => self::selectionLink($actor, $uuids)])->save();
+            $this->auditLink($actor, $locked, 'CONSOLIDATION_SOURCES_CHOSEN', ['packages' => count($uuids),
+                'collection_project_uuid' => $selection['source']?->uuid]);
+
+            return $locked;
+        }, attempts: 3);
+    }
+
+    /**
+     * Destination step: the destination server, its profile and the workers.
+     * With the sources already known the configuration is saved; while a linked
+     * collection runs they wait in the link, and a collection that already
+     * completed hands its packages over right away.
+     *
+     * @param  array{server_uuid: string, destination_profile: string, workers: string}  $input
+     */
+    public function saveDestination(Project $consolidation, User $actor, array $input): Project
+    {
+        $locked = Project::query()->with('sourceProject')->findOrFail((int) $consolidation->getKey());
+        $link = is_array($locked->source_link) ? $locked->source_link : null;
+        $mode = $link['mode'] ?? null;
+        if ($mode === self::MODE_SELECTION && is_array($link['packages'] ?? null)) {
+            return $this->consolidations->save($locked, $actor, [...$input, 'source_packages' => array_values($link['packages']),
+                ...($locked->sourceProject === null ? [] : ['source_project' => $locked->sourceProject->uuid])]);
+        }
+        $options = $locked->configuration()->first()?->settings['options'] ?? null;
+        $saved = is_array($options) && ($options['mode'] ?? null) === RemoteConsolidationConfiguration::MODE
+            && is_array($options['source_packages'] ?? null) ? $options : null;
+        $pending = $mode === self::MODE_COLLECT_NOW && ! is_string($link['picked_up_at'] ?? null);
+        if (! $pending && $saved !== null) {
+            return $this->consolidations->save($locked, $actor, [...$input, 'source_packages' => array_column($saved['source_packages'], 'uuid'),
+                ...(isset($saved['source_project_uuid']) ? ['source_project' => $saved['source_project_uuid']] : [])]);
+        }
+        if (! $pending) {
+            throw ValidationException::withMessages(['consolidation' => 'Elija primero de dónde salen los orígenes (paso 2).']);
+        }
+
+        DB::transaction(function () use ($locked, $actor, $input): void {
+            $project = $this->lockedConsolidation($locked, $actor);
+            $destination = $project->servers()->where('uuid', $input['server_uuid'])->first();
+            if ($destination === null || $destination->role !== ServerRole::DESTINATION) {
+                throw ValidationException::withMessages(['server_uuid' => 'Elija el servidor de destino de esta consolidación.']);
+            }
+            $project->forceFill(['source_link' => [...(array) $project->source_link, 'server_uuid' => $destination->uuid,
+                'destination_profile' => $input['destination_profile'], 'workers' => $input['workers'], 'pickup_error' => null]])->save();
+            $this->auditLink($actor, $project, 'CONSOLIDATION_DESTINATION_CHOSEN', ['server_uuid' => $destination->uuid]);
+        }, attempts: 3);
+        $locked->refresh();
+        if ($locked->sourceProject?->status === ProjectStatus::COMPLETED) {
+            $this->pickUpFor($locked, $locked->sourceProject);
+        }
+
+        return $locked->refresh();
+    }
+
+    /**
      * «Recolectar ahora»: creates the COLLECT project for these sources, with the
      * consolidation's owner and assignments, and links it to the consolidation.
+     * The destination may still be missing: the destination step adds it.
      *
-     * @param  array{server_uuid: string, destination_profile: string, workers: string, collection_workers: int,
+     * @param  array{server_uuid?: string|null, destination_profile?: string|null, workers?: string|null, collection_workers: int,
      *   sources: list<array{name: string, instance_id: string, region: string, source_profile: string, package_name: string}>}  $input
      */
     public function createLinkedCollection(Project $consolidation, User $actor, array $input): Project
@@ -104,11 +193,15 @@ class RemoteConsolidationSources
             if ($locked->type !== ProjectType::CONSOLIDATE || ! in_array($locked->status, [ProjectStatus::DRAFT, ProjectStatus::CONFIGURING, ProjectStatus::READY], true)) {
                 throw ValidationException::withMessages(['linked_collection' => 'La consolidación no admite cambios en su estado actual.']);
             }
-            if (is_array($locked->source_link) && $locked->sourceProject !== null && ! $this->abandoned($locked->sourceProject)) {
+            if (($locked->source_link['mode'] ?? null) === self::MODE_COLLECT_NOW && $locked->sourceProject !== null && ! $this->abandoned($locked->sourceProject)) {
                 throw ValidationException::withMessages(['linked_collection' => 'Esta consolidación ya tiene una recolección vinculada en curso.']);
             }
-            $destination = $locked->servers()->where('uuid', $input['server_uuid'])->first();
-            if ($destination === null || $destination->role !== ServerRole::DESTINATION) {
+            // A destination saved before keeps its choices; otherwise the destination step adds them later.
+            $chosen = ($input['server_uuid'] ?? null) !== null
+                ? ['server_uuid' => $input['server_uuid'], 'destination_profile' => $input['destination_profile'] ?? null, 'workers' => $input['workers'] ?? null]
+                : ($this->savedDestination($locked) ?? ['server_uuid' => null, 'destination_profile' => null, 'workers' => null]);
+            $destination = $chosen['server_uuid'] === null ? null : $locked->servers()->where('uuid', $chosen['server_uuid'])->first();
+            if ($chosen['server_uuid'] !== null && ($destination === null || $destination->role !== ServerRole::DESTINATION)) {
                 throw ValidationException::withMessages(['server_uuid' => 'Elija el servidor de destino de esta consolidación.']);
             }
 
@@ -139,7 +232,7 @@ class RemoteConsolidationSources
 
             $locked->forceFill(['source_project_id' => $collection->getKey(), 'source_link' => [
                 'mode' => self::MODE_COLLECT_NOW, 'requested_by' => $actor->getKey(), 'requested_at' => now()->utc()->toIso8601String(),
-                'server_uuid' => $destination->uuid, 'destination_profile' => $input['destination_profile'], 'workers' => $input['workers'],
+                'server_uuid' => $destination?->uuid, 'destination_profile' => $chosen['destination_profile'], 'workers' => $chosen['workers'],
                 'sources' => count($sources), 'picked_up_at' => null, 'pickup_error' => null,
             ]])->save();
             AuditLog::query()->create(['actor_id' => $actor->getKey(), 'project_id' => $locked->getKey(), 'action' => 'CONSOLIDATION_LINKED_COLLECTION_CREATED',
@@ -181,10 +274,11 @@ class RemoteConsolidationSources
         $execution = $source->executions()->latest('attempt')->first();
         $pickedUp = is_string($link['picked_up_at'] ?? null);
         $waiting = match (true) {
-            $link === null => null,
+            ($link['mode'] ?? null) !== self::MODE_COLLECT_NOW => null,
             is_string($link['pickup_error'] ?? null) => 'No se pudieron tomar los paquetes de la recolección: '.$link['pickup_error'],
             $pickedUp => null,
             $execution === null => 'Esperando a que se inicie la recolección vinculada.',
+            $source->status === ProjectStatus::COMPLETED && $this->linkDestination($consolidation, $link) === null => 'La recolección terminó. Guarde el destino (paso 3) para tomar sus paquetes.',
             $source->status === ProjectStatus::COMPLETED => 'La recolección terminó; tomando sus paquetes.',
             in_array($execution->status->value, ['FAILED', 'CANCELLED'], true) => 'La recolección vinculada terminó sin completarse; reintente desde su página.',
             $execution->status->value === 'REVIEW' => 'La recolección espera su revisión y cierre para entregar los paquetes.',
@@ -192,7 +286,7 @@ class RemoteConsolidationSources
         };
 
         return [
-            'mode' => $link === null ? 'PROJECT' : ($link['mode'] ?? self::MODE_COLLECT_NOW),
+            'mode' => ($link['mode'] ?? null) === self::MODE_COLLECT_NOW ? self::MODE_COLLECT_NOW : 'PROJECT',
             'project' => ['uuid' => $source->uuid, 'name' => $source->name, 'status' => $source->status->value, 'status_label' => $source->status->label()],
             'execution' => $execution === null ? null : ['uuid' => $execution->uuid, 'attempt' => $execution->attempt, 'status' => $execution->status->value],
             'sources_total' => $total,
@@ -201,7 +295,24 @@ class RemoteConsolidationSources
             'pickup_error' => is_string($link['pickup_error'] ?? null) ? $link['pickup_error'] : null,
             'waiting' => $waiting,
             'destination_profile' => is_string($link['destination_profile'] ?? null) ? $link['destination_profile'] : null,
+            'destination_chosen' => $this->linkDestination($consolidation, $link) !== null,
         ];
+    }
+
+    /**
+     * The packages chosen in the sources step that wait for the destination.
+     *
+     * @return array{source_project_uuid: string|null, packages: list<string>}|null
+     */
+    public function presentSelection(Project $consolidation): ?array
+    {
+        $link = $consolidation->source_link;
+        if (! is_array($link) || ($link['mode'] ?? null) !== self::MODE_SELECTION || ! is_array($link['packages'] ?? null)) {
+            return null;
+        }
+
+        return ['source_project_uuid' => $consolidation->sourceProject?->uuid,
+            'packages' => array_values(array_filter($link['packages'], 'is_string'))];
     }
 
     private function pickUpFor(Project $consolidation, Project $collection): void
@@ -219,8 +330,12 @@ class RemoteConsolidationSources
             if ($collection->status !== ProjectStatus::COMPLETED) {
                 return;
             }
-            $this->consolidations->save($consolidation, $actor, ['server_uuid' => $link['server_uuid'] ?? null,
-                'destination_profile' => $link['destination_profile'] ?? null, 'workers' => $link['workers'] ?? null,
+            // Without a destination yet the packages wait: saving the destination step picks them up.
+            $destination = $this->linkDestination($consolidation, $link);
+            if ($destination === null) {
+                return;
+            }
+            $this->consolidations->save($consolidation, $actor, [...$destination,
                 'source_packages' => array_column($this->packagesOf($collection), 'uuid'), 'source_project' => $collection->uuid]);
         } catch (ValidationException $exception) {
             $error = (string) collect($exception->errors())->flatten()->first();
@@ -247,6 +362,55 @@ class RemoteConsolidationSources
                 report($exception);
             }
         }
+    }
+
+    /**
+     * The destination of a pending «Recolectar ahora»: the one kept in the link, else the one saved in the configuration.
+     *
+     * @param  array<string, mixed>|null  $link
+     * @return array{server_uuid: string, destination_profile: string, workers: string}|null
+     */
+    private function linkDestination(Project $consolidation, ?array $link): ?array
+    {
+        if (is_string($link['server_uuid'] ?? null) && is_string($link['destination_profile'] ?? null)) {
+            return ['server_uuid' => $link['server_uuid'], 'destination_profile' => $link['destination_profile'],
+                'workers' => is_string($link['workers'] ?? null) ? $link['workers'] : 'auto'];
+        }
+
+        return $this->savedDestination($consolidation);
+    }
+
+    /** @return array{server_uuid: string, destination_profile: string, workers: string}|null */
+    private function savedDestination(Project $consolidation): ?array
+    {
+        $options = $consolidation->configuration()->first()?->settings['options'] ?? null;
+        if (! is_array($options) || ($options['mode'] ?? null) !== RemoteConsolidationConfiguration::MODE
+            || ! is_string($options['server_uuid'] ?? null) || ! is_string($options['destination_profile'] ?? null)) {
+            return null;
+        }
+
+        return ['server_uuid' => $options['server_uuid'], 'destination_profile' => $options['destination_profile'],
+            'workers' => is_scalar($options['workers'] ?? null) ? (string) $options['workers'] : 'auto'];
+    }
+
+    private function lockedConsolidation(Project $consolidation, User $actor): Project
+    {
+        $locked = Project::query()->lockForUpdate()->findOrFail((int) $consolidation->getKey());
+        if (! $actor->can('update', $locked)) {
+            throw new AuthorizationException;
+        }
+        if ($locked->type !== ProjectType::CONSOLIDATE || ! in_array($locked->status, [ProjectStatus::DRAFT, ProjectStatus::CONFIGURING, ProjectStatus::READY], true)) {
+            throw ValidationException::withMessages(['consolidation' => 'La consolidación no admite cambios en su estado actual.']);
+        }
+
+        return $locked;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function auditLink(User $actor, Project $project, string $action, array $payload): void
+    {
+        AuditLog::query()->create(['actor_id' => $actor->getKey(), 'project_id' => $project->getKey(), 'action' => $action,
+            'auditable_type' => $project->getMorphClass(), 'auditable_id' => $project->getKey(), 'payload' => $payload]);
     }
 
     /** A linked collection that ended without completing may be replaced by a new one. */

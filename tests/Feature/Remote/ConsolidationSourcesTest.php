@@ -201,6 +201,82 @@ class ConsolidationSourcesTest extends DomainTestCase
             ->where('consolidationSources.copias.state', 'FETCHING'));
     }
 
+    public function test_sources_and_destination_are_saved_in_separate_steps(): void
+    {
+        $this->mockTransfers();
+        [$collection, [$pregrado, $posgrado]] = $this->collection('Recolección 2026', ['pregrado', 'posgrado']);
+        [, [$other]] = $this->collection('Otra recolección', ['continua']);
+        $sources = route('projects.consolidation.sources', $this->consolidation);
+        $destination = route('projects.consolidation.remote-configuration', $this->consolidation);
+        $only = ['server_uuid' => $this->server->uuid, 'destination_profile' => 'campus', 'workers' => '2'];
+
+        // The destination step needs the sources first.
+        $this->put($destination, $only)->assertSessionHasErrors(['consolidation' => 'Elija primero de dónde salen los orígenes (paso 2).']);
+
+        $this->put($sources, ['source_packages' => [$pregrado->uuid]])->assertSessionHasErrors('source_packages');
+        $this->put($sources, ['source_packages' => [$pregrado->uuid, $other->uuid], 'source_project' => $collection->uuid])
+            ->assertSessionHasErrors('consolidation');
+        $this->put($sources, ['source_packages' => [$pregrado->uuid, $posgrado->uuid], 'source_project' => $collection->uuid, 'path' => '/srv'])
+            ->assertStatus(422);
+        $this->put($sources, ['source_packages' => [$pregrado->uuid, $posgrado->uuid], 'source_project' => $collection->uuid])
+            ->assertSessionHasNoErrors();
+        $consolidation = $this->consolidation->fresh();
+        $this->assertArrayNotHasKey('mode', $consolidation->configuration->settings['options']);
+        $this->assertSame(['SELECTION', $collection->getKey()], [$consolidation->source_link['mode'], $consolidation->source_project_id]);
+        $this->get(route('projects.show', $this->consolidation->uuid))->assertInertia(fn (Assert $page) => $page
+            ->where('consolidationSources.selection.source_project_uuid', $collection->uuid)
+            ->has('consolidationSources.selection.packages', 2)
+            ->where('consolidationSources.link.mode', 'PROJECT')
+            ->where('consolidationSources.link.waiting', null));
+
+        // Saving the destination completes the configuration with those packages.
+        $this->put($destination, $only)->assertSessionHasNoErrors();
+        $options = $this->consolidation->fresh()->configuration->settings['options'];
+        $this->assertSame(['REMOTE_CONSOLIDATION', 'campus', '2', $collection->uuid],
+            [$options['mode'], $options['destination_profile'], $options['workers'], $options['source_project_uuid']]);
+        $this->assertEqualsCanonicalizing([$pregrado->uuid, $posgrado->uuid], array_column($options['source_packages'], 'uuid'));
+
+        // New sources afterwards keep the saved destination.
+        $this->put($sources, ['source_packages' => [$pregrado->uuid, $other->uuid]])->assertSessionHasNoErrors();
+        $options = $this->consolidation->fresh()->configuration->settings['options'];
+        $this->assertSame(['campus', '2'], [$options['destination_profile'], $options['workers']]);
+        $this->assertEqualsCanonicalizing([$pregrado->uuid, $other->uuid], array_column($options['source_packages'], 'uuid'));
+        $this->assertArrayNotHasKey('source_project_uuid', $options);
+        $this->assertNull($this->consolidation->fresh()->source_project_id);
+    }
+
+    public function test_collect_now_may_start_before_the_destination(): void
+    {
+        $this->mockTransfers(fetches: 1);
+        $this->post(route('projects.consolidation.linked-collection', $this->consolidation),
+            ['collection_workers' => 2, 'sources' => [$this->linkedSource(1), $this->linkedSource(2)]])->assertSessionHasNoErrors();
+        $collection = Project::query()->where('type', 'COLLECT')->sole();
+        $this->assertSame([null, null], [$this->consolidation->fresh()->source_link['server_uuid'], $this->consolidation->fresh()->source_link['destination_profile']]);
+
+        // The collection completes before the destination is chosen: its packages wait.
+        $execution = $this->execution($collection, ExecutionStatus::REVIEW, ++$this->attempts);
+        $pregrado = $this->package($collection, 'pregrado', $execution);
+        $posgrado = $this->package($collection, 'posgrado', $execution);
+        DB::table('projects')->where('id', $collection->getKey())->update(['status' => ProjectStatus::REVIEW->value]);
+        app(ExecutionLifecycle::class)->transitionForWorker($execution, ExecutionStatus::COMPLETED);
+        $consolidation = $this->consolidation->fresh();
+        $this->assertArrayNotHasKey('mode', $consolidation->configuration->settings['options']);
+        $this->assertSame([null, null], [$consolidation->source_link['picked_up_at'], $consolidation->source_link['pickup_error']]);
+        $this->get(route('projects.show', $this->consolidation->uuid))->assertInertia(fn (Assert $page) => $page
+            ->where('consolidationSources.link.destination_chosen', false)
+            ->where('consolidationSources.link.waiting', 'La recolección terminó. Guarde el destino (paso 3) para tomar sus paquetes.'));
+
+        // Saving the destination picks the packages up at once.
+        $this->put(route('projects.consolidation.remote-configuration', $this->consolidation),
+            ['server_uuid' => $this->server->uuid, 'destination_profile' => 'campus', 'workers' => 'auto'])->assertSessionHasNoErrors();
+        $consolidation = $this->consolidation->fresh();
+        $options = $consolidation->configuration->settings['options'];
+        $this->assertSame(['REMOTE_CONSOLIDATION', $collection->uuid], [$options['mode'], $options['source_project_uuid']]);
+        $this->assertEqualsCanonicalizing([$pregrado->uuid, $posgrado->uuid], array_column($options['source_packages'], 'uuid'));
+        $this->assertIsString($consolidation->source_link['picked_up_at']);
+        $this->assertSame([$this->server->uuid, 'COLLECT_NOW'], [$consolidation->source_link['server_uuid'], $consolidation->source_link['mode']]);
+    }
+
     public function test_only_the_configured_packages_travel_to_copias_one_at_a_time(): void
     {
         [$collection, [$pregrado, $posgrado]] = $this->collection('Recolección', ['pregrado', 'posgrado']);

@@ -226,11 +226,21 @@ export default function RemoteAccessPanel({
     projectUuid,
     access,
     editable,
+    role,
+    title = 'Conexiones remotas',
+    emptyMessage = 'Registre las instancias del proyecto para configurar sus servidores.',
 }: {
     projectUuid: string;
     access: RemoteAccess;
     editable: boolean;
+    /** Inside a wizard step: only the servers of that role. */
+    role?: RemoteServer['role'];
+    title?: string;
+    emptyMessage?: string;
 }) {
+    const servers = role
+        ? access.servers.filter((server) => server.role === role)
+        : access.servers;
     // Deployments, preparations and transfers run on the servers; while one is in
     // progress the panel reads their state again instead of waiting for a reload.
     const busy = access.servers.some(
@@ -281,7 +291,7 @@ export default function RemoteAccessPanel({
         <Card>
             <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                    <PlugZap className="size-5" /> Conexiones remotas
+                    <PlugZap className="size-5" /> {title}
                 </CardTitle>
                 <p className="text-muted-foreground text-sm">
                     Cada servidor se alcanza por AWS Systems Manager
@@ -291,13 +301,12 @@ export default function RemoteAccessPanel({
                 </p>
             </CardHeader>
             <CardContent className="space-y-4">
-                {access.servers.length === 0 ? (
+                {servers.length === 0 ? (
                     <p className="text-muted-foreground text-sm">
-                        Registre las instancias del proyecto para configurar sus
-                        servidores.
+                        {emptyMessage}
                     </p>
                 ) : (
-                    access.servers.map((server) => (
+                    servers.map((server) => (
                         <ServerConnection
                             key={server.uuid}
                             projectUuid={projectUuid}

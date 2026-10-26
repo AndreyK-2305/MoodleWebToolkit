@@ -296,6 +296,31 @@ traía a mano a `copias/`. El usuario aprobó rediseñarlo en dos modos.
 - `resources/js/lib/consolidation-sources.test.ts`: modo inicial, preselección, nombres de
   paquete y validación del formulario «Recolectar ahora».
 
+### Asistente con servidores reales
+
+Con el agente remoto, Recolectar y Consolidar siguen un asistente por pasos; el modo simulado e
+INTEGRATE conservan el de antes.
+
+- El stepper encabeza la página y cada paso muestra su estado real (completo, o lo que falta para
+  seguir). Un paso se abre cuando los anteriores están completos. Las tarjetas remotas
+  (`remote-access-panel`, `remote-collection-form`, `remote-consolidation-form`) son el contenido
+  de los pasos; se mantienen todas sus acciones, incluido «Traer desde S3».
+- Consolidar: 1 Datos básicos (con «Nombre de referencia del servidor de destino», opcional; vacío
+  usa el nombre del proyecto), 2 Orígenes, 3 Destino, 4 Preflight, 5 Confirmación. Recolectar:
+  1 Datos básicos, 2 Orígenes (etiqueta, conexión, Recolector y perfil de cada origen), 3 Preflight,
+  4 Confirmación.
+- Ya no hay paso «Instancias»: con servidores reales no se piden host, URL, versión de Moodle ni
+  «revisada por el administrador». Solo los usaba `SimulatedPreflight`; la conexión es el ID de
+  instancia SSM y la región, y URL y versiones salen de «Comprobar perfil». El backend registra
+  solo la etiqueta de cada servidor (`ProjectWizard::saveRemoteServers`).
+- Orígenes y destino se guardan por separado: `PUT consolidation/sources` deja la selección en
+  `source_link` (modo `SELECTION`) hasta que el paso Destino completa la configuración, y
+  «Recolectar ahora» ya no exige un destino preparado. Si la recolección vinculada termina antes,
+  sus paquetes esperan a que se guarde el destino.
+- `resources/js/lib/remote-wizard.ts` (con su prueba) calcula qué paso está completo y qué
+  bloquea el siguiente; `ProjectWizardTest` y `ConsolidationSourcesTest` cubren el registro por
+  etiqueta, la etiqueta por defecto y el guardado en dos pasos.
+
 ## F7: notificaciones por correo (2026-10-26)
 
 El Consolidador CLI avisaba por SMTP con la configuración del `.env` de cada destino. La plataforma
