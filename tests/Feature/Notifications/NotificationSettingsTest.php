@@ -7,6 +7,7 @@ use App\Enums\SmtpEncryption;
 use App\Enums\UserRole;
 use App\Mail\SmtpTestMessage;
 use App\Models\AuditLog;
+use App\Models\NotificationRecipient;
 use App\Models\NotificationSettings;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -29,7 +30,9 @@ class NotificationSettingsTest extends TestCase
         $this->actingAs($operator)->get(route('admin.notifications.edit'))->assertForbidden();
         $this->actingAs($operator)->put(route('admin.notifications.update'), $this->valid())->assertForbidden();
         $this->actingAs($operator)->post(route('admin.notifications.test'))->assertForbidden();
+        $this->actingAs($operator)->put(route('admin.notifications.recipients.update'), ['recipients' => [$this->recipient('a@example.org')]])->assertForbidden();
         $this->assertDatabaseCount('notification_settings', 0);
+        $this->assertDatabaseCount('notification_recipients', 0);
         $this->actingAs($this->admin())->get(route('admin.notifications.edit'))->assertOk()
             ->assertInertia(fn (AssertableInertia $page) => $page->component('admin/notifications')
                 ->where('settings', null)->where('usesApplicationMailer', true));
@@ -54,7 +57,87 @@ class NotificationSettingsTest extends TestCase
 
         $this->put(route('admin.notifications.update'), $this->valid())->assertRedirect();
         $this->post(route('admin.notifications.test'))->assertRedirect();
+        $this->put(route('admin.notifications.recipients.update'), ['recipients' => [$this->recipient('a@example.org')]])->assertRedirect();
         $this->assertDatabaseCount('notification_settings', 0);
+        $this->assertDatabaseCount('notification_recipients', 0);
+    }
+
+    public function test_extra_recipients_are_validated_deduplicated_and_bounded(): void
+    {
+        $admin = $this->admin();
+        $put = fn (array $recipients) => $this->actingAs($admin)->put(route('admin.notifications.recipients.update'), ['recipients' => $recipients]);
+
+        $put([$this->recipient('no-es-correo'), $this->recipient('')])->assertSessionHasErrors(['recipients.0.email', 'recipients.1.email']);
+        // The same mailbox written twice with different case is one address.
+        $put([$this->recipient('Obrero@Example.org'), $this->recipient(' obrero@example.org ')])->assertSessionHasErrors('recipients.1.email');
+        $put([['email' => 'a@example.org', 'interventions' => 'quizá', 'outcomes' => true, 'backups' => true, 'progress' => true]])
+            ->assertSessionHasErrors('recipients.0.interventions');
+        $put(array_map(fn (int $i) => $this->recipient('p'.$i.'@example.org'), range(1, 21)))->assertSessionHasErrors('recipients');
+        $this->assertDatabaseCount('notification_recipients', 0);
+
+        $put([$this->recipient('Obrero@Example.org'), $this->recipient('respaldos@example.org', ['interventions' => false, 'outcomes' => false, 'backups' => true])])
+            ->assertSessionHasNoErrors()->assertRedirect(route('admin.notifications.edit'));
+        $this->assertSame(['obrero@example.org', 'respaldos@example.org'], NotificationRecipient::query()->orderBy('id')->pluck('email')->all());
+        $this->assertTrue(NotificationRecipient::query()->where('email', 'respaldos@example.org')->sole()->backups);
+        $this->actingAs($admin)->get(route('admin.notifications.edit'))->assertOk()
+            ->assertInertia(fn (AssertableInertia $page) => $page->where('maxRecipients', 20)->has('recipients', 2)
+                ->where('recipients.0', ['email' => 'obrero@example.org', ...NotificationRecipient::DEFAULTS]));
+
+        // Replacing the list keeps the rows that stay, updates their groups and drops the rest.
+        $kept = NotificationRecipient::query()->where('email', 'obrero@example.org')->sole()->id;
+        $put([$this->recipient('obrero@example.org', ['progress' => true]), $this->recipient('nuevo@example.org')])->assertSessionHasNoErrors();
+        $this->assertSame($kept, NotificationRecipient::query()->where('email', 'obrero@example.org')->sole()->id);
+        $this->assertTrue(NotificationRecipient::query()->find($kept)?->progress);
+        $this->assertSame(['nuevo@example.org', 'obrero@example.org'], NotificationRecipient::query()->orderBy('email')->pluck('email')->all());
+        $put([])->assertSessionHasNoErrors();
+        $this->assertDatabaseCount('notification_recipients', 0);
+    }
+
+    public function test_recipient_changes_are_audited_by_count_only(): void
+    {
+        $admin = $this->admin();
+        $put = fn (array $recipients) => $this->actingAs($admin)->put(route('admin.notifications.recipients.update'), ['recipients' => $recipients]);
+
+        $put([$this->recipient('obrero@example.org'), $this->recipient('respaldos@example.org')])->assertSessionHasNoErrors();
+        $put([$this->recipient('obrero@example.org', ['backups' => true]), $this->recipient('nuevo@example.org')])->assertSessionHasNoErrors();
+
+        $audits = AuditLog::query()->where('action', 'NOTIFICATION_RECIPIENTS_UPDATED')->orderBy('id')->get();
+        $this->assertEquals([['count' => 2, 'added' => 2, 'removed' => 0, 'changed' => 0], ['count' => 2, 'added' => 1, 'removed' => 1, 'changed' => 1]],
+            $audits->map(fn (AuditLog $audit) => $audit->payload)->all());
+        $this->assertSame($admin->id, $audits[0]->actor_id);
+        foreach (['obrero', 'respaldos', 'nuevo', 'example.org'] as $value) {
+            $this->assertStringNotContainsString($value, (string) json_encode($audits->pluck('payload')));
+        }
+    }
+
+    public function test_test_email_goes_to_a_typed_address_or_to_every_extra_recipient(): void
+    {
+        Mail::fake();
+        $admin = $this->admin();
+        $this->actingAs($admin)->put(route('admin.notifications.update'), $this->valid())->assertSessionHasNoErrors();
+
+        $this->actingAs($admin)->post(route('admin.notifications.test'), ['target' => 'ADDRESS', 'address' => 'no-es-correo'])->assertSessionHasErrors('address');
+        $this->actingAs($admin)->post(route('admin.notifications.test'), ['target' => 'TODOS'])->assertSessionHasErrors('target');
+        // Without extra recipients there is nobody to send to.
+        $this->actingAs($admin)->post(route('admin.notifications.test'), ['target' => 'RECIPIENTS'])->assertRedirect(route('admin.notifications.edit'));
+        Mail::assertNothingSent();
+
+        $this->actingAs($admin)->post(route('admin.notifications.test'), ['target' => 'ADDRESS', 'address' => 'Obrero@Example.org'])
+            ->assertSessionHas('notificationTest', fn (array $test): bool => $test['ok'] === true && str_contains((string) $test['message'], 'obrero@example.org'));
+        Mail::assertSent(SmtpTestMessage::class, fn (SmtpTestMessage $mail): bool => $mail->hasTo('obrero@example.org') && ! $mail->hasTo($admin->email));
+
+        NotificationRecipient::query()->create(['email' => 'uno@example.org', ...NotificationRecipient::DEFAULTS]);
+        NotificationRecipient::query()->create(['email' => 'dos@example.org', ...NotificationRecipient::DEFAULTS]);
+        $this->actingAs($admin)->post(route('admin.notifications.test'), ['target' => 'RECIPIENTS'])->assertSessionHas('notificationTest.ok', true);
+        // One message per address, so no recipient sees the others.
+        Mail::assertSent(SmtpTestMessage::class, fn (SmtpTestMessage $mail): bool => $mail->hasTo('uno@example.org') && ! $mail->hasTo('dos@example.org'));
+        Mail::assertSent(SmtpTestMessage::class, fn (SmtpTestMessage $mail): bool => $mail->hasTo('dos@example.org') && ! $mail->hasTo('uno@example.org'));
+        Mail::assertSentCount(3);
+        Mail::assertNotSent(SmtpTestMessage::class, fn (SmtpTestMessage $mail): bool => $mail->hasTo($admin->email));
+
+        $payloads = AuditLog::query()->where('action', 'NOTIFICATION_TEST_EMAIL')->orderBy('id')->pluck('payload')->all();
+        $this->assertEquals([['outcome' => 'SENT', 'target' => 'ADDRESS', 'sent' => 1], ['outcome' => 'SENT', 'target' => 'RECIPIENTS', 'sent' => 2]], $payloads);
+        $this->assertStringNotContainsString('example.org', (string) json_encode($payloads));
     }
 
     public function test_password_is_encrypted_never_returned_and_only_replaced_or_cleared(): void
@@ -117,7 +200,7 @@ class NotificationSettingsTest extends TestCase
             && $mail->mailer === PlatformMailer::MAILER && $mail->hasFrom('avisos@example.edu', 'Avisos de la plataforma'));
         $this->assertSame('smtp.example.edu', config('mail.mailers.'.PlatformMailer::MAILER.'.host'));
         $this->assertSame(self::SECRET, config('mail.mailers.'.PlatformMailer::MAILER.'.password'));
-        $this->assertSame('SENT', AuditLog::query()->where('action', 'NOTIFICATION_TEST_EMAIL')->sole()->payload['outcome'] ?? null);
+        $this->assertEquals(['outcome' => 'SENT', 'target' => 'SELF', 'sent' => 1], AuditLog::query()->where('action', 'NOTIFICATION_TEST_EMAIL')->sole()->payload);
     }
 
     public function test_test_email_failure_is_explained_in_plain_spanish(): void
@@ -172,6 +255,15 @@ class NotificationSettingsTest extends TestCase
     private function admin(): User
     {
         return User::factory()->create(['role' => UserRole::ADMIN]);
+    }
+
+    /**
+     * @param  array<string, bool>  $groups
+     * @return array<string, mixed>
+     */
+    private function recipient(string $email, array $groups = []): array
+    {
+        return ['email' => $email, ...NotificationRecipient::DEFAULTS, ...$groups];
     }
 
     /**

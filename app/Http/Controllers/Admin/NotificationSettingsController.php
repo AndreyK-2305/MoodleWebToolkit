@@ -3,9 +3,11 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Domain\Notifications\PlatformMailer;
+use App\Enums\NotificationGroup;
 use App\Enums\SmtpEncryption;
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
+use App\Models\NotificationRecipient;
 use App\Models\NotificationSettings;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -39,6 +41,9 @@ class NotificationSettingsController extends Controller
                 'value' => $encryption->value,
                 'label' => $encryption->label(),
             ]),
+            'recipients' => NotificationRecipient::query()->orderBy('id')->get()
+                ->map(fn (NotificationRecipient $recipient) => $recipient->only(['email', 'interventions', 'outcomes', 'backups', 'progress'])),
+            'maxRecipients' => NotificationRecipient::MAX,
             'usesApplicationMailer' => $settings === null,
             'lastTest' => $request->session()->get('notificationTest'),
         ]);
@@ -92,24 +97,111 @@ class NotificationSettingsController extends Controller
         return to_route('admin.notifications.edit');
     }
 
+    /**
+     * Replaces the list of extra recipients. Addresses are compared lowercased, so the
+     * same mailbox cannot appear twice; the audit keeps counts, never the addresses.
+     */
+    public function updateRecipients(Request $request): RedirectResponse
+    {
+        $input = $request->input('recipients', []);
+        if (is_array($input)) {
+            $request->merge(['recipients' => array_map(fn (mixed $recipient) => is_array($recipient) && is_string($recipient['email'] ?? null)
+                ? [...$recipient, 'email' => mb_strtolower(trim($recipient['email']))] : $recipient, $input)]);
+        }
+        $groupRules = [];
+        foreach (NotificationGroup::cases() as $group) {
+            $groupRules['recipients.*.'.$group->preference()] = ['required', 'boolean'];
+        }
+        $validated = $request->validate([
+            'recipients' => ['present', 'array', 'max:'.NotificationRecipient::MAX],
+            'recipients.*' => ['array:email,interventions,outcomes,backups,progress'],
+            'recipients.*.email' => ['required', 'email', 'max:255', 'distinct'],
+            ...$groupRules,
+        ], [
+            'recipients.max' => 'Puede agregar hasta '.NotificationRecipient::MAX.' destinatarios adicionales.',
+            'recipients.*.email.required' => 'Escriba la dirección de correo.',
+            'recipients.*.email.email' => 'Escriba una dirección de correo válida.',
+            'recipients.*.email.distinct' => 'Esta dirección ya está en la lista.',
+        ]);
+
+        DB::transaction(function () use ($request, $validated): void {
+            $before = NotificationRecipient::query()->lockForUpdate()->get()->keyBy('email');
+            $kept = [];
+            $added = 0;
+            $changed = 0;
+            foreach ($validated['recipients'] as $values) {
+                $recipient = $before->get($values['email']) ?? new NotificationRecipient(['email' => $values['email']]);
+                foreach (NotificationGroup::cases() as $group) {
+                    $recipient->setAttribute($group->preference(), filter_var($values[$group->preference()], FILTER_VALIDATE_BOOLEAN));
+                }
+                if (! $recipient->exists) {
+                    $added++;
+                } elseif ($recipient->isDirty()) {
+                    $changed++;
+                }
+                $recipient->save();
+                $kept[] = $recipient->email;
+            }
+            $removed = NotificationRecipient::query()->whereNotIn('email', $kept)->delete();
+            AuditLog::query()->create([
+                'actor_id' => $request->user()->getKey(), 'action' => 'NOTIFICATION_RECIPIENTS_UPDATED',
+                'ip_address' => $request->ip(), 'user_agent' => mb_substr((string) $request->userAgent(), 0, 255),
+                // Counts only: the addresses themselves never reach the audit trail.
+                'payload' => ['count' => count($kept), 'added' => $added, 'removed' => $removed, 'changed' => $changed],
+            ]);
+        }, attempts: 3);
+        Inertia::flash('toast', ['type' => 'success', 'message' => 'Destinatarios adicionales guardados.']);
+
+        return to_route('admin.notifications.edit');
+    }
+
+    /** Sends the test message to the admin, to a typed address or to every extra recipient. */
     public function test(Request $request, PlatformMailer $mailer): RedirectResponse
     {
+        $validated = $request->validate([
+            'target' => ['nullable', Rule::in(['SELF', 'ADDRESS', 'RECIPIENTS'])],
+            'address' => ['exclude_unless:target,ADDRESS', 'required', 'email', 'max:255'],
+        ], ['address.required' => 'Escriba la dirección a la que enviar la prueba.', 'address.email' => 'Escriba una dirección de correo válida.']);
+        $target = $validated['target'] ?? 'SELF';
         $settings = NotificationSettings::current();
         if ($settings === null) {
             Inertia::flash('toast', ['type' => 'error', 'message' => 'Guarde primero la configuración SMTP para poder probarla.']);
 
             return to_route('admin.notifications.edit');
         }
-        $error = $mailer->sendTest($settings, $request->user()->email);
+        $addresses = match ($target) {
+            'ADDRESS' => [mb_strtolower(trim($validated['address']))],
+            'RECIPIENTS' => NotificationRecipient::query()->orderBy('id')->pluck('email')->all(),
+            default => [$request->user()->email],
+        };
+        if ($addresses === []) {
+            Inertia::flash('toast', ['type' => 'error', 'message' => 'No hay destinatarios adicionales guardados.']);
+
+            return to_route('admin.notifications.edit');
+        }
+        $sent = 0;
+        $error = null;
+        // One message per address, so no recipient sees the others; the first failure stops the run.
+        foreach ($addresses as $address) {
+            $error = $mailer->sendTest($settings, $address);
+            if ($error !== null) {
+                break;
+            }
+            $sent++;
+        }
         AuditLog::query()->create([
             'actor_id' => $request->user()->getKey(), 'action' => 'NOTIFICATION_TEST_EMAIL',
             'auditable_type' => $settings->getMorphClass(), 'auditable_id' => $settings->getKey(),
-            'ip_address' => $request->ip(), 'payload' => ['outcome' => $error === null ? 'SENT' : 'FAILED'],
+            'ip_address' => $request->ip(), 'payload' => ['outcome' => $error === null ? 'SENT' : 'FAILED', 'target' => $target, 'sent' => $sent],
         ]);
-        Inertia::flash('toast', $error === null
-            ? ['type' => 'success', 'message' => 'Correo de prueba enviado a su dirección. Revise su bandeja de entrada.']
-            : ['type' => 'error', 'message' => 'No se pudo enviar el correo de prueba. '.$error]);
+        $done = match ($target) {
+            'ADDRESS' => 'Correo de prueba enviado a '.$addresses[0].'.',
+            'RECIPIENTS' => 'Correo de prueba enviado a '.$sent.' '.($sent === 1 ? 'destinatario adicional' : 'destinatarios adicionales').'.',
+            default => 'Correo de prueba enviado a su dirección. Revise su bandeja de entrada.',
+        };
+        $failed = 'No se pudo enviar el correo de prueba'.($target === 'RECIPIENTS' && $sent > 0 ? ' a todos (llegó a '.$sent.')' : '').'. '.$error;
+        Inertia::flash('toast', $error === null ? ['type' => 'success', 'message' => $done] : ['type' => 'error', 'message' => $failed]);
 
-        return to_route('admin.notifications.edit')->with('notificationTest', ['ok' => $error === null, 'message' => $error]);
+        return to_route('admin.notifications.edit')->with('notificationTest', ['ok' => $error === null, 'message' => $error === null ? $done : $error]);
     }
 }
