@@ -195,6 +195,33 @@ function Test-V8Readiness {
     }
 }
 
+# 8.1.0: el mapa de categorías solo participa si la plataforma lo exige o si
+# el operador escribió config/category-map.json; si no, el flujo es el de 8.0.0.
+function Test-CategoryMapActive {
+    return (
+        ([string]$env:CONSOLIDATION_CATEGORY_MAP).Trim().ToLowerInvariant() -eq 'required' -or
+        (Test-Path -LiteralPath (Join-Path $ProjectRoot 'config/category-map.json') -PathType Leaf)
+    )
+}
+
+function Test-CategoryMap {
+    try {
+        $result = & "$PSScriptRoot/v8-category-map.ps1" -Mode Check
+        return [string]$result.status -eq 'VALID'
+    } catch {
+        return $false
+    }
+}
+
+function Test-PilotCategoryChain {
+    try {
+        $result = & "$PSScriptRoot/v8-category-map.ps1" -Mode PilotCheck
+        return [int]$result.target_category_id -gt 0
+    } catch {
+        return $false
+    }
+}
+
 function Assert-PostWriteAnchor {
     $lock = Read-JsonDocument 'reports\destination-write.lock.json'
     $readinessPath = Join-Path $ProjectRoot 'exports/readiness.json'
@@ -1178,6 +1205,34 @@ while ($true) {
         continue
     }
 
+    if (-not $postWriteStarted -and (Test-CategoryMapActive) -and -not (Test-CategoryMap)) {
+        Invoke-StageOrExit -Arguments @{
+            Id = "05a-mapa-categorias"
+            Title = "5.0. Revisar el mapa de categorías del destino"
+            Description = @(
+                "Propondrá el árbol de categorías destino a partir de los orígenes.",
+                "Validará config\category-map.json: uniones, nombres y ubicación del piloto.",
+                "No escribirá en el destino durante esta etapa."
+            )
+            WritesDestination = $false
+            ManualIntervention = $true
+            ReviewPaths = @(
+                "exports\category-map\proposal.json",
+                "config\category-map.json",
+                "exports\category-map\validation.json"
+            )
+            Action = {
+                & "$PSScriptRoot/v8-category-map.ps1" -Mode Prepare | Out-Null
+            }
+            SuccessTest = { Test-CategoryMap }
+            FailureMessage = (
+                "El mapa de categorías falta o no es válido. Revise " +
+                "exports\category-map\validation.json y config\category-map.json."
+            )
+        }
+        continue
+    }
+
     if (-not $postWriteStarted -and -not (Test-V8Readiness)) {
         Invoke-StageOrExit -Arguments @{
             Id = "05b-readiness"
@@ -1251,6 +1306,33 @@ while ($true) {
             }
             SuccessTest = { Test-Phase4Verify }
             FailureMessage = "La verificación de usuarios no quedó aprobada."
+        }
+        continue
+    }
+
+    if ((Test-CategoryMapActive) -and -not (Test-Phase5Plan) -and
+            -not (Test-PilotCategoryChain)) {
+        Invoke-StageOrExit -Arguments @{
+            Id = "07b-categorias-piloto"
+            Title = "7.1. Crear las categorías mapeadas del curso piloto"
+            Description = @(
+                "Creará o reutilizará por marcador la cadena de categorías del piloto.",
+                "El piloto se restaurará en su categoría mapeada."
+            )
+            WritesDestination = $true
+            ReviewPaths = @(
+                "exports\category-map\validation.json",
+                "exports\category-map\pilot_chain.json",
+                "config\phase5-pilot-package.json"
+            )
+            Action = {
+                & "$PSScriptRoot/v8-category-map.ps1" -Mode PilotChain | Out-Null
+            }
+            SuccessTest = { Test-PilotCategoryChain }
+            FailureMessage = (
+                "No se pudo crear la categoría mapeada del piloto. Revise " +
+                "exports\category-map\validation.json."
+            )
         }
         continue
     }

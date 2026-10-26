@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\DB;
  */
 class CheckRemoteDestination
 {
-    public const DISTRIBUTION_KEY = 'moodle-consolidador-8.0.0-linux-tree';
+    public const DISTRIBUTION_KEY = 'moodle-consolidador-8.1.0-linux-tree';
 
     /** Below this the Moodle 5.2.1 target, MariaDB and the restore workers compete for memory. */
     public const MIN_MEMORY_BYTES = 3_500_000_000;

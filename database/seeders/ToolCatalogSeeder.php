@@ -35,11 +35,11 @@ class ToolCatalogSeeder extends Seeder
         ],
         [
             'tool' => ['key' => 'moodle-consolidador', 'name' => 'Consolidador Moodle', 'description' => 'Consolidación académica Moodle 5.2.1 sobre Linux.'],
-            'version' => '8.0.0-linux',
+            'version' => '8.1.0-linux',
             'source_path' => 'BaseLine/Consolidador/Consolidador-v8.0.0',
-            'tree_sha256' => '717b1fefca41fca97db22a1e2f964866f95e406ab259648d09c4fb5510817bc3',
-            'manifest_sha256' => '47456297f907308f8b5602da488f0403918fa03b25a2c8746d89433263b566ca',
-            'file_count' => 266,
+            'tree_sha256' => '949e906903e903df4d9f0cf27d832cfe139c056f56025001e784cf772809ac98',
+            'manifest_sha256' => 'bc1768ecd5e5e91ee08ac47788b33167627bed0556a06b2c79d6de7955920df0',
+            'file_count' => 273,
             'mutable_paths' => ['config/phase5-pilot-package.json', 'config/phase6-batch.json'],
             'deployment_exclusions' => [
                 'config.yaml',
@@ -63,6 +63,7 @@ class ToolCatalogSeeder extends Seeder
                 ['plugins.catalog_lock', 'SUPPORTED', 'DOC', 'README.md', 'Resuelve plugins desde catálogo, lock, staging y pins.'],
                 ['course.worker.manual_wait', 'SUPPORTED', 'CODE', 'course-worker-states', 'WAITING_MANUAL pertenece al worker y no necesariamente detiene la operación global.'],
                 ['runtime.cancel', 'UNKNOWN', 'DOC', 'DETENER.sh', 'El script detiene el runtime completo; no equivale a cancelar un curso.'],
+                ['categories.map', 'SUPPORTED', 'CODE', 'scripts/v8-category-map.php', 'Mapa de categorías destino declarado antes de escribir; sin mapa conserva la jerarquía 8.0.0.'],
             ],
         ],
         [

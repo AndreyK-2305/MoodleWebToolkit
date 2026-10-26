@@ -41,6 +41,7 @@ bb34dab5102aa5e71afa6ac742406b2ddb712b60523b5bb65623b920498dbb34  ./CAMBIOS-8.0.
 14e432f0163a6e1ed5f2381bf5d2851d9f804d1fc0678a1c6df2da152830c7d9  ./CAMBIOS-8.0.0-RC8.md
 a6a5af4f950f888732289f117c4ab16f7ccbe40827fb5dc141249150a3eec7cb  ./CAMBIOS-8.0.0-RC9.md
 48a6d00e1710868a53f47cb63d5edeeed043ea396a699ca82c83f59a77c2b2d5  ./CAMBIOS-8.0.0.md
+05559935e03aa169cb357e1063a16b1e2d6d14a16df515cf752142d3157d05d9  ./CAMBIOS-8.1.0.md
 ce9b781cd1f6a07fced4fd014041341ccdc29fa90d06308753727912141fb7f5  ./CONFIGURAR.sh
 9a7e12f351e846c76a27d52ff6204ec6888c93420b86233bea8d9cce234d5844  ./DETENER.sh
 14fb39cd7b64deda75fcf6c6bfb49ba0ce63d27770203766514e777d787bb37f  ./ESTADO.sh
@@ -58,9 +59,9 @@ daf468672bb08a347bd955bfd1ca6dc392b826aadc8a797b17c5b8d87b1cd9e8  ./PRUEBA-V8-RC
 df9df6fd0d49d5f52f0b398ad001721ddf0c76ff006c2324606bf9d3f5e4d874  ./PUBLICAR-SITIO.sh
 fa8a02755ff3b81af4aa8f04d0fa2e71c01db911a3d8940bc757324da72240f3  ./README.md
 4539b88fc9f9b1f3026f4c17682cbaad7670e64a5179382184b134b0261732c3  ./REINICIAR-FASE13.sh
-a65fabded51009b00da46ce4bb719e4da07ef6aee835c42856d95f09fb8c2321  ./VERSION.txt
+e1f23cee7ed4bf51aacca5ae62d646f2da6f006b021d8820e71327f0e950da47  ./VERSION.txt
 9e7767f60876c23ce2b38c264590b58f08ceb490b9e7b8218afa1698f2b462cd  ./cache/plugins/LEEME.txt
-b24b018d91d28e94e896202f8e814b0d71f96d30f34539340461c0d3ee0970aa  ./compose.yaml
+ae47e1f860016eefc74d6e1da3501752e56057dc9b74a445768b392e55ea1db5  ./compose.yaml
 ecab3addf36bfc0dc21ca9eacb8b74ae335f46398db10ce846aec6b789591290  ./config-manager/README.md
 295d1a1a7bc47abe24c5ab9f66a07aded4dbb72e4fa3b1704e10782688550e12  ./config-manager/config-manager.sh
 c2db59a3975f9b69117bd53d253e931d3b8ca72ffbb3024c0ac9ed9e662d7ffd  ./config-manager/default-settings.json
@@ -86,9 +87,9 @@ a9364a7dd303732007a6307a21b9ae60290d4d8fe53bc703901c158a3d5d53a0  ./docker/manag
 9ffe17bc23dd7716e1a624f4559d0dfb70704d31e225a8d2bab8d0d4d2777d6f  ./docker/php.ini
 ea289f0281ca43a200e9cdc3193c4304503002b1e552e401962a453b46277430  ./docker/verify-plugin-pins.php
 4a6349d15d1713e2f66af76ea50a53d4961cabf3d152181c34674a04a82f454b  ./exports/LEEME.txt
-bf9166fc6c93d1e3475af1c606781a37c9fe1cafec1f8483ecbb4a60ad748c0f  ./moodle-consolidation.sh
+d7e74de367c2969d3d6c127e10b96dcbe7a9d40da3bdd1ef7620490bc42b04cd  ./moodle-consolidation.sh
 2bfcf24934c152a1c4afd3f1b19e2cf77953bb5664cccca71a8439312f3b99f2  ./reports/LEEME.txt
-8309ec44d884ce72253997fe324eee08844c9b3204f10cfa570f3fc1eb6dbf32  ./scripts/Common.ps1
+513352752279ef60039dd6d54abe840793f32f25477c6b2ad287b4b67cf0441d  ./scripts/Common.ps1
 0a3796e66d8941e0be04a0a16661ff426a1acb9685a6a77610884dc543f6f280  ./scripts/ConfigAccess.ps1
 8a0701a9fda4ccf55fe9599148b28f8b062dc96e84b0e92d10b0bab13c07398a  ./scripts/ConfigParser.ps1
 b6274b4e8803ebe27b3793d16a3356f7a72f39a3cc64509a9a82e34b1b5dfd38  ./scripts/MoodleVersion.ps1
@@ -100,7 +101,7 @@ ba7a2e2688cb39e901bfb009b0113165ee135513d4d469c439dd1deeb567acf3  ./scripts/Phas
 47d44c272480991a88784b5b9d2c6474eca631a2f8025b9c8a7b4a0e3b1833b2  ./scripts/WorkerCount.ps1
 a8e185bd5baf3557db558cad34a7a4b5d5abfc3310bd863e258070823317d87a  ./scripts/audit-package-plugins.ps1
 5f85e857330c92646ebc1f50822170b942e9930e1dd062e7d1561335cddac58a  ./scripts/confirm-package-config.ps1
-821d92dded93a3f34f31212ae31f33be617ac30fc21c197da25f4fdd5467deb0  ./scripts/consolidation-wizard.ps1
+000b34102133054d0977a5e79b7bea74fc2db2f0fe89e052e54943696071aa22  ./scripts/consolidation-wizard.ps1
 614aeb135581d0b0b9d42ebe5b94403126b331911b3e9c88c83dde2ce8f4c6a0  ./scripts/export-consolidated-site.ps1
 b0a867ce096376343a4a36fc1202550d845c9bfa20ab622e48e0fce89acfb001  ./scripts/import-source-packages.ps1
 9f23baa8c11af8083c12af814f28e857f4ec7d3dcb3d64014a6db36d50097bce  ./scripts/oauth2-preflight-lib.php
@@ -126,7 +127,7 @@ a73d17e35970a704fdfcea0697d5d2d75932180229222d47032789b4f1b59724  ./scripts/phas
 f3186186a6a34ce97b8f06fcf6f81f26ba33c0fc28a1f77d43456b6b73c44352  ./scripts/phase5-verify.ps1
 cc9066b2a7bc96ac668df901cff8079ebfb27d9ba0831bb55d4123951153222e  ./scripts/phase6-analyze-course.php
 a33d8ba2fb9a89231196a0c40c4426af84db052be15ea825926e6543de1c91e7  ./scripts/phase6-analyze-degradations.php
-9e228f068ea341c2523912e167af1b75ac499dff36672cff6c98bc3d7c2ae4c4  ./scripts/phase6-apply-categories.php
+04415d5d81fd82e19442bdf70ff6401086436d6dc623d6068254aba65dc0711a  ./scripts/phase6-apply-categories.php
 c8cc32edd6aafc2da3228ff53e2a2159c64bdfaa6fcf4d91f9dbdb6fbe68b316  ./scripts/phase6-apply-course.php
 8717dc65e2a831041cb99ae342a8f9d2ed1a84de2a04a6fc27b0d4fa00bb827b  ./scripts/phase6-apply-preflight.php
 e4650c0e171edb29ffa2802d605f4eb14e8bd06fd1de2ec7a45e28d7ef611430  ./scripts/phase6-apply.ps1
@@ -138,17 +139,17 @@ f8ff7733ec6e20a7829701f5774546ecfff0cda243aa6b6c61dfc53a10fd5067  ./scripts/phas
 398f7cea58ed7fd493663aa8dfbe27b62db8b21a53f17b3bf55f1d2d94d6c5f8  ./scripts/phase6-effective-inventory.php
 70241ca328bbdd411c87aaeffe28481905769a6b01164ad8d040e20122e10d60  ./scripts/phase6-historical-users.php
 754cca1ba90587bfe562153e05c505c06e5dc035b4145902b6977efce0195183  ./scripts/phase6-inventory.php
-3fcc0769c8ce66f44ccfe13f6a1d89cf2b034f7564d53691896b1a69eb40fee9  ./scripts/phase6-lib.php
-681863c59c698801364cf96ff4c8b51a031aed440fe103f791456b511bc9a613  ./scripts/phase6-package-plan.ps1
+c8033ef78a8adbb47f593d9fce132d7d563968c378f64ae903b729efc501a075  ./scripts/phase6-lib.php
+b2f7cea9c8b9f88b3abd1fea008c50382f29c1678a197c2bc69c81434d003e03  ./scripts/phase6-package-plan.ps1
 9181d2e6e0236dd609624d5aa93e96565d227a1096979f113a1d31baee1a6b87  ./scripts/phase6-package-prepare.ps1
-0757609d100eff2c68fba0ee2de2d16030b05077e30b15c3ead790dc3ed2a839  ./scripts/phase6-plan.php
+b67b01c712aa39a4a9771727ca07ea1ff2b7e7c3742cdf4bd8ba179549337603  ./scripts/phase6-plan.php
 849bcfb7248973825c5986cfcd67a084561ea4aeb3d8a2e313bb888a97b1943e  ./scripts/phase6-prepare-package-course.php
 6ab48b0d50fd5206ab71f8affccf3caf2bcb012656998a732b12f013f8ad0d27  ./scripts/phase6-random-normalization.php
 c4ed943975ca6b2bfc9d4042ee0ff733272011c449bbe21e5a5d8994a6442f3b  ./scripts/phase6-restore-precheck.php
 9b21940fc3187731cf61b7579bd35bee45eae3062c8ab4859f93335edb42d0d8  ./scripts/phase6-seal-apply.php
 c3d0dc4dd531a65cc1d91bf5ed50a5f528ce42b6d591003b442a0d050f37021b  ./scripts/phase6-seal-backups.php
 7bf21bcf4225405aead64c6c5fa144395f315a87fe1a9f540a868124da683d75  ./scripts/phase6-target-inventory.php
-3b467dd3de60d1fdd5e939f8e105012d23758da2f3c4ce02c9bb9e0d59301c31  ./scripts/phase6-verify.php
+dde6f2428365b7fe6cfac64caa28234749fc4c0dc17cd27f5d9d5cae8cd0b394  ./scripts/phase6-verify.php
 e6c36e05dcb524e27badf97a14cae80482dcec86393e663d7dc8fe21a16f0b0b  ./scripts/phase6-verify.ps1
 8e8248b1f2d9e96e17d82f287f405d4f90d542c524ad3cb93778a0dba37ac434  ./scripts/phase7-close.ps1
 7a759bd8ba2468bd1ccd3877b66d5c789ffaf1569b1b68bd35d61fe5dbc06fc0  ./scripts/progress-notifier.ps1
@@ -162,6 +163,10 @@ ff20e5d7517a99a8644f69d3e9aafb9aa005a261946df1b4e1866958c502802a  ./scripts/targ
 a8bdd0adc2245877cff6d9fd43aa22ab1e18221db0b372bd8f0d1bb9a52c6d68  ./scripts/target-plugin-pin.php
 d4bb84b63c66b7a56a325f9190b074aa9a735d4a34640e1cdd82df2cf3e8e18f  ./scripts/target-plugins.php
 62815893e95c8db3fda6add1b4f5c66ef3c2b401aac7c7b2aa2ccf766cb9f74c  ./scripts/target-shared-email-policy.php
+1ce96068f670efbb1dc93de061faef1f9992e8372012c41b5cd2407b158ccc68  ./scripts/v8-category-chain.php
+ae1d5983f32a03dcf4a171acf193aa87e9dd52ae9c3cfeb63401643d96b6601c  ./scripts/v8-category-map.php
+372b3ba4faadca3b5e76659e2e7a470d35603788c3e7a3149081d8c63d44443b  ./scripts/v8-category-map.ps1
+c82578d0a47b2316944bf44fab17172a330e236c3ba05b264e14f98f50662643  ./scripts/v8-category-target.php
 5740274cd3915cb60d0e95aa2be54ea9cfefdde3da586ab6bb647853a8b8f102  ./scripts/v8-course-themes.php
 500ee9cdd9399914ac0647e33661d1ab96575a8412aed389c4f91420eb36d8bd  ./scripts/v8-course-themes.ps1
 b2eec24d64e95740ba850b1d696bb810ae2ff493c1bf73e4285a0c7b2410a561  ./scripts/v8-identity-review.php
@@ -223,6 +228,8 @@ dc1f57606ba439b4f6d5699f002d18cd6a844d22917846d97fe6e665dfef3bbf  ./tests/rc6-st
 9e65e87c53949213da3924c07d5bac05301a5ea5f5a1a5704cfe021f2a235399  ./tests/rc9-moodle-versions.ps1
 fcf55e1bc9a226f1bc2a58252b470bbc1b315468de137b6d245b8a4c595b71e2  ./tests/rc9-revalidate-integration.ps1
 b1b8f0aa41bba034d08d29beea8540b932426ae86475f86af334d889a759b7df  ./tests/v8-800-zero-plugin-rebuild.ps1
+3a1b4f9e3e33eb0c73237b7ed217c7a90d099da90d0a99476dd892c02db3dc55  ./tests/v8-810-category-map.php
+169d69cbaefb37834f95c73b3e4f12460d10257a515022a4da252ef40e56023f  ./tests/v8-810-env-propagation.py
 7d80431be8a883efae06b0b98a5b1ce02e5577a870f98841038ad27f4b4aa9f6  ./tests/v8-contracts.php
 c7ac1dcb73a106d909a01a23d8a7039ba69861742c09750208838cd0080b7066  ./tests/v8-fuzzy-reconciliation.php
 be93fcdcb3de5befbe3d49fa615e2af3f35d8e62da90170986c4e3fd258267d4  ./tests/v8-identity-wrapper.sh
@@ -260,4 +267,4 @@ daaf314cb5d8b19832caedc34df62a49ccf1a8a5769cd8f1bba4168b96d9a705  ./tests/v8-rc9
 7b9c4c0b0105d1282226dd12066ab01fb3c1f73ad3b51693305cb592087c62a9  ./tests/v8-runtime-tags.py
 12fdd19248d579f0af6418a41db62d9e0eb3432f784d9932001a3f30ceeb4d26  ./tests/v8-theme-policy.sh
 5924630b611f42322a0223d15f81db86647779063d6e5f6bb4ab8a95cd586248  ./tests/v8-worker-continuation.ps1
-de69cb8646e6ec3f360ebbab63f53b3f7e4f38f487cbd3210b40ab3043e149d2  ./tests/verify-package.sh
+ef3a017e944dd32f16e6fd2713f8637572a91139382fb4e2eec1e95a5aa36e6d  ./tests/verify-package.sh

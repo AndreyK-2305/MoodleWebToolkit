@@ -60,6 +60,9 @@ try {
         [(int)$left['source_depth'], (string)$left['category_key']] <=>
         [(int)$right['source_depth'], (string)$right['category_key']]
     );
+    // 8.1.0: con mapa de categorías un nodo puede colgar de la raíz de Moodle
+    // (padre 0) o ser una categoría que ya existe en el destino.
+    $mapped = ($bundle['summary']['category_mode'] ?? '') === 'mapped';
     $idsbykey = [];
     $maprows = [];
     $created = 0;
@@ -70,9 +73,32 @@ try {
         $parentid = $parentkey === ''
             ? (int)$row['target_parent_category_id']
             : (int)($idsbykey[$parentkey] ?? 0);
-        if ($parentid < 1 ||
-                !$DB->record_exists('course_categories', ['id' => $parentid])) {
+        if (!($mapped && $parentkey === '' && $parentid === 0) && ($parentid < 1 ||
+                !$DB->record_exists('course_categories', ['id' => $parentid]))) {
             throw new RuntimeException('No existe la categoría padre de ' . $key . '.');
+        }
+        if ($mapped && ($row['node_kind'] ?? '') === 'existing') {
+            $category = $DB->get_record(
+                'course_categories',
+                ['id' => (int)$row['matched_target_category_id']],
+                'id,parent,name,idnumber',
+                IGNORE_MISSING
+            );
+            if (!$category || (int)$category->parent !== $parentid ||
+                    p5_norm((string)$category->name) !== p5_norm((string)$row['category_name'])) {
+                throw new RuntimeException('La categoría existente ' . $key . ' cambió de nombre o padre.');
+            }
+            $idsbykey[$key] = (int)$category->id;
+            $reused++;
+            $maprows[] = [
+                'category_key' => $key,
+                'target_category_id' => (int)$category->id,
+                'target_parent_category_id' => $parentid,
+                'target_category_marker' => (string)$category->idnumber,
+                'category_name' => (string)$row['category_name'],
+                'apply_status' => 'reused',
+            ];
+            continue;
         }
         $marker = (string)$row['target_category_marker'];
         $matches = $DB->get_records(

@@ -101,6 +101,7 @@ php tests/v8-rc5-quiz-attempts.php
 php tests/v8-rc5-precheck.php
 php tests/v8-rc5-historical-users.php
 php tests/v8-rc5-random-order.php
+php tests/v8-810-category-map.php
 
 pwsh -NoLogo -NoProfile -Command '
   $issues = @()
@@ -152,6 +153,7 @@ python3 tests/v8-rc9-background-linger.py
 python3 tests/v8-rc10-progress-email.py
 python3 tests/v8-rc11-progress-lifecycle.py
 python3 tests/v8-rc12-background-wrapper-permissions.py
+python3 tests/v8-810-env-propagation.py
 printf '%s\n' RC2_REGRESSION_OK
 python3 tests/rc12-env-migration.py
 bash tests/v8-live-integration.sh

@@ -489,6 +489,140 @@ function p6_course_marker(string $sourcealias, string $sourceshortname): string 
     return p5_course_marker($sourcealias, $sourceshortname);
 }
 
+/**
+ * 8.1.0: filas de category_plan.csv a partir del mapa de categorías validado.
+ *
+ * Una fila por nodo destino, no por categoría de origen: los orígenes unidos
+ * en un nodo comparten fila y marcador. Los nodos que ya existen en el
+ * destino se reutilizan por id y no cambian; los nuevos se crean o reutilizan
+ * por marcador con las mismas comprobaciones que el plan de 8.0.0. No hay
+ * raíces por origen.
+ *
+ * @return array{0: list<array>, 1: array<string, int>, 2: array<string, string>}
+ */
+function p6_mapped_category_rows(
+    array $categorymap,
+    array $sourcecategorymaps,
+    array $targetcategoriesbyid,
+    array $targetcategoriesbymarker,
+    array $targetcategoriesbyparentname
+): array {
+    $rows = [];
+    $rowbykey = [];
+    $categorykeybynode = [];
+    foreach ($categorymap['nodes'] as $node) {
+        $categorykeybynode[(string)$node['key']] = 'NODE-' . (string)$node['key'];
+    }
+    foreach ($categorymap['nodes'] as $node) {
+        $key = $categorykeybynode[(string)$node['key']];
+        $parentnode = (string)$node['parent_node'];
+        $parentkey = $parentnode === '' ? '' : (string)($categorykeybynode[$parentnode] ?? '');
+        $members = array_values(array_map('strval', $node['members'] ?? []));
+        foreach ($members as $member) {
+            [$sourceid, $categoryid] = array_pad(explode('|', $member, 2), 2, '');
+            if (!isset($sourcecategorymaps[$sourceid][(int)$categoryid])) {
+                throw new RuntimeException('El mapa de categorías nombra una categoría de origen inexistente: ' . $member . '.');
+            }
+        }
+        $issues = [];
+        $existingid = $node['existing_category_id'] ?? null;
+        if ($existingid !== null) {
+            $category = $targetcategoriesbyid[(int)$existingid] ?? null;
+            if ($category === null ||
+                    (int)$category['target_parent_id'] !== (int)$node['parent_category_id'] ||
+                    p5_norm((string)$category['name']) !== p5_norm((string)$node['name'])) {
+                $issues[] = 'La categoría existente del destino cambió de nombre o padre.';
+            }
+            $rowbykey[$key] = count($rows);
+            $rows[] = [
+                'category_key' => $key,
+                'source' => '',
+                'source_category_id' => '',
+                'source_parent_id' => '',
+                'source_idnumber' => '',
+                'category_name' => (string)$node['name'],
+                'source_depth' => (int)$node['depth'],
+                'parent_category_key' => '',
+                'target_parent_category_id' => (int)$node['parent_category_id'],
+                'target_category_marker' => (string)($category['idnumber'] ?? $node['marker']),
+                'matched_target_category_id' => (int)$existingid,
+                'action' => $issues ? 'blocked' : 'reuse',
+                'blocking_reason' => p6_issue_text($issues),
+                'node_kind' => 'existing',
+                'member_keys' => implode(' ', $members),
+            ];
+            continue;
+        }
+        if ($parentnode !== '' && $parentkey === '') {
+            $issues[] = 'La categoría padre no existe en el mapa.';
+        }
+        $parentrowindex = $parentkey === '' ? null : ($rowbykey[$parentkey] ?? null);
+        if ($parentkey !== '' && ($parentrowindex === null || $rows[$parentrowindex]['action'] === 'blocked')) {
+            $issues[] = 'La categoría padre está bloqueada.';
+        }
+        // Id del padre si ya existe en el destino: la raíz (0), una existente
+        // o un nodo que se reutiliza. Un padre por crear no tiene id aún.
+        $plannedparentid = $parentkey === ''
+            ? (int)$node['parent_category_id']
+            : (($parentrowindex !== null && $rows[$parentrowindex]['matched_target_category_id'] !== '')
+                ? (int)$rows[$parentrowindex]['matched_target_category_id']
+                : null);
+        $marker = (string)$node['marker'];
+        $matches = $targetcategoriesbymarker[$marker] ?? [];
+        $action = 'create';
+        $matchedid = '';
+        if (count($matches) > 1) {
+            $issues[] = 'El destino repite el marcador de la categoría.';
+        } else if (count($matches) === 1) {
+            $action = 'reuse';
+            $matchedid = (int)$matches[0]['target_category_id'];
+            if (p5_norm((string)$matches[0]['name']) !== p5_norm((string)$node['name'])) {
+                $issues[] = 'La categoría marcada cambió de nombre.';
+            }
+            if ($plannedparentid === null ||
+                    (int)$matches[0]['target_parent_id'] !== $plannedparentid) {
+                $issues[] = 'La categoría marcada no conserva la jerarquía aprobada.';
+            }
+        } else if ($plannedparentid !== null &&
+                !empty($targetcategoriesbyparentname[$plannedparentid . '|' . p5_norm((string)$node['name'])])) {
+            $issues[] = 'Existe una categoría hermana con el mismo nombre pero sin marcador.';
+        }
+        if ($issues) {
+            $action = 'blocked';
+        }
+        $rowbykey[$key] = count($rows);
+        $rows[] = [
+            'category_key' => $key,
+            'source' => '',
+            'source_category_id' => '',
+            'source_parent_id' => '',
+            'source_idnumber' => '',
+            'category_name' => (string)$node['name'],
+            'source_depth' => (int)$node['depth'],
+            'parent_category_key' => $parentkey,
+            'target_parent_category_id' => $parentkey === '' ? (int)$node['parent_category_id'] : '',
+            'target_category_marker' => $marker,
+            'matched_target_category_id' => $matchedid,
+            'action' => $action,
+            'blocking_reason' => p6_issue_text($issues),
+            'node_kind' => 'mapped',
+            'member_keys' => implode(' ', $members),
+        ];
+    }
+    $categorykeybysourceid = [];
+    foreach ($categorymap['assignments'] as $member => $nodekey) {
+        $categorykeybysourceid[(string)$member] = (string)($categorykeybynode[(string)$nodekey] ?? '');
+    }
+    foreach ($sourcecategorymaps as $sourceid => $categories) {
+        foreach (array_keys($categories) as $categoryid) {
+            if (($categorykeybysourceid[$sourceid . '|' . $categoryid] ?? '') === '') {
+                throw new RuntimeException('El mapa de categorías no asigna ' . $sourceid . '|' . $categoryid . '.');
+            }
+        }
+    }
+    return [$rows, $rowbykey, $categorykeybysourceid];
+}
+
 function p6_issue_text(array $issues): string {
     $issues = array_values(array_unique(array_filter(array_map(
         static fn(mixed $issue): string => trim((string)$issue),
@@ -1018,6 +1152,16 @@ function p6_load_inventory_plan(
     foreach ($batchconfig['sources'] as $sourceid) {
         $paths['source_inventory_' . $sourceid . '.json'] =
             $phase6dir . '/source-inventory-' . $sourceid . '.json';
+    }
+    // 8.1.0: el plan hecho con mapa de categorías sella también su validación.
+    if (array_key_exists('category_map_sha256', $summary)) {
+        $paths['category_map.json'] = $phase6dir . '/category_map.json';
+        if (($summary['category_mode'] ?? '') !== 'mapped' ||
+                !is_file($paths['category_map.json']) ||
+                hash_file('sha256', $paths['category_map.json']) !==
+                    (string)$summary['category_map_sha256']) {
+            throw new RuntimeException('El mapa de categorías del plan cambió después de aprobarse.');
+        }
     }
     $hashes = p5_hash_files($paths);
     $expectedhashes = $summary['artifacts_sha256'] ?? [];
