@@ -1,5 +1,6 @@
 import { Link, usePage } from '@inertiajs/react';
 import {
+    Bell,
     BookOpenText,
     FolderKanban,
     Info,
@@ -34,10 +35,18 @@ export function AppSidebar() {
             href: '/settings/profile',
             icon: Settings,
         },
-        ...(auth.user.role === 'ADMIN'
-            ? [{ title: 'Usuarios', href: '/admin/users', icon: Users }]
-            : []),
     ];
+    const adminNavItems: NavItem[] =
+        auth.user.role === 'ADMIN'
+            ? [
+                  { title: 'Usuarios', href: '/admin/users', icon: Users },
+                  {
+                      title: 'Notificaciones',
+                      href: '/admin/notifications',
+                      icon: Bell,
+                  },
+              ]
+            : [];
 
     return (
         <Sidebar collapsible="icon" variant="inset">
@@ -54,6 +63,9 @@ export function AppSidebar() {
             </SidebarHeader>
             <SidebarContent>
                 <NavMain items={mainNavItems} />
+                {adminNavItems.length > 0 && (
+                    <NavMain items={adminNavItems} label="Administración" />
+                )}
             </SidebarContent>
             <SidebarFooter>
                 <NavUser />

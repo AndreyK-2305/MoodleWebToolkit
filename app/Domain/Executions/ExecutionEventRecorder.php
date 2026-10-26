@@ -2,6 +2,7 @@
 
 namespace App\Domain\Executions;
 
+use App\Domain\Notifications\ExecutionNotifications;
 use App\Domain\Realtime\ExecutionEventOutboxPublisher;
 use App\Domain\Tools\DTOs\NormalizedToolEvent;
 use App\Enums\EventSeverity;
@@ -73,6 +74,8 @@ class ExecutionEventRecorder
             }
 
             $event = $lockedExecution->events()->create($attributes);
+            // A notifiable moment enters the email outbox in this same commit.
+            app(ExecutionNotifications::class)->capture($lockedExecution, $event);
 
             $outbox = ExecutionEventOutbox::query()->create(['execution_event_id' => $event->getKey(),
                 'available_at' => now()->utc(), 'created_at' => now()->utc()]);

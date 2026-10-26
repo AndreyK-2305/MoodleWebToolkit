@@ -68,7 +68,7 @@ class RemoteConsolidationInterventions
     private const OAUTH2_STAGES = ['02-oauth2', '03b-oauth2-final'];
 
     /** How the timeline names each intervention. */
-    private const TITLES = [self::OAUTH2 => 'configurar Google OAuth2', self::PLUGINS => 'plugins requeridos por los orígenes',
+    public const TITLES = [self::OAUTH2 => 'configurar Google OAuth2', self::PLUGINS => 'plugins requeridos por los orígenes',
         self::IDENTITY => 'revisar posibles identidades duplicadas', self::THEMES => 'elegir la apariencia del Moodle consolidado',
         self::CATEGORY_MAP => 'revisar el mapa de categorías del destino', self::GENERIC => 'el Consolidador necesita una decisión'];
 

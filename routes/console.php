@@ -23,3 +23,7 @@ Schedule::command('executions:recover-event-outbox --limit=20')
 Schedule::command('destinations:observe-preparations --limit=50')
     ->everyMinute()
     ->withoutOverlapping();
+
+Schedule::command('notifications:dispatch --limit=50')
+    ->everyMinute()
+    ->withoutOverlapping();
