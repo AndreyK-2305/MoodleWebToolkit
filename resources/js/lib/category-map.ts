@@ -40,7 +40,13 @@ export type MapSuggestion = {
     b: { source: string; id: number };
 };
 
-export type MapIssue = { code: string; node: string | null; message: string };
+export type MapIssue = {
+    code: string;
+    node: string | null;
+    message: string;
+    /** Every node the issue marks in the tree, when it covers more than one. */
+    nodes?: string[];
+};
 
 export type CategoryMapDetails = {
     proposal_sha256?: string | null;
@@ -515,15 +521,24 @@ export function validateMap(
             siblings.set(group, [...(siblings.get(group) ?? []), node]);
         }
     }
+    // One issue per group: one per node repeated the line in the review list.
     for (const group of siblings.values()) {
         if (group.length > 1) {
-            for (const node of group) {
-                issues.push({
-                    code: 'SIBLING_DUPLICATE',
-                    node: node.key,
-                    message: `Hay ${group.length} categorías «${node.name}» en ${node.parent === TOP ? 'la raíz' : `«${pathOf(state, node.parent)}»`}: únalas o cambie el nombre.`,
-                });
-            }
+            const [first] = group;
+            const where =
+                first.parent === TOP
+                    ? 'la raíz'
+                    : `«${pathOf(state, first.parent)}»`;
+            const names = [...new Set(group.map((node) => node.name.trim()))];
+            issues.push({
+                code: 'SIBLING_DUPLICATE',
+                node: first.key,
+                nodes: group.map((node) => node.key),
+                message:
+                    names.length === 1
+                        ? `Hay ${group.length} categorías «${names[0]}» en ${where}: únalas o cambie el nombre.`
+                        : `${names.map((name) => `«${name}»`).join(' y ')} en ${where} se consideran el mismo nombre (no cuentan tildes ni mayúsculas): únalas o cambie el nombre.`,
+            });
         }
     }
     for (const node of state.nodes) {
@@ -626,6 +641,41 @@ export function courseCount(
             members.has(memberKey(category.source, category.id)),
         )
         .reduce((total, category) => total + category.course_count, 0);
+}
+
+/**
+ * The new categories that would be created without a single course in them or
+ * below them, outermost first. In the 2026-10-25 test both sources' default
+ * «Category 1» landed empty beside the destination's «Categoría 1».
+ */
+export function emptyCategories(
+    details: CategoryMapDetails,
+    state: MapState,
+): MapNode[] {
+    const empty = (key: string): boolean =>
+        courseCount(details, state, key) === 0 &&
+        childrenOf(state, key).every((child) => empty(child.key));
+    const candidate = (node: MapNode) =>
+        node.existing === null && used(state, node.key) && empty(node.key);
+
+    return state.nodes.filter((node) => {
+        if (!candidate(node)) {
+            return false;
+        }
+        const parent =
+            node.parent === TOP ? null : findNode(state, node.parent);
+
+        return !parent || !candidate(parent);
+    });
+}
+
+/** The destination's general category (the oldest at the top), to receive the empty ones. */
+export function generalCategory(state: MapState): MapNode | null {
+    return (
+        state.nodes
+            .filter((node) => node.existing !== null && node.parent === TOP)
+            .sort((a, b) => a.existing! - b.existing!)[0] ?? null
+    );
 }
 
 /** What travels to the platform: the categories in use and every assignment. */

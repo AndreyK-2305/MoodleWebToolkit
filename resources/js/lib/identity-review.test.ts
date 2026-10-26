@@ -142,6 +142,34 @@ describe('identity review', () => {
         expect(isEvidentMatch({ ...same, confidence: 'MEDIUM' })).toBe(false);
     });
 
+    it('treats the same e-mail, username and name without documents as evident (2026-10-25: Synthetic User 1)', () => {
+        const same = candidate();
+        same.b = {
+            ...same.a,
+            source: 'posgrado',
+            members: ['posgrado:19'],
+            accounts: same.a.accounts!.map((account) => ({
+                ...account,
+                key: 'posgrado:19',
+                document: null,
+            })),
+        };
+        same.a.accounts = same.a.accounts!.map((account) => ({
+            ...account,
+            document: null,
+        }));
+
+        expect(isEvidentMatch(same)).toBe(true);
+        // Another username, or two different documents, still needs a person.
+        const otherUser = structuredClone(same);
+        otherUser.b.accounts![0].username = 'laura.posgrado';
+        expect(isEvidentMatch(otherUser)).toBe(false);
+        const otherDocument = structuredClone(same);
+        otherDocument.a.accounts![0].document = '…5432';
+        otherDocument.b.accounts![0].document = '…9876';
+        expect(isEvidentMatch(otherDocument)).toBe(false);
+    });
+
     it('offers the bulk merge for a single evident case too (2026-10-24: Laura Gómez, …1006)', () => {
         const evident = candidate({
             group: 'CAND-LAURA',

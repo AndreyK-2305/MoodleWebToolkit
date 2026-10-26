@@ -739,6 +739,32 @@ function ExecutionTracker({
         return () => window.clearInterval(follow);
     }, [preparing, catchUp]);
 
+    // The close runs as a queued job after the request: in the 2026-10-25 test
+    // the page kept «REVIEW» and its button for several seconds afterwards.
+    const finalizing =
+        execution.status === 'REVIEW' &&
+        events.some((event) => event.type === 'finalization.queued');
+
+    useEffect(() => {
+        if (!finalizing) {
+            return;
+        }
+
+        const follow = window.setInterval(() => void catchUp(), 3_000);
+        const reload = window.setInterval(
+            () =>
+                router.reload({
+                    only: ['execution', 'review', 'events'],
+                }),
+            15_000,
+        );
+
+        return () => {
+            window.clearInterval(follow);
+            window.clearInterval(reload);
+        };
+    }, [finalizing, catchUp]);
+
     const syncedSignature = useRef(
         conflictSignature(initialExecution.conflicts),
     );
@@ -893,6 +919,7 @@ function ExecutionTracker({
                         review={review}
                         panel={panel}
                         disabled={updatesPaused}
+                        finalizing={finalizing}
                     />
                 )}
 
@@ -1553,12 +1580,14 @@ function ExecutionActions({
     review,
     panel,
     disabled,
+    finalizing,
 }: {
     projectUuid: string;
     execution: ExecutionData;
     review: ReviewData;
     panel: InterventionPanel<ConflictData>;
     disabled: boolean;
+    finalizing: boolean;
 }) {
     const [cancelKey] = useState(() => crypto.randomUUID());
     const [resumeKey] = useState(() => crypto.randomUUID());
@@ -1696,7 +1725,18 @@ function ExecutionActions({
                                 <FileCheck2 /> Validar ajustes
                             </Button>
                         )}
+                    {finalizing && (
+                        <p
+                            role="status"
+                            className="text-muted-foreground flex items-center gap-2 text-sm"
+                        >
+                            <ShieldCheck /> Cerrando el proyecto: se verifican y
+                            sellan los artefactos. La página se actualizará
+                            sola.
+                        </p>
+                    )}
                     {execution.status === 'REVIEW' &&
+                        !finalizing &&
                         review.validation_current && (
                             <Button
                                 disabled={disabled || finalizeForm.processing}
@@ -3006,7 +3046,8 @@ function IdentityReview({
                         {evident.length === 1
                             ? '1 caso tiene'
                             : `${evident.length} casos tienen`}{' '}
-                        el mismo correo y el mismo documento
+                        el mismo correo y el mismo documento, o el mismo usuario
+                        y nombre
                     </p>
                     <p className="text-muted-foreground">
                         {evident.length === 1

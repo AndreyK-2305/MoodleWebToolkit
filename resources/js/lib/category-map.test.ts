@@ -3,6 +3,8 @@ import {
     TOP,
     addCategory,
     childrenOf,
+    emptyCategories,
+    generalCategory,
     courseCount,
     initialMap,
     memberKey,
@@ -138,7 +140,22 @@ describe('initialMap', () => {
         );
         expect(
             codes.filter((code) => code === 'SIBLING_DUPLICATE'),
-        ).toHaveLength(6);
+        ).toHaveLength(3);
+    });
+
+    it('names each duplicate group once, with its spellings', () => {
+        const duplicates = validateMap(details, initialMap(details)).filter(
+            (issue) => issue.code === 'SIBLING_DUPLICATE',
+        );
+        const messages = duplicates.map((issue) => issue.message);
+        expect(new Set(messages).size).toBe(messages.length);
+        const ciencias = duplicates.find((issue) =>
+            issue.message.includes('Ciencias'),
+        );
+        expect(ciencias?.message).toContain(
+            '«Ciencias basicas» y «Ciencias Básicas»',
+        );
+        expect(ciencias?.nodes).toHaveLength(2);
     });
 
     it('resumes the previous answer and places what it lacks', () => {
@@ -269,6 +286,30 @@ describe('operations refuse what the Consolidator would reject', () => {
         };
         expect(validateMap(details, lost).map((issue) => issue.code)).toContain(
             'UNMAPPED',
+        );
+    });
+});
+
+describe('emptyCategories', () => {
+    it('offers the empty default categories to the general one (2026-10-25)', () => {
+        const state = initialMap(details);
+        const empty = emptyCategories(details, state);
+        // «Ciencias basicas» holds no course itself but «Estadística» below it does.
+        expect(empty.map((node) => node.name)).toEqual([
+            'Category 1',
+            'Category 1',
+        ]);
+        expect(generalCategory(state)?.existing).toBe(1);
+
+        const merged = empty.reduce(
+            (current, node) => apply(merge(current, node.key, 'E-1')),
+            state,
+        );
+        expect(emptyCategories(details, merged)).toEqual([]);
+        expect(merged.assignments[memberKey(POS, 1)]).toBe('E-1');
+        expect(merged.assignments[memberKey(PRE, 1)]).toBe('E-1');
+        expect(validateMap(details, merged)).not.toContainEqual(
+            expect.objectContaining({ code: 'UNMAPPED' }),
         );
     });
 });

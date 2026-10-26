@@ -269,13 +269,34 @@ export function matchReasons(candidate: IdentityCandidate): string[] {
     return reasons;
 }
 
-/** A group a person would merge without hesitation: high confidence, same e-mail and same document. */
+/**
+ * A group a person would merge without hesitation: high confidence, same
+ * e-mail, and either the same document or (one account per side, no
+ * conflicting document) the same username and name. In the 2026-10-25 test
+ * «Synthetic User 1», identical in e-mail, name and username, was left out.
+ */
 export function isEvidentMatch(candidate: IdentityCandidate): boolean {
+    if (
+        (candidate.confidence ?? '').toUpperCase() !== 'HIGH' ||
+        (candidate.a.email ?? '') === '' ||
+        !sameText(candidate.a.email, candidate.b.email)
+    ) {
+        return false;
+    }
+    if (candidate.identifier_match === 'true') {
+        return true;
+    }
+    const [a, b] = [candidate.a.accounts ?? [], candidate.b.accounts ?? []];
+    if (a.length !== 1 || b.length !== 1) {
+        return false;
+    }
+    const documents = [a[0].document ?? '', b[0].document ?? ''];
+
     return (
-        (candidate.confidence ?? '').toUpperCase() === 'HIGH' &&
-        candidate.identifier_match === 'true' &&
-        (candidate.a.email ?? '') !== '' &&
-        sameText(candidate.a.email, candidate.b.email)
+        (a[0].username ?? '') !== '' &&
+        sameText(a[0].username, b[0].username) &&
+        sameText(candidate.a.name, candidate.b.name) &&
+        (documents.includes('') || documents[0] === documents[1])
     );
 }
 
