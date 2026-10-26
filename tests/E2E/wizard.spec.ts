@@ -5,7 +5,7 @@ test('un proyecto nuevo elige solo entre Recolectar y Consolidar', async ({
     password,
 }) => {
     await login(page, password);
-    await page.goto('/projects');
+    await page.goto('/projects/create');
     await expect(page.locator('#project-type option')).toHaveText([
         'Recolectar',
         'Consolidar',

@@ -321,6 +321,22 @@ INTEGRATE conservan el de antes.
   bloquea el siguiente; `ProjectWizardTest` y `ConsolidationSourcesTest` cubren el registro por
   etiqueta, la etiqueta por defecto y el guardado en dos pasos.
 
+### Proyectos como historial
+
+La página Proyectos ya no tiene su propio formulario de creación, que repetía el paso 1 del
+asistente. Es el historial de los proyectos visibles (nombre, operación, estado, última actividad
+y paso) con un botón «Nuevo proyecto»; sin proyectos muestra una explicación breve y el mismo
+botón.
+
+- «Nuevo proyecto» abre `/projects/create`, el paso 1 «Datos básicos» con los mismos campos
+  (nombre, operación, descripción y, con servidores reales en Consolidar, el nombre de referencia
+  del destino). Al guardarlo se crea el proyecto y el asistente sigue en su página, en el paso 2.
+- `POST /projects` mantiene la autorización y la restricción de INTEGRATE, y guarda el paso 1 en
+  la misma transacción (`ProjectWizard::saveBasics`): una consolidación remota registra su
+  destino al crearse.
+- `tests/Feature/Projects/ProjectCreateTest.php` cubre la página, la autorización, la creación y
+  el destino; los E2E crean los proyectos desde «Nuevo proyecto».
+
 ## F7: notificaciones por correo (2026-10-26)
 
 El Consolidador CLI avisaba por SMTP con la configuración del `.env` de cada destino. La plataforma

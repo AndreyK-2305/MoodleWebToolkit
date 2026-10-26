@@ -26,6 +26,7 @@ Route::get('/', fn (Request $request) => redirect()->route($request->user() ? 'd
 Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(function () {
     Route::get('dashboard', DashboardController::class)->name('dashboard');
     Route::get('projects', [ProjectController::class, 'index'])->name('projects.index');
+    Route::get('projects/create', [ProjectController::class, 'create'])->name('projects.create');
     Route::post('projects', [ProjectController::class, 'store'])->middleware('action.confirmed')->name('projects.store');
     Route::get('projects/{project:uuid}', [ProjectController::class, 'show'])->name('projects.show');
     Route::put('projects/{project:uuid}/collector/configuration', CollectorConfigurationController::class)->middleware('action.confirmed')->name('projects.collector.configuration');

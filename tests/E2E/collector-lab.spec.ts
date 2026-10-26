@@ -92,12 +92,12 @@ test.describe('Recolector 7.4.2 real en Moodle sintético', () => {
     }
 
     async function startLaboratory(page: Page) {
-        await page.goto('/projects');
+        await page.goto('/projects/create');
         await page
             .locator('#project-name')
             .fill('COLLECT real desde navegador');
         await page.locator('#project-type').selectOption('COLLECT');
-        await page.getByRole('button', { name: 'Crear y configurar' }).click();
+        await page.getByRole('button', { name: 'Guardar y continuar' }).click();
         await expect(page).toHaveURL(/\/projects\/[a-f0-9-]+$/);
         const project = page.url().split('/').at(-1)!;
         await page.locator('#collector-name').fill('browser-proof');

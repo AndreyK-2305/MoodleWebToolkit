@@ -205,9 +205,11 @@ export async function wizard(
     processing = 'SUCCESS',
 ) {
     await page.goto('/projects');
+    await page.getByRole('link', { name: 'Nuevo proyecto' }).first().click();
+    await expect(page).toHaveURL(/\/projects\/create$/);
     await page.locator('#project-name').fill(`E2E ${type}`);
     await page.locator('#project-type').selectOption(type);
-    await page.getByRole('button', { name: 'Crear y configurar' }).click();
+    await page.getByRole('button', { name: 'Guardar y continuar' }).click();
     await expect(page).toHaveURL(/\/projects\/[a-f0-9-]+$/);
     const uuid = page.url().split('/').at(-1)!;
     await page.reload();

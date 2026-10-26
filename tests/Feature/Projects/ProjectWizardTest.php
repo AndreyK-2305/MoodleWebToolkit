@@ -513,7 +513,8 @@ class ProjectWizardTest extends TestCase
                 ['role' => 'DESTINATION', 'name' => 'Campus'],
             ]])
             ->assertSessionHasErrors(['instances' => 'Consolidar registra un solo servidor de destino; los orígenes se eligen en su paso.']);
-        $this->assertSame(0, $project->servers()->count());
+        // Creating the project registered only its destination.
+        $this->assertSame([ServerRole::DESTINATION], $project->servers()->pluck('role')->all());
 
         $this->actingAs($operator)
             ->put(route('projects.wizard.instances', $project->uuid), ['instances' => [['role' => 'DESTINATION', 'name' => 'Campus']]])
