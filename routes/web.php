@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AcademicProposalController;
+use App\Http\Controllers\Admin\NotificationSettingsController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\ArtifactController;
 use App\Http\Controllers\CollectorConfigurationController;
@@ -76,6 +77,9 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
         Route::post('users', [UserController::class, 'store'])->middleware('action.confirmed')->name('users.store');
         Route::patch('users/{user}/role', [UserController::class, 'updateRole'])->middleware('action.confirmed')->name('users.role');
         Route::patch('users/{user}/status', [UserController::class, 'updateStatus'])->middleware('action.confirmed')->name('users.status');
+        Route::get('notifications', [NotificationSettingsController::class, 'edit'])->name('notifications.edit');
+        Route::put('notifications', [NotificationSettingsController::class, 'update'])->middleware('action.confirmed')->name('notifications.update');
+        Route::post('notifications/test', [NotificationSettingsController::class, 'test'])->middleware(['action.confirmed', 'throttle:6,1'])->name('notifications.test');
     });
 });
 

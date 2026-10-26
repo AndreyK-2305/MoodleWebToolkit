@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Settings\NotificationPreferencesController;
 use App\Http\Controllers\Settings\ProfileController;
 use App\Http\Controllers\Settings\SecurityController;
 use Illuminate\Support\Facades\Route;
@@ -18,6 +19,8 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::get('settings/profile', [ProfileController::class, 'edit'])->name('profile.edit');
         Route::patch('settings/profile', [ProfileController::class, 'update'])->middleware('action.confirmed')->name('profile.update');
         Route::inertia('settings/appearance', 'settings/appearance')->name('appearance.edit');
+        Route::get('settings/notifications', [NotificationPreferencesController::class, 'edit'])->name('notifications.edit');
+        Route::put('settings/notifications', [NotificationPreferencesController::class, 'update'])->middleware('action.confirmed')->name('notifications.update');
     });
 });
 

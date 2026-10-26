@@ -295,3 +295,73 @@ traía a mano a `copias/`. El usuario aprobó rediseñarlo en dos modos.
   completarse y transferencias a `copias/` una a la vez.
 - `resources/js/lib/consolidation-sources.test.ts`: modo inicial, preselección, nombres de
   paquete y validación del formulario «Recolectar ahora».
+
+## F7: notificaciones por correo (2026-10-26)
+
+El Consolidador CLI avisaba por SMTP con la configuración del `.env` de cada destino. La plataforma
+web no avisaba de nada, y las corridas de 3 a 5 horas se detienen en intervenciones que esperan a
+una persona. El usuario decidió que el SMTP se configura una sola vez en la plataforma y que es la
+plataforma quien envía los correos. Así las credenciales SMTP nunca viajan a los EC2.
+
+### Configuración global (Administración → Notificaciones)
+
+- Solo para administradores. Campos: servidor, puerto, cifrado (TLS, STARTTLS o ninguno),
+  usuario, contraseña, dirección y nombre del remitente, interruptor de envío e intervalo opcional
+  del resumen de avance (5 a 1440 minutos; apagado por defecto).
+- Se guarda en `notification_settings`. La contraseña usa un cast `encrypted`, nunca se devuelve
+  al navegador (la página solo muestra «configurada») y solo se puede conservar, reemplazar o
+  borrar.
+- Guardar exige confirmar la contraseña (`action.confirmed`) y queda en la auditoría
+  (`NOTIFICATION_SETTINGS_UPDATED`) con los nombres de los campos que cambiaron, nunca con los
+  valores.
+- «Enviar correo de prueba» manda un correo a la dirección del propio administrador con la
+  configuración guardada. Si falla, explica el error SMTP en español (conexión, credenciales, TLS,
+  remitente) sin repetir la contraseña.
+- El mailer se arma al enviar desde esta configuración (`PlatformMailer`). Solo cuando no hay
+  ninguna guardada se usan los `MAIL_*` del `.env`. Si hay configuración pero el envío está
+  apagado, no sale ningún correo.
+
+### Eventos que notifican
+
+Se enganchan en `ExecutionEventRecorder`, el punto donde ya se registran todos los eventos. El
+evento notificable escribe su fila en `execution_notifications` en el mismo commit, con una clave
+estable única por ejecución:
+
+| Grupo                   | Evento                                                                          | Clave               |
+| ----------------------- | ------------------------------------------------------------------------------- | ------------------- |
+| Intervenciones          | `consolidator.intervention_opened` (con su título)                              | clave del conflicto |
+| Finalizaciones y fallos | `collector.package_registered` (por origen)                                     | paquete fuente      |
+|                         | `collector.failed`, `consolidator.failed`, `tool.failed`, `execution.abandoned` | `outcome.failed`    |
+|                         | `consolidator.closed` (REVIEW)                                                  | `outcome.review`    |
+|                         | `execution.completed` de una consolidación                                      | `outcome.completed` |
+| Respaldos               | `consolidator.backup_registered`, `consolidator.backup_failed`                  | digest u operación  |
+| Resumen de avance       | cada N minutos de una ejecución en curso                                        | número de intervalo |
+
+- `notifications:dispatch`, programado cada minuto, abre los resúmenes de avance y despacha cada
+  fila una vez. Escribe una fila por destinatario en `execution_notification_deliveries` y envía
+  la notificación encolada `ExecutionNotice` después del commit. Un reintento, una observación
+  repetida o un fallo cerrado dos veces no producen un segundo correo. Una intervención reabierta
+  tiene clave nueva y se avisa otra vez.
+- Una fila que lleva más de 12 horas sin despacharse se cierra sin enviar, porque ya no es noticia.
+- El correo lleva el nombre del proyecto, el evento, una línea en español redactada por la
+  plataforma (no el mensaje técnico del evento) y el enlace a la página de la ejecución. No lleva
+  datos personales de Moodle, secretos ni rutas de servidor.
+- La cola es la `default`, que ya atiende el worker. La notificación admite 3 intentos (60 s y
+  300 s) por si el SMTP no está disponible un momento.
+
+### Preferencias de cada usuario (Configuración → Notificaciones)
+
+- Recibir correos sí o no, y los grupos: intervenciones, finalizaciones y fallos, respaldos y
+  resumen de avance. Por defecto están activos todos menos el resumen de avance.
+- Destinatarios: los usuarios activos que pueden abrir el proyecto (los administradores y los
+  usuarios asignados) y que optaron por ese grupo. Los administradores no se asignan a proyectos y
+  ven todos, así que reciben los avisos de todos los proyectos salvo que los desactiven.
+
+### Verificación
+
+- Pruebas Feature: `tests/Feature/Notifications/NotificationSettingsTest.php` (acceso, validación,
+  cifrado, contraseña nunca en las respuestas, auditoría sin valores, correo de prueba con
+  `Mail::fake`, error SMTP real contra un puerto cerrado) y `ExecutionNotificationsTest.php` (un
+  correo por evento y por miembro, eventos que no avisan, idempotencia ante repeticiones,
+  preferencias, envío apagado o vencido, resumen de avance y contenido del correo).
+- Pendiente: probar con un SMTP real desde AWS durante una consolidación.
