@@ -1,5 +1,6 @@
-import { Head, useForm } from '@inertiajs/react';
-import { Mail, Send } from 'lucide-react';
+import { Head, useForm, usePage } from '@inertiajs/react';
+import { Mail, Plus, Send, Trash2, Users } from 'lucide-react';
+import { useState } from 'react';
 import InputError from '@/components/input-error';
 import PasswordInput from '@/components/password-input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -17,6 +18,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import { edit, test as sendTest, update } from '@/routes/admin/notifications';
+import { update as updateRecipients } from '@/routes/admin/notifications/recipients';
 
 type Encryption = 'TLS' | 'STARTTLS' | 'NONE';
 type PasswordAction = 'KEEP' | 'REPLACE' | 'CLEAR';
@@ -32,9 +34,20 @@ type Settings = {
     password_configured: boolean;
     updated_at: string | null;
 };
+type Recipient = {
+    email: string;
+    interventions: boolean;
+    outcomes: boolean;
+    backups: boolean;
+    progress: boolean;
+};
+type Group = Exclude<keyof Recipient, 'email'>;
+type TestTarget = 'SELF' | 'ADDRESS' | 'RECIPIENTS';
 type Props = {
     settings: Settings | null;
     encryptions: { value: Encryption; label: string }[];
+    recipients: Recipient[];
+    maxRecipients: number;
     usesApplicationMailer: boolean;
     lastTest: { ok: boolean; message: string | null } | null;
 };
@@ -42,12 +55,24 @@ type Props = {
 const selectClass =
     'border-input bg-background h-9 rounded-md border px-3 text-sm';
 
+const groups: { key: Group; title: string }[] = [
+    { key: 'interventions', title: 'Intervenciones' },
+    { key: 'outcomes', title: 'Finalizaciones y fallos' },
+    { key: 'backups', title: 'Respaldos' },
+    { key: 'progress', title: 'Resumen de avance' },
+];
+
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export default function NotificationSettingsPage({
     settings,
     encryptions,
+    recipients,
+    maxRecipients,
     usesApplicationMailer,
     lastTest,
 }: Props) {
+    const { auth } = usePage().props;
     const form = useForm({
         enabled: settings?.enabled ?? false,
         smtp_host: settings?.smtp_host ?? '',
@@ -65,7 +90,46 @@ export default function NotificationSettingsPage({
             (settings?.progress_interval_minutes ?? null) !== null,
         progress_interval_minutes: settings?.progress_interval_minutes ?? 60,
     });
-    const testForm = useForm({});
+    const testForm = useForm({ target: 'SELF' as TestTarget, address: '' });
+    const recipientsForm = useForm({ recipients });
+    const [newAddress, setNewAddress] = useState('');
+    const [addError, setAddError] = useState<string | null>(null);
+
+    const addRecipient = () => {
+        const email = newAddress.trim().toLowerCase();
+        const problem = !emailPattern.test(email)
+            ? 'Escriba una dirección de correo válida.'
+            : recipientsForm.data.recipients.some((r) => r.email === email)
+              ? 'Esta dirección ya está en la lista.'
+              : recipientsForm.data.recipients.length >= maxRecipients
+                ? `Puede agregar hasta ${maxRecipients} destinatarios adicionales.`
+                : null;
+        setAddError(problem);
+        if (problem !== null) {
+            return;
+        }
+        recipientsForm.setData('recipients', [
+            ...recipientsForm.data.recipients,
+            {
+                email,
+                interventions: true,
+                outcomes: true,
+                backups: false,
+                progress: false,
+            },
+        ]);
+        setNewAddress('');
+    };
+
+    const setGroup = (index: number, group: Group, value: boolean) =>
+        recipientsForm.setData(
+            'recipients',
+            recipientsForm.data.recipients.map((recipient, i) =>
+                i === index ? { ...recipient, [group]: value } : recipient,
+            ),
+        );
+
+    const recipientErrors = recipientsForm.errors as Record<string, string>;
 
     const submit = (event: React.FormEvent) => {
         event.preventDefault();
@@ -392,14 +456,216 @@ export default function NotificationSettingsPage({
                 <Card>
                     <CardHeader>
                         <CardTitle className="flex items-center gap-2">
+                            <Users className="size-5" /> Destinatarios
+                            adicionales
+                        </CardTitle>
+                        <CardDescription>
+                            Direcciones que reciben los avisos de todos los
+                            proyectos, además de los usuarios que los eligieron;
+                            por ejemplo, la persona designada para intervenir,
+                            aunque no tenga cuenta en la plataforma. Una
+                            dirección nunca recibe el mismo aviso dos veces.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <form
+                            className="space-y-4"
+                            onSubmit={(event) => {
+                                event.preventDefault();
+                                recipientsForm.put(updateRecipients.url(), {
+                                    preserveScroll: true,
+                                });
+                            }}
+                        >
+                            <div className="flex flex-col gap-2 sm:flex-row">
+                                <Input
+                                    id="new_recipient"
+                                    type="email"
+                                    aria-label="Nueva dirección de correo"
+                                    placeholder="persona@ejemplo.edu"
+                                    value={newAddress}
+                                    onChange={(event) =>
+                                        setNewAddress(event.target.value)
+                                    }
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter') {
+                                            event.preventDefault();
+                                            addRecipient();
+                                        }
+                                    }}
+                                />
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={addRecipient}
+                                    disabled={
+                                        recipientsForm.data.recipients.length >=
+                                        maxRecipients
+                                    }
+                                >
+                                    <Plus /> Agregar
+                                </Button>
+                            </div>
+                            <InputError
+                                message={addError ?? recipientErrors.recipients}
+                            />
+
+                            {recipientsForm.data.recipients.length === 0 ? (
+                                <p className="text-muted-foreground text-sm">
+                                    No hay destinatarios adicionales. Los avisos
+                                    llegan sólo a los usuarios de cada proyecto.
+                                </p>
+                            ) : (
+                                <ul className="divide-y rounded-md border">
+                                    {recipientsForm.data.recipients.map(
+                                        (recipient, index) => (
+                                            <li
+                                                key={recipient.email}
+                                                className="space-y-2 p-3"
+                                            >
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <span className="text-sm font-medium break-all">
+                                                        {recipient.email}
+                                                    </span>
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        aria-label={`Quitar ${recipient.email}`}
+                                                        onClick={() =>
+                                                            recipientsForm.setData(
+                                                                'recipients',
+                                                                recipientsForm.data.recipients.filter(
+                                                                    (_, i) =>
+                                                                        i !==
+                                                                        index,
+                                                                ),
+                                                            )
+                                                        }
+                                                    >
+                                                        <Trash2 />
+                                                    </Button>
+                                                </div>
+                                                <div className="flex flex-wrap gap-x-4 gap-y-2">
+                                                    {groups.map((group) => (
+                                                        <label
+                                                            key={group.key}
+                                                            className="flex items-center gap-2 text-sm"
+                                                        >
+                                                            <Checkbox
+                                                                checked={
+                                                                    recipient[
+                                                                        group
+                                                                            .key
+                                                                    ]
+                                                                }
+                                                                onCheckedChange={(
+                                                                    checked,
+                                                                ) =>
+                                                                    setGroup(
+                                                                        index,
+                                                                        group.key,
+                                                                        checked ===
+                                                                            true,
+                                                                    )
+                                                                }
+                                                            />
+                                                            {group.title}
+                                                        </label>
+                                                    ))}
+                                                </div>
+                                                <InputError
+                                                    message={
+                                                        recipientErrors[
+                                                            `recipients.${index}.email`
+                                                        ]
+                                                    }
+                                                />
+                                            </li>
+                                        ),
+                                    )}
+                                </ul>
+                            )}
+                            <p className="text-muted-foreground text-xs">
+                                {recipientsForm.data.recipients.length} de{' '}
+                                {maxRecipients} direcciones. Guardar pide
+                                confirmar su contraseña; la auditoría registra
+                                sólo cuántas hay, no las direcciones.
+                            </p>
+                            <Button disabled={recipientsForm.processing}>
+                                {recipientsForm.processing && <Spinner />}
+                                Guardar destinatarios
+                            </Button>
+                        </form>
+                    </CardContent>
+                </Card>
+
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
                             <Send className="size-5" /> Correo de prueba
                         </CardTitle>
                         <CardDescription>
-                            Envía un correo a su propia dirección con la
-                            configuración guardada (no con cambios sin guardar).
+                            Envía un correo con la configuración guardada (no
+                            con cambios sin guardar).
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
+                        <div className="grid gap-2 md:grid-cols-2">
+                            <div className="grid gap-2">
+                                <Label htmlFor="test_target">Enviar a</Label>
+                                <select
+                                    id="test_target"
+                                    className={selectClass}
+                                    value={testForm.data.target}
+                                    onChange={(event) =>
+                                        testForm.setData(
+                                            'target',
+                                            event.target.value as TestTarget,
+                                        )
+                                    }
+                                >
+                                    <option value="SELF">
+                                        Mi dirección ({auth.user?.email})
+                                    </option>
+                                    <option value="ADDRESS">
+                                        Otra dirección
+                                    </option>
+                                    <option
+                                        value="RECIPIENTS"
+                                        disabled={recipients.length === 0}
+                                    >
+                                        Todos los destinatarios adicionales (
+                                        {recipients.length})
+                                    </option>
+                                </select>
+                            </div>
+                            {testForm.data.target === 'ADDRESS' && (
+                                <div className="grid gap-2">
+                                    <Label htmlFor="test_address">
+                                        Dirección
+                                    </Label>
+                                    <Input
+                                        id="test_address"
+                                        type="email"
+                                        placeholder="persona@ejemplo.edu"
+                                        value={testForm.data.address}
+                                        onChange={(event) =>
+                                            testForm.setData(
+                                                'address',
+                                                event.target.value,
+                                            )
+                                        }
+                                    />
+                                </div>
+                            )}
+                        </div>
+                        <InputError
+                            message={
+                                testForm.errors.address ??
+                                testForm.errors.target
+                            }
+                        />
                         {lastTest !== null && (
                             <Alert
                                 variant={
@@ -412,9 +678,8 @@ export default function NotificationSettingsPage({
                                         : 'El correo de prueba no se envió'}
                                 </AlertTitle>
                                 <AlertDescription>
-                                    {lastTest.ok
-                                        ? 'Revise su bandeja de entrada.'
-                                        : lastTest.message}
+                                    {lastTest.message ??
+                                        'Revise su bandeja de entrada.'}
                                 </AlertDescription>
                             </Alert>
                         )}

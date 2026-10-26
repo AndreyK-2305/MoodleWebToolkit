@@ -11,6 +11,7 @@ use App\Enums\UserRole;
 use App\Models\Execution;
 use App\Models\ExecutionEvent;
 use App\Models\ExecutionNotification;
+use App\Models\NotificationRecipient;
 use App\Models\NotificationSettings;
 use App\Models\SourcePackage;
 use App\Models\User;
@@ -19,6 +20,7 @@ use App\Notifications\ExecutionNotice;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Notification;
 
 /**
  * Email notifications of an Execution, as a transactional outbox.
@@ -26,8 +28,9 @@ use Illuminate\Support\Facades\DB;
  * The event recorder captures a notifiable event in its own commit, keyed by a
  * stable event key (the conflict key, the source package, the backup digest or
  * the outcome itself), so a retried worker or a replayed observation writes
- * nothing new. The scheduler dispatches each row once: one delivery per user,
- * sent as a queued notification after the commit.
+ * nothing new. The scheduler dispatches each row once: one delivery per address
+ * (opted-in users, then the administrator's extra recipients), sent as a queued
+ * notification after the commit.
  */
 class ExecutionNotifications
 {
@@ -161,13 +164,17 @@ class ExecutionNotifications
             };
             $sent = 0;
             if ($outcome === 'SENT') {
+                // Queued after the commit: a rolled-back pass leaves nothing in the queue.
                 foreach ($this->recipients($row->execution, $row->group) as $user) {
-                    $inserted = DB::table('execution_notification_deliveries')->insertOrIgnore([
-                        'execution_notification_id' => $row->getKey(), 'user_id' => $user->getKey(), 'created_at' => now()->utc(),
-                    ]);
-                    if ($inserted === 1) {
-                        // Queued after the commit: a rolled-back pass leaves nothing in the queue.
+                    if ($this->claim($row, $user->email, $user->getKey())) {
                         $user->notify(new ExecutionNotice($row->getKey()));
+                        $sent++;
+                    }
+                }
+                // Users go first, so an extra address that is also a user's email is already claimed.
+                foreach (NotificationRecipient::addressesFor($row->group) as $email) {
+                    if ($this->claim($row, $email, null)) {
+                        Notification::route('mail', $email)->notify(new ExecutionNotice($row->getKey()));
                         $sent++;
                     }
                 }
@@ -197,6 +204,15 @@ class ExecutionNotifications
                 }
             })
             ->orderBy('id')->get();
+    }
+
+    /** Writes the delivery of one address; false when that address already has it. */
+    private function claim(ExecutionNotification $row, string $email, ?int $userId): bool
+    {
+        return DB::table('execution_notification_deliveries')->insertOrIgnore([
+            'execution_notification_id' => $row->getKey(), 'user_id' => $userId,
+            'email' => mb_strtolower(trim($email)), 'created_at' => now()->utc(),
+        ]) === 1;
     }
 
     /** @return array{dedupe_key: string, group: string, kind: string, title: string, line: string} */

@@ -13,6 +13,7 @@ use App\Enums\SmtpEncryption;
 use App\Enums\UserRole;
 use App\Models\Execution;
 use App\Models\ExecutionNotification;
+use App\Models\NotificationRecipient;
 use App\Models\NotificationSettings;
 use App\Models\Project;
 use App\Models\ProjectAssignment;
@@ -20,6 +21,8 @@ use App\Models\User;
 use App\Models\UserNotificationPreference;
 use App\Notifications\ExecutionNotice;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Notifications\AnonymousNotifiable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Inertia\Testing\AssertableInertia;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -152,6 +155,39 @@ class ExecutionNotificationsTest extends TestCase
         Notification::assertNotSentTo($this->optedOut, ExecutionNotice::class);
     }
 
+    public function test_extra_recipients_get_their_groups_once_and_never_twice_with_a_user(): void
+    {
+        NotificationRecipient::query()->create(['email' => 'obrero@example.org', ...NotificationRecipient::DEFAULTS]);
+        NotificationRecipient::query()->create(['email' => 'respaldos@example.org', 'interventions' => false, 'outcomes' => false, 'backups' => true, 'progress' => false]);
+        // The administrator's own address is also listed: the user delivery claims it first.
+        NotificationRecipient::query()->create(['email' => mb_strtolower($this->admin->email), 'interventions' => true, 'outcomes' => true, 'backups' => true, 'progress' => true]);
+        // Extra recipients follow every project, including one with no members at all.
+        $execution = $this->execution($this->project($this->admin), creator: $this->admin);
+
+        $this->record($execution, 'consolidator.intervention_opened', '03-plugins', ['conflict_key' => 'k9', 'conflict_type' => 'PLUGIN_INTERVENTION']);
+        $this->record($execution, 'consolidator.backup_failed', 'finalization');
+        $this->record($execution, 'consolidator.failed');
+        $this->artisan('notifications:dispatch')->assertSuccessful();
+        $this->artisan('notifications:dispatch')->assertSuccessful();
+        foreach (ExecutionNotification::query()->pluck('id') as $id) {
+            app(ExecutionNotifications::class)->dispatch((int) $id);
+        }
+
+        $this->assertSame(['intervention_waiting', 'consolidation_failed'], $this->sentOnDemandTo('obrero@example.org'));
+        $this->assertSame(['backup_failed'], $this->sentOnDemandTo('respaldos@example.org'));
+        $this->assertSame([], $this->sentOnDemandTo(mb_strtolower($this->admin->email)));
+        Notification::assertSentOnDemandTimes(ExecutionNotice::class, 3);
+        Notification::assertSentToTimes($this->admin, ExecutionNotice::class, 3);
+        Notification::assertNotSentTo($this->operator, ExecutionNotice::class);
+        $this->assertSame([2, 2, 2], ExecutionNotification::query()->orderBy('id')->pluck('recipients')->all());
+        $this->assertDatabaseCount('execution_notification_deliveries', 6);
+        $this->assertSame(1, DB::table('execution_notification_deliveries')->where('email', mb_strtolower($this->admin->email))
+            ->where('execution_notification_id', ExecutionNotification::query()->min('id'))->count());
+
+        $mail = (new ExecutionNotice((int) ExecutionNotification::query()->min('id')))->toMail(new AnonymousNotifiable);
+        $this->assertStringContainsString('lo designó como destinatario', implode("\n", $mail->outroLines));
+    }
+
     public function test_disabled_or_stale_notifications_are_closed_without_sending(): void
     {
         $execution = $this->execution($this->memberProject());
@@ -242,6 +278,14 @@ class ExecutionNotificationsTest extends TestCase
         $this->actingAs($this->operator)->put(route('notifications.update'), ['receive_email' => 'quizás'])
             ->assertSessionHasErrors(['receive_email', 'interventions']);
         $this->assertSame(1, UserNotificationPreference::query()->where('user_id', $this->operator->id)->count());
+    }
+
+    /** @return list<string> the kinds sent on demand to one address, in order */
+    private function sentOnDemandTo(string $email): array
+    {
+        return Notification::sent(new AnonymousNotifiable, ExecutionNotice::class,
+            fn (ExecutionNotice $notice, array $channels, AnonymousNotifiable $notifiable): bool => ($notifiable->routes['mail'] ?? null) === $email)
+            ->map(fn (ExecutionNotice $notice): string => ExecutionNotification::query()->findOrFail($notice->notificationId)->kind)->values()->all();
     }
 
     private function memberProject(ProjectType $type = ProjectType::CONSOLIDATE): Project

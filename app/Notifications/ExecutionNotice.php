@@ -7,6 +7,7 @@ use App\Models\ExecutionNotification;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Notifications\AnonymousNotifiable;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
@@ -31,12 +32,12 @@ class ExecutionNotice extends Notification implements ShouldQueue
     }
 
     /** @return list<string> */
-    public function via(User $notifiable): array
+    public function via(User|AnonymousNotifiable $notifiable): array
     {
         return ['mail'];
     }
 
-    public function toMail(User $notifiable): MailMessage
+    public function toMail(User|AnonymousNotifiable $notifiable): MailMessage
     {
         $row = ExecutionNotification::query()->with('execution.project')->findOrFail($this->notificationId);
         $execution = $row->execution;
@@ -48,7 +49,9 @@ class ExecutionNotice extends Notification implements ShouldQueue
             ->line('Proyecto: '.$project->name)
             ->line($row->line)
             ->action('Abrir la ejecución', route('projects.executions.show', ['project' => $project->uuid, 'execution' => $execution->uuid]))
-            ->line('Recibe este correo porque participa en el proyecto. Puede elegir qué avisos recibir en Configuración → Notificaciones.')
+            ->line($notifiable instanceof User
+                ? 'Recibe este correo porque participa en el proyecto. Puede elegir qué avisos recibir en Configuración → Notificaciones.'
+                : 'Recibe este correo porque un administrador de la plataforma lo designó como destinatario de estos avisos.')
             ->salutation('MoodleWebToolkit');
         $mailer = $platform->mailer();
         if ($mailer !== null) {
@@ -68,7 +71,7 @@ class ExecutionNotice extends Notification implements ShouldQueue
      *
      * @return array<string, mixed>
      */
-    public function toArray(User $notifiable): array
+    public function toArray(User|AnonymousNotifiable $notifiable): array
     {
         return ['execution_notification_id' => $this->notificationId];
     }

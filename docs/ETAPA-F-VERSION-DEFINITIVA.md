@@ -314,9 +314,12 @@ plataforma quien envía los correos. Así las credenciales SMTP nunca viajan a l
 - Guardar exige confirmar la contraseña (`action.confirmed`) y queda en la auditoría
   (`NOTIFICATION_SETTINGS_UPDATED`) con los nombres de los campos que cambiaron, nunca con los
   valores.
-- «Enviar correo de prueba» manda un correo a la dirección del propio administrador con la
-  configuración guardada. Si falla, explica el error SMTP en español (conexión, credenciales, TLS,
-  remitente) sin repetir la contraseña.
+- «Enviar correo de prueba» usa la configuración guardada. Puede ir a la dirección del propio
+  administrador (por defecto), a una dirección que se escribe en el momento o a todos los
+  destinatarios adicionales, con un correo por dirección para que nadie vea a los demás. Si falla,
+  explica el error SMTP en español (conexión, credenciales, TLS, remitente) sin repetir la
+  contraseña. La auditoría (`NOTIFICATION_TEST_EMAIL`) guarda el resultado, el tipo de destino y
+  cuántos se enviaron, sin las direcciones.
 - El mailer se arma al enviar desde esta configuración (`PlatformMailer`). Solo cuando no hay
   ninguna guardada se usan los `MAIL_*` del `.env`. Si hay configuración pero el envío está
   apagado, no sale ningún correo.
@@ -357,11 +360,32 @@ estable única por ejecución:
   usuarios asignados) y que optaron por ese grupo. Los administradores no se asignan a proyectos y
   ven todos, así que reciben los avisos de todos los proyectos salvo que los desactiven.
 
+### Destinatarios adicionales (Administración → Notificaciones)
+
+El usuario pidió que el correo se pueda dirigir a varias personas desde la misma página. Por
+ejemplo, el administrador designa a un trabajador que debe intervenir y que quizá no tiene cuenta
+en la plataforma.
+
+- Lista de hasta 20 direcciones en `notification_recipients`. Cada una elige los mismos grupos que
+  las preferencias de un usuario. Una dirección nueva empieza con intervenciones y finalizaciones y
+  fallos activos.
+- Las direcciones se guardan en minúsculas y no se pueden repetir. La validación rechaza la misma
+  dirección escrita dos veces aunque cambien las mayúsculas.
+- Reciben los avisos de todos los proyectos, además de los usuarios que los eligieron. El correo
+  les explica que un administrador los designó, en lugar de remitir a Configuración.
+- Idempotencia por dirección: `execution_notification_deliveries` guarda también el correo, en
+  minúsculas y único por notificación. Los usuarios se despachan primero, así que una dirección
+  adicional que coincide con el correo de un usuario no recibe el mismo aviso dos veces.
+- Guardar la lista exige confirmar la contraseña. La auditoría (`NOTIFICATION_RECIPIENTS_UPDATED`)
+  guarda solo cuántas hay, cuántas se agregaron, quitaron o cambiaron, nunca las direcciones.
+
 ### Verificación
 
 - Pruebas Feature: `tests/Feature/Notifications/NotificationSettingsTest.php` (acceso, validación,
   cifrado, contraseña nunca en las respuestas, auditoría sin valores, correo de prueba con
-  `Mail::fake`, error SMTP real contra un puerto cerrado) y `ExecutionNotificationsTest.php` (un
-  correo por evento y por miembro, eventos que no avisan, idempotencia ante repeticiones,
-  preferencias, envío apagado o vencido, resumen de avance y contenido del correo).
+  `Mail::fake` a cada tipo de destino, error SMTP real contra un puerto cerrado, validación,
+  deduplicación y auditoría por conteo de los destinatarios adicionales) y
+  `ExecutionNotificationsTest.php` (un correo por evento y por miembro, eventos que no avisan,
+  idempotencia ante repeticiones, preferencias, destinatarios adicionales por grupo sin duplicar
+  el correo de un usuario, envío apagado o vencido, resumen de avance y contenido del correo).
 - Pendiente: probar con un SMTP real desde AWS durante una consolidación.
