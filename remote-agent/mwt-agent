@@ -10,16 +10,19 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.16.0"
+readonly AGENT_VERSION="1.17.0"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
 readonly STAGING_DIR="${STATE_DIR}/staging"
 readonly TOOLS_DIR="${MWT_AGENT_TOOLS_DIR:-/opt/mwt-agent/tools}"
-# Source profiles are written by the server's administrator, never by the platform.
+# Source profiles: written by the server's administrator with mwt-source-profile or, from 1.17.0,
+# by source-profile-create once a platform administrator confirms them. Always root:root 0600.
 readonly SOURCES_DIR="${MWT_AGENT_SOURCES_DIR:-/etc/mwt-agent/sources}"
-# Destination profiles too: each names the Consolidator runtime the administrator prepared.
+# Destination profiles too: each names the Consolidator runtime prepared for it.
 readonly DESTINATIONS_DIR="${MWT_AGENT_DESTINATIONS_DIR:-/etc/mwt-agent/destinations}"
+# Where moodle-detect looks for native installations (space-separated absolute directories).
+readonly DETECT_ROOTS="${MWT_AGENT_DETECT_ROOTS:-/var/www /opt /srv}"
 readonly CONSOLIDATOR_COMPOSE_PROJECT="moodle-consolidation-production"
 readonly HTTPS_URL_RE='^https://[A-Za-z0-9._:-]+(/[A-Za-z0-9._~/-]*)?$'
 readonly COLLECTOR_TOOL_KEY="moodle-recolector-7.4.2-linux-tree"
@@ -27,6 +30,11 @@ readonly TOOL_KEY_RE='^[a-z0-9][a-z0-9.-]{2,80}$'
 readonly SHA_RE='^[0-9a-f]{64}$'
 readonly SOURCE_RE='^[a-z0-9][a-z0-9-]{1,62}$'
 readonly PATH_RE='^/[A-Za-z0-9._/-]{1,255}$'
+readonly USER_RE='^[a-z_][a-z0-9_-]{0,31}$'
+readonly SERVICE_RE='^[a-z0-9][a-z0-9_-]{0,62}$'
+readonly EMAIL_RE='^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+readonly BUCKET_RE='^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+readonly REGION_RE='^[a-z]{2}(-gov)?-[a-z]+-[1-9]$'
 readonly MAX_TAIL_BYTES=16384
 readonly HEARTBEAT_SECONDS=10
 readonly SELF_PATH=$(readlink -f "${BASH_SOURCE[0]}")
@@ -636,7 +644,7 @@ cmd_version() {
 
 cmd_probe() {
     local os_id='' os_version='' os_name='' kernel arch cpus mem_kb='' systemd_version=''
-    local disk_total='' disk_free='' probe_dir php_version='' docker_version='' pwsh_version='' aws_version=''
+    local disk_total='' disk_free='' probe_dir php_version='' docker_version='' compose_version='' pwsh_version='' aws_version=''
     if [[ -r /etc/os-release ]]; then
         # shellcheck disable=SC1091
         os_id=$(. /etc/os-release && printf '%s' "${ID:-}")
@@ -657,18 +665,19 @@ cmd_probe() {
     if read -r disk_total disk_free < <(df -PB1 "$probe_dir" 2>/dev/null | awk 'NR==2 {print $2, $4}'); then :; fi
     command -v php >/dev/null 2>&1 && php_version=$(php -r 'echo PHP_VERSION;' 2>/dev/null || true)
     command -v docker >/dev/null 2>&1 && docker_version=$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',' || true)
+    command -v docker >/dev/null 2>&1 && compose_version=$(docker compose version --short 2>/dev/null || true)
     command -v pwsh >/dev/null 2>&1 && pwsh_version=$(pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null || true)
     command -v aws >/dev/null 2>&1 && aws_version=$(aws --version 2>&1 | awk '{print $1}' | cut -d/ -f2 || true)
 
     local data
-    data=$(printf '{"agent_sha256":"%s","hostname":%s,"os_id":%s,"os_version":%s,"os_name":%s,"kernel":%s,"arch":%s,"cpus":%s,"memory_bytes":%s,"is_root":%s,"systemd":%s,"systemd_version":%s,"launcher":"%s","bash_version":%s,"state_dir_exists":%s,"disk_total_bytes":%s,"disk_free_bytes":%s,"php_version":%s,"docker_version":%s,"pwsh_version":%s,"aws_cli_version":%s,"observed_at":"%s"}' \
+    data=$(printf '{"agent_sha256":"%s","hostname":%s,"os_id":%s,"os_version":%s,"os_name":%s,"kernel":%s,"arch":%s,"cpus":%s,"memory_bytes":%s,"is_root":%s,"systemd":%s,"systemd_version":%s,"launcher":"%s","bash_version":%s,"state_dir_exists":%s,"disk_total_bytes":%s,"disk_free_bytes":%s,"php_version":%s,"docker_version":%s,"compose_version":%s,"pwsh_version":%s,"aws_cli_version":%s,"observed_at":"%s"}' \
         "$(self_sha256)" "$(json_escape "$(hostname)")" "$(json_or_null "$os_id")" "$(json_or_null "$os_version")" \
         "$(json_or_null "$os_name")" "$(json_escape "$kernel")" "$(json_escape "$arch")" "$(int_or_null "$cpus")" \
         "$(if [[ $mem_kb =~ ^[0-9]+$ ]]; then printf '%s' $((mem_kb * 1024)); else printf 'null'; fi)" \
         "$(bool "$([[ $(id -u) == 0 ]] && echo 1 || echo 0)")" "$(bool "$(has_systemd && echo 1 || echo 0)")" \
         "$(json_or_null "$systemd_version")" "$(launcher_mode)" "$(json_escape "$BASH_VERSION")" \
         "$(bool "$([[ -d $STATE_DIR ]] && echo 1 || echo 0)")" "$(int_or_null "$disk_total")" "$(int_or_null "$disk_free")" \
-        "$(json_or_null "$php_version")" "$(json_or_null "$docker_version")" "$(json_or_null "$pwsh_version")" \
+        "$(json_or_null "$php_version")" "$(json_or_null "$docker_version")" "$(json_or_null "$compose_version")" "$(json_or_null "$pwsh_version")" \
         "$(json_or_null "$aws_version")" "$(now_utc)")
     respond_ok probe "$data"
 }
@@ -884,7 +893,7 @@ cmd_tool_commit() {
 # runtime user and PHP with the extensions it needs. Prints no paths or content.
 cmd_source_check() {
     (($# == 1)) || fail invalid_arguments
-    local report php_version='' zip=0 dom=0 readable=0 moodle='' release='' version='' data_free='' data_writable=0 state_free='' probe_dir
+    local report php_version='' zip=0 dom=0 readable=0 moodle='' release='' version='' data_free='' data_writable=0 state_free='' probe_dir cpus aws_version=''
     load_source "$1"
     source_exec
     # shellcheck disable=SC2016
@@ -909,9 +918,14 @@ cmd_source_check() {
     probe_dir=$STATE_DIR
     [[ -d $probe_dir ]] || probe_dir=$(dirname "$STATE_DIR")
     state_free=$(df -PB1 "$probe_dir" 2>/dev/null | awk 'NR==2 {print $4}') || state_free=''
-    respond_ok source-check "$(printf '{"source":"%s","runtime":"%s","run_as":"%s","php_version":"%s","zip":%s,"dom":%s,"config_readable":%s,"moodle_release":%s,"moodle_version":%s,"dataroot_free_bytes":%s,"dataroot_writable":%s,"state_free_bytes":%s}' \
+    # The Collector's workers, and the package upload with the instance role through AWS CLI v2.
+    cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '')
+    command -v aws >/dev/null 2>&1 && aws_version=$(aws --version 2>&1 | awk '{print $1}' | cut -d/ -f2 || true)
+    [[ $aws_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || aws_version=''
+    respond_ok source-check "$(printf '{"source":"%s","runtime":"%s","run_as":"%s","php_version":"%s","zip":%s,"dom":%s,"config_readable":%s,"moodle_release":%s,"moodle_version":%s,"dataroot_free_bytes":%s,"dataroot_writable":%s,"state_free_bytes":%s,"cpus":%s,"aws_cli_version":%s,"aws_cli_v2":%s}' \
         "$SRC_ID" "$SRC_RUNTIME" "$SRC_RUN_AS" "$php_version" "$(bool "$zip")" "$(bool "$dom")" "$(bool "$readable")" \
-        "$(json_or_null "$release")" "$(int_or_null "$version")" "$(int_or_null "$data_free")" "$(bool "$data_writable")" "$(int_or_null "$state_free")")"
+        "$(json_or_null "$release")" "$(int_or_null "$version")" "$(int_or_null "$data_free")" "$(bool "$data_writable")" "$(int_or_null "$state_free")" \
+        "$(int_or_null "$cpus")" "$(json_or_null "$aws_version")" "$(bool "$([[ $aws_version == 2.* ]] && echo 1 || echo 0)")")"
 }
 
 # Profiles the administrator defined on this server, with their validity and
@@ -1802,6 +1816,422 @@ cmd_cleanup() {
     respond_ok cleanup "{\"operation_uuid\":\"$uuid\",\"already_clean\":false,\"cleanup\":$(cat "$dir/cleanup.json")}"
 }
 
+# --- Server preparation ---------------------------------------------------
+#
+# From 1.17.0 the platform prepares a server from the web: a platform
+# administrator confirms each profile with their password and the action is
+# audited. Free text (paths, URLs, e-mail addresses) travels base64url-encoded
+# in name=value pairs, so every argument stays in the closed argument alphabet,
+# and is validated again here as the manual helpers validate it.
+
+declare -A OPTS=()
+
+# Sets OPTS from name=value pairs; each name must be allowed and appear once.
+read_options() {
+    local allowed=" $1 " pair
+    shift
+    OPTS=()
+    for pair in "$@"; do
+        [[ $pair =~ ^([a-z_]{1,32})=([A-Za-z0-9._:-]{0,160})$ ]] || fail invalid_arguments
+        [[ $allowed == *" ${BASH_REMATCH[1]} "* && -z ${OPTS[${BASH_REMATCH[1]}]+set} ]] || fail invalid_arguments
+        OPTS[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
+    done
+}
+
+# Decodes one base64url value; fails on anything else.
+decode_text() {
+    [[ $1 =~ ^[A-Za-z0-9_-]{1,160}$ ]] || return 1
+    local value
+    value=$(printf '%s' "$1" | tr '_-' '/+')
+    while ((${#value} % 4)); do value+='='; done
+    printf '%s' "$value" | base64 -d 2>/dev/null
+}
+
+# Writes a profile atomically, root:root 0600 (the agent's own user when it does not run as root).
+write_profile() {
+    local dir=$1 file=$2 content=$3 tmp
+    if [[ $(id -u) == 0 ]]; then
+        install -d -o root -g root -m 0755 "$(dirname "$dir")"
+        install -d -o root -g root -m 0700 "$dir"
+    else
+        mkdir -p "$dir"
+        chmod 0700 "$dir"
+    fi
+    tmp=$(mktemp "$dir/.profile.XXXXXX")
+    printf '%s\n' "$content" >"$tmp"
+    [[ $(id -u) != 0 ]] || chown root:root "$tmp"
+    chmod 0600 "$tmp"
+    mv -f "$tmp" "$file"
+}
+
+destination_profile_content() {
+    printf '# Perfil de destino para mwt-agent; escrito %s\nRUNTIME_DIR=%s\nPUBLIC_URL=%s\nTOOL_TREE=%s\nRUN_AS=%s' "$(now_utc)" "$1" "$2" "$3" "$4"
+}
+
+# A Moodle code tree, by presence only: version.php and lib/setup.php at its root or,
+# from Moodle 5.1, under public/. No file is read.
+moodle_tree() {
+    [[ -f $1/version.php || -f $1/public/version.php ]] && [[ -f $1/lib/setup.php || -f $1/public/lib/setup.php ]]
+}
+
+# The user a Moodle most likely runs as: the non-root owner of its config.php or of its
+# directory, else the usual web server users.
+likely_run_as() {
+    local owner candidate
+    for owner in "$(stat -c %U "$1" 2>/dev/null)" "$(stat -c %U "$(dirname "$1")" 2>/dev/null)"; do
+        if [[ $owner =~ $USER_RE && $owner != root ]]; then
+            printf '%s' "$owner"
+            return
+        fi
+    done
+    for candidate in www-data apache nginx; do
+        if id -u "$candidate" >/dev/null 2>&1; then
+            printf '%s' "$candidate"
+            return
+        fi
+    done
+}
+
+# config_path runtime compose_dir compose_service run_as config_owner issue
+candidate_json() {
+    printf '{"config_path":%s,"runtime":"%s","compose_dir":%s,"compose_service":%s,"compose_profile":null,"run_as":%s,"config_owner":%s,"issue":%s}' \
+        "$(json_escape "$1")" "$2" "$(json_or_null "$3")" "$(json_or_null "$4")" "$(json_or_null "$5")" "$(json_or_null "$6")" "$(json_or_null "$7")"
+}
+
+# Candidate Moodle installations for a source profile: native trees under the usual
+# directories and Compose services that mount a Moodle config.php. Only presence and
+# ownership are looked at; config.php is never read, so no setting leaves the server.
+cmd_moodle_detect() {
+    (($# == 0)) || fail invalid_arguments
+    local root config dir entries='' sep='' count=0 run_as php_present=0 docker_checked=0 key issue
+    local id line working service mounts mount source target host container
+    local -a mount_list=()
+    local -A seen=()
+    command -v php >/dev/null 2>&1 && php_present=1
+    for root in $DETECT_ROOTS; do
+        [[ $root =~ $PATH_RE && $root != *..* && -d $root && ! -L $root ]] || continue
+        while IFS= read -r -d '' config; do
+            ((count < 20)) || break
+            dir=$(dirname "$config")
+            safe_path "$config" && moodle_tree "$dir" || continue
+            # The platform's own trees and the Consolidator's runtimes are not sources.
+            [[ $config != "$TOOLS_DIR"/* && $config != "$STATE_DIR"/* && $config != /srv/mwt-destinations/* ]] || continue
+            key="native|$config"
+            [[ -z ${seen[$key]+set} ]] || continue
+            seen[$key]=1
+            issue=''
+            ((php_present)) || issue=php_missing
+            entries+="$sep$(candidate_json "$config" native '' '' "$(likely_run_as "$config")" "$(stat -c %U "$config" 2>/dev/null)" "$issue")"
+            sep=','
+            count=$((count + 1))
+        done < <(find "$root" -maxdepth 4 \( -name node_modules -o -name .git -o -name moodledata -o -name vendor \) -prune \
+            -o -type f -name config.php -print0 2>/dev/null | LC_ALL=C sort -z)
+    done
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        docker_checked=1
+        while IFS= read -r id; do
+            [[ $id =~ ^[0-9a-f]{12,64}$ ]] || continue
+            line=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .Mounts}}{{.Source}}>{{.Destination}};{{end}}' "$id" 2>/dev/null) || continue
+            IFS='|' read -r working service mounts <<<"$line"
+            [[ $service =~ $SERVICE_RE ]] && safe_path "$working" || continue
+            IFS=';' read -r -a mount_list <<<"$mounts"
+            for mount in "${mount_list[@]}"; do
+                ((count < 20)) || break
+                source=${mount%%>*} target=${mount#*>}
+                safe_path "$source" && safe_path "$target" || continue
+                if [[ -f $source && ! -L $source && ${source##*/} == config.php ]]; then
+                    host=$source container=$target
+                elif [[ -d $source && ! -L $source && -f $source/config.php ]]; then
+                    host=$source/config.php container=${target%/}/config.php
+                else
+                    continue
+                fi
+                key="compose|$working|$service|$container"
+                [[ -z ${seen[$key]+set} ]] || continue
+                seen[$key]=1
+                issue=''
+                # A config.php mounted alone: the code lives in the image and cannot be seen from here.
+                moodle_tree "$(dirname "$host")" || issue=moodle_unverified
+                [[ -f $working/compose.yaml ]] || issue=compose_file_unsupported
+                entries+="$sep$(candidate_json "$container" compose "$working" "$service" "$(likely_run_as "$host")" "$(stat -c %U "$host" 2>/dev/null)" "$issue")"
+                sep=','
+                count=$((count + 1))
+            done
+        done < <(docker ps --format '{{.ID}}' 2>/dev/null | head -n 50)
+    fi
+    respond_ok moodle-detect "{\"php_present\":$(bool "$php_present"),\"docker_checked\":$(bool "$docker_checked"),\"candidates\":[$entries]}"
+}
+
+# The web equivalent of mwt-source-profile: same arguments and the same checks, then
+# the same check the platform runs, so Moodle, PHP and the CPUs show right away.
+cmd_source_profile_create() {
+    (($# >= 2)) || fail invalid_arguments
+    local id=$1 config runtime run_as compose_dir='' service='' profile='' force file replaced=0 content check
+    local -a compose=()
+    shift
+    [[ $id =~ $SOURCE_RE ]] || fail invalid_source
+    read_options 'config runtime run_as compose_dir compose_service compose_profile force' "$@"
+    config=$(decode_text "${OPTS[config]:-}") || fail invalid_config_path
+    safe_path "$config" && [[ ${config##*/} == config.php ]] || fail invalid_config_path
+    runtime=${OPTS[runtime]:-native}
+    [[ $runtime == native || $runtime == compose ]] || fail invalid_runtime
+    run_as=${OPTS[run_as]:-www-data}
+    [[ $run_as =~ $USER_RE ]] && id -u "$run_as" >/dev/null 2>&1 || fail run_as_missing
+    force=${OPTS[force]:-0}
+    [[ $force =~ ^[01]$ ]] || fail invalid_arguments
+    file="$SOURCES_DIR/$id.conf"
+    [[ ! -L $file ]] || fail source_profile_unsafe
+    if [[ -e $file ]]; then
+        [[ $force == 1 ]] || fail source_profile_exists
+        replaced=1
+    fi
+    if [[ $runtime == native ]]; then
+        [[ -f $config && ! -L $config ]] || fail config_missing
+        moodle_tree "$(dirname "$config")" || fail not_a_moodle_config
+        if [[ $(id -u) == 0 ]]; then
+            runuser -u "$run_as" -- test -r "$config" || fail config_unreadable
+        else
+            # Without root the collector runs as the agent's own user.
+            [[ $(id -un) == "$run_as" ]] || fail run_as_mismatch
+            [[ -r $config ]] || fail config_unreadable
+        fi
+        command -v php >/dev/null 2>&1 || fail php_missing
+    else
+        compose_dir=$(decode_text "${OPTS[compose_dir]:-}") || fail compose_dir_invalid
+        safe_path "$compose_dir" && [[ -f $compose_dir/compose.yaml && ! -L $compose_dir/compose.yaml ]] || fail compose_dir_invalid
+        service=${OPTS[compose_service]:-}
+        [[ $service =~ $SERVICE_RE ]] || fail compose_service_invalid
+        profile=${OPTS[compose_profile]:-}
+        [[ -z $profile || $profile =~ $SERVICE_RE ]] || fail compose_service_invalid
+        command -v docker >/dev/null 2>&1 || fail docker_unavailable
+        compose=(docker compose --project-directory "$compose_dir" -f "$compose_dir/compose.yaml")
+        [[ -z $profile ]] || compose+=(--profile "$profile")
+        "${compose[@]}" config --services 2>/dev/null | grep -qx -- "$service" || fail compose_service_not_found
+    fi
+    content="# Perfil de origen para mwt-agent; creado desde la plataforma $(now_utc)"
+    content+=$'\n'"MOODLE_CONFIG=$config"$'\n'"RUNTIME=$runtime"$'\n'"RUN_AS=$run_as"
+    if [[ $runtime == compose ]]; then
+        content+=$'\n'"COMPOSE_DIR=$compose_dir"$'\n'"COMPOSE_SERVICE=$service"
+        [[ -z $profile ]] || content+=$'\n'"COMPOSE_PROFILE=$profile"
+    fi
+    write_profile "$SOURCES_DIR" "$file" "$content"
+    check=$(bash "$SELF_PATH" source-check "$id" 2>/dev/null | tail -n 1) || true
+    [[ $check == '{"schema":"'"$SCHEMA"'",'* ]] || check=null
+    respond_ok source-profile-create "{\"source\":\"$id\",\"created\":true,\"replaced\":$(bool "$replaced"),\"check\":$check}"
+}
+
+# The web equivalent of mwt-destination-profile. A new runtime is a private copy of the
+# deployed, verified Consolidator tree with its .env written here; the generated Moodle
+# administrator password stays in that .env (0600) and is never returned. With force an
+# existing runtime and its .env are kept and only the profile is rewritten.
+cmd_destination_profile_create() {
+    (($# >= 2)) || fail invalid_arguments
+    local id=$1 public_url runtime force profile run_as tree admin_email='' admin_user http_port source_tree='' tmp managed
+    local replaced=0 runtime_created=0 user_created=0 docker_group=0 check
+    local -a trees=()
+    shift
+    [[ $id =~ $SOURCE_RE ]] || fail invalid_destination
+    read_options 'public_url admin_email admin_user http_port runtime_dir tree run_as force' "$@"
+    public_url=$(decode_text "${OPTS[public_url]:-}") || fail invalid_public_url
+    public_url=${public_url%/}
+    [[ $public_url =~ $HTTPS_URL_RE ]] || fail invalid_public_url
+    if [[ -n ${OPTS[runtime_dir]:-} ]]; then
+        runtime=$(decode_text "${OPTS[runtime_dir]}") || fail invalid_runtime_dir
+    else
+        runtime=/srv/mwt-destinations/$id
+    fi
+    safe_path "$runtime" || fail invalid_runtime_dir
+    force=${OPTS[force]:-0}
+    [[ $force =~ ^[01]$ ]] || fail invalid_arguments
+    profile="$DESTINATIONS_DIR/$id.conf"
+    [[ ! -L $profile ]] || fail destination_profile_unsafe
+    if [[ -e $profile ]]; then
+        [[ $force == 1 ]] || fail destination_profile_exists
+        replaced=1
+    fi
+    run_as=${OPTS[run_as]:-mwt-${id:0:28}}
+    [[ $run_as =~ $USER_RE ]] || fail invalid_run_as
+    tree=${OPTS[tree]:-}
+    [[ -z $tree || $tree =~ $SHA_RE ]] || fail invalid_arguments
+    admin_user=${OPTS[admin_user]:-admin}
+    http_port=${OPTS[http_port]:-8090}
+
+    if [[ -e $runtime ]]; then
+        # An existing runtime keeps its .env, checkpoints and results untouched.
+        [[ $force == 1 ]] || fail destination_runtime_exists
+        [[ -d $runtime && ! -L $runtime && -f $runtime/.env && -f $runtime/FILES.sha256 ]] || fail destination_runtime_invalid
+        [[ $(sed -n 's/^MOODLE_PUBLIC_URL=\(.*\)$/\1/p' "$runtime/.env" | head -n 1) == "$public_url" ]] || fail env_url_mismatch
+        [[ -n $tree ]] || tree=$(sed -n 's/^TOOL_TREE=\(.*\)$/\1/p' "$profile" 2>/dev/null | head -n 1)
+        [[ $tree =~ $SHA_RE ]] || fail tool_tree_required
+    else
+        admin_email=$(decode_text "${OPTS[admin_email]:-}") || fail invalid_admin_email
+        [[ $admin_email =~ $EMAIL_RE ]] || fail invalid_admin_email
+        [[ $admin_user =~ ^[a-z][a-z0-9._-]{2,31}$ ]] || fail invalid_admin_user
+        [[ $http_port =~ ^[0-9]{2,5}$ ]] && ((http_port >= 1 && http_port <= 65535)) || fail invalid_http_port
+        mapfile -t trees < <(find "$TOOLS_DIR" -mindepth 2 -maxdepth 2 -type d -path "$TOOLS_DIR/moodle-consolidador-*/*" -printf '%f\n' 2>/dev/null | grep -E '^[0-9a-f]{64}$' | sort -u)
+        if [[ -n $tree ]]; then
+            printf '%s\n' "${trees[@]}" | grep -qx "$tree" || fail tool_not_installed
+        else
+            ((${#trees[@]} > 0)) || fail tool_not_installed
+            ((${#trees[@]} == 1)) || fail tool_tree_ambiguous
+            tree=${trees[0]}
+        fi
+        source_tree=$(find "$TOOLS_DIR" -mindepth 2 -maxdepth 2 -type d -path "$TOOLS_DIR/moodle-consolidador-*/$tree" | head -n 1)
+        [[ -f $source_tree/moodle-consolidation.sh ]] || fail tool_not_installed
+        # The runtime is copied from the deployed tree only while it still hashes as the catalog.
+        (($(unsafe_entries "$source_tree") == 0)) && [[ $(tree_hash "$source_tree") == "$tree" ]] || fail tool_hash_mismatch
+    fi
+
+    # The Consolidator refuses root: the runtime belongs to an unprivileged user in the docker group.
+    if [[ $(id -u) == 0 ]]; then
+        if id -u "$run_as" >/dev/null 2>&1; then
+            (($(id -u "$run_as") > 0)) || fail run_as_root
+        else
+            useradd --system --create-home --home-dir "/var/lib/$run_as" --shell /usr/sbin/nologin "$run_as" >/dev/null 2>&1 || fail run_as_create_failed
+            user_created=1
+        fi
+        if getent group docker >/dev/null; then
+            id -nG "$run_as" | tr ' ' '\n' | grep -qx docker || usermod -aG docker "$run_as"
+            docker_group=1
+        fi
+    else
+        # Without root the agent prepares a runtime for its own user only.
+        [[ $(id -un) == "$run_as" ]] || fail destination_user_mismatch
+        id -nG | tr ' ' '\n' | grep -qx docker && docker_group=1
+    fi
+
+    if [[ ! -e $runtime ]]; then
+        mkdir -p "$(dirname "$runtime")"
+        tmp="$runtime.incoming-$$"
+        rm -rf -- "$tmp"
+        cp -a "$source_tree" "$tmp"
+        [[ $(id -u) != 0 ]] || chown -R root:root "$tmp"
+        chmod 0755 "$tmp"
+        chmod 0755 "$tmp"/*.sh
+        managed="$runtime/managed-config"
+        mkdir -m 0700 "$tmp/managed-config"
+        # The same variables CONFIGURAR.sh writes for an HTTPS site; notifications start disabled.
+        {
+            printf 'MOODLE_PUBLIC_URL=%s\n' "$public_url"
+            printf 'MOODLE_INTERNAL_HEALTH_URL=http://127.0.0.1:%s\n' "$http_port"
+            printf 'MOODLE_BIND_ADDRESS=127.0.0.1\n'
+            printf 'MOODLE_HTTP_PORT=%s\n' "$http_port"
+            printf 'MOODLE_SITE_NAME="Moodle consolidado UFPS"\n'
+            printf 'MOODLE_SITE_SHORTNAME=CONSOLIDADO\n'
+            printf 'MOODLE_ADMIN_USER=%s\n' "$admin_user"
+            printf 'MOODLE_ADMIN_PASSWORD=Mdl9@%s\n' "$(od -An -N 24 -tx1 /dev/urandom | tr -d ' \n')"
+            printf 'MOODLE_ADMIN_EMAIL=%s\n' "$admin_email"
+            printf 'MOODLE_DB_NAME=moodle_target\n'
+            printf 'MOODLE_DB_USER=moodle_target\n'
+            printf 'MOODLE_DB_PASSWORD=%s\n' "$(od -An -N 24 -tx1 /dev/urandom | tr -d ' \n')"
+            printf 'MARIADB_ROOT_PASSWORD=%s\n' "$(od -An -N 24 -tx1 /dev/urandom | tr -d ' \n')"
+            printf 'MOODLE_TARGET_IMAGE=moodle-consolidation-target:5.2.1-v8.0.0\n'
+            printf 'MOODLE_REVERSE_PROXY=1\n'
+            printf 'MOODLE_SSL_PROXY=1\n'
+            printf 'MOODLE_MANAGED_CONFIG_DIR=%s\n' "$managed"
+            printf 'CONSOLIDATION_AUTO_DELAY_SECONDS=0\n'
+            printf 'CONSOLIDATION_EMAIL_ENABLED=0\n'
+            printf 'CONSOLIDATION_EMAIL_TO=\n'
+            printf 'CONSOLIDATION_EMAIL_FROM=\n'
+            printf 'CONSOLIDATION_EMAIL_FROM_NAME="Consolidador Moodle"\n'
+            printf 'CONSOLIDATION_SMTP_HOST=\n'
+            printf 'CONSOLIDATION_SMTP_PORT=587\n'
+            printf 'CONSOLIDATION_SMTP_USE_TLS=1\n'
+            printf 'CONSOLIDATION_SMTP_USERNAME_BASE64=\n'
+            printf 'CONSOLIDATION_SMTP_PASSWORD_BASE64=\n'
+            printf 'CONSOLIDATION_PROGRESS_EMAIL_ENABLED=0\n'
+            printf 'CONSOLIDATION_PROGRESS_EMAIL_INTERVAL_MINUTES=15\n'
+        } >"$tmp/.env"
+        chmod 0600 "$tmp/.env"
+        mv "$tmp" "$runtime"
+        runtime_created=1
+    fi
+    # What root left in the runtime passes to the profile's user; files the Consolidator's
+    # containers wrote under their own users are left as they are.
+    if [[ $(id -u) == 0 ]]; then
+        find "$runtime" -xdev -user 0 -exec chown -h "$run_as" {} +
+        find "$runtime" -xdev -group 0 -exec chgrp -h "$run_as" {} +
+    fi
+    write_profile "$DESTINATIONS_DIR" "$profile" "$(destination_profile_content "$runtime" "$public_url" "$tree" "$run_as")"
+    check=$(bash "$SELF_PATH" destination-check "$id" 2>/dev/null | tail -n 1) || true
+    [[ $check == '{"schema":"'"$SCHEMA"'",'* ]] || check=null
+    respond_ok destination-profile-create "$(printf '{"destination":"%s","created":true,"replaced":%s,"runtime_created":%s,"user_created":%s,"run_as":"%s","docker_group":%s,"tool_tree":"%s","admin_user":%s,"admin_password_location":%s,"check":%s}' \
+        "$id" "$(bool "$replaced")" "$(bool "$runtime_created")" "$(bool "$user_created")" "$run_as" "$(bool "$docker_group")" "$tree" \
+        "$(if ((runtime_created)); then json_escape "$admin_user"; else printf 'null'; fi)" \
+        "$(if ((runtime_created)); then json_escape "$runtime/.env (MOODLE_ADMIN_PASSWORD)"; else printf 'null'; fi)" "$check")"
+}
+
+# After a Consolidator deployment: points every destination profile at the newly deployed
+# tree, as `mwt-destination-profile --force --tree` did, but only while its site has not
+# been written. Each profile reports what was done or why not.
+cmd_destination_repoint() {
+    (($# == 1)) || fail invalid_arguments
+    local tree=$1 store file id out entries='' sep='' reason old runtime url run_as count=0
+    [[ $tree =~ $SHA_RE ]] || fail invalid_arguments
+    store=$(compgen -G "$TOOLS_DIR/moodle-consolidador-*/$tree" | head -n 1) || fail tool_not_installed
+    [[ -f $store/moodle-consolidation.sh && -f $store/FILES.sha256 ]] || fail tool_not_installed
+    if [[ -d $DESTINATIONS_DIR && ! -L $DESTINATIONS_DIR ]]; then
+        while IFS= read -r -d '' file; do
+            ((count < 20)) || break
+            count=$((count + 1))
+            id=$(basename "$file" .conf)
+            [[ $id =~ $SOURCE_RE ]] || continue
+            # load_destination exits on the first problem; a subshell keeps the listing going.
+            out=$(load_destination "$id"; printf 'MWT_OK\t%s\t%s\t%s\t%s' "$DST_TOOL_TREE" "$DST_RUNTIME_DIR" "$DST_PUBLIC_URL" "$DST_RUN_AS") || true
+            if [[ $out != MWT_OK$'\t'* ]]; then
+                reason=profile_invalid
+            else
+                IFS=$'\t' read -r _ old runtime url run_as <<<"$out"
+                if [[ $old == "$tree" ]]; then
+                    reason=already_current
+                elif [[ ! -d $runtime || -L $runtime || ! -f $runtime/.env || ! -f $runtime/FILES.sha256 ]]; then
+                    reason=runtime_missing
+                elif [[ -e $runtime/reports/destination-write.lock.json ]]; then
+                    reason=destination_written
+                elif [[ $(sed -n 's/^MOODLE_PUBLIC_URL=\(.*\)$/\1/p' "$runtime/.env" | head -n 1) != "$url" ]]; then
+                    reason=env_url_mismatch
+                else
+                    write_profile "$DESTINATIONS_DIR" "$file" "$(destination_profile_content "$runtime" "$url" "$tree" "$run_as")"
+                    reason=repointed
+                fi
+            fi
+            entries+="$sep{\"id\":\"$id\",\"repointed\":$(bool "$([[ $reason == repointed ]] && echo 1 || echo 0)"),\"reason\":\"$reason\"}"
+            sep=','
+        done < <(find "$DESTINATIONS_DIR" -maxdepth 1 -type f -name '*.conf' -print0 | LC_ALL=C sort -z)
+    fi
+    respond_ok destination-repoint "{\"tree\":\"$tree\",\"destinations\":[$entries]}"
+}
+
+# Proves that the instance role can write the platform's bucket (and, for a destination,
+# read it back, as the backup and the package transfer need): one tiny object under
+# mwt/_pruebas/. The platform confirms it with its own identity and deletes it.
+cmd_s3_upload_probe() {
+    (($# >= 2 && $# <= 4)) || fail invalid_arguments
+    local bucket=$1 region=$2 mode=${3:-write} label=${4:-} nonce key work sha size read_back=null
+    [[ $bucket =~ $BUCKET_RE && $region =~ $REGION_RE && $mode =~ ^(write|readwrite)$ ]] || fail invalid_arguments
+    [[ -n $label ]] || label=$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-40)
+    [[ $label =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || label=server
+    command -v aws >/dev/null 2>&1 || fail aws_cli_unavailable
+    nonce=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+    key="mwt/_pruebas/$label/$nonce"
+    work=$(mktemp -d)
+    # Expanded now: the trap runs after this function's locals are gone.
+    # shellcheck disable=SC2064
+    trap "rm -rf -- $(printf '%q' "$work")" EXIT
+    printf 'mwt-agent %s %s %s\n' "$AGENT_VERSION" "$nonce" "$(now_utc)" >"$work/probe"
+    sha=$(sha256sum "$work/probe" | cut -c1-64)
+    size=$(stat -c %s "$work/probe")
+    aws s3 cp "$work/probe" "s3://$bucket/$key" --region "$region" --only-show-errors --sse AES256 \
+        --metadata "mwt-sha256=$sha,mwt-probe=1" >/dev/null 2>&1 || fail storage_put_failed
+    if [[ $mode == readwrite ]]; then
+        aws s3 cp "s3://$bucket/$key" "$work/back" --region "$region" --only-show-errors >/dev/null 2>&1 || fail storage_read_failed
+        [[ $(sha256sum "$work/back" | cut -c1-64) == "$sha" ]] || fail storage_read_mismatch
+        read_back=true
+    fi
+    respond_ok s3-upload-probe "$(printf '{"bucket":"%s","region":"%s","key":"%s","sha256":"%s","size":%s,"mode":"%s","read_back":%s}' \
+        "$bucket" "$region" "$key" "$sha" "$size" "$mode" "$read_back")"
+}
+
 COMMAND=${1:-}
 shift || true
 case $COMMAND in
@@ -1834,6 +2264,11 @@ case $COMMAND in
     collector-report) cmd_collector_report "$@" ;;
     upload-report) cmd_upload_report "$@" ;;
     cleanup) cmd_cleanup "$@" ;;
+    moodle-detect) cmd_moodle_detect "$@" ;;
+    source-profile-create) cmd_source_profile_create "$@" ;;
+    destination-profile-create) cmd_destination_profile_create "$@" ;;
+    destination-repoint) cmd_destination_repoint "$@" ;;
+    s3-upload-probe) cmd_s3_upload_probe "$@" ;;
     __package-upload) (($# == 5)) || exit 40; cmd_package_upload_internal "$@" ;;
     __package-fetch) (($# == 7)) || exit 50; cmd_package_fetch_internal "$@" ;;
     __site-upload) (($# == 7)) || exit 70; cmd_site_upload_internal "$@" ;;

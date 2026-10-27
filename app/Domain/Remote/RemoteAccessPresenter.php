@@ -19,7 +19,7 @@ class RemoteAccessPresenter
 {
     private const PROBE_FIELDS = ['hostname', 'os_name', 'kernel', 'arch', 'cpus', 'memory_bytes', 'launcher',
         'systemd_version', 'bash_version', 'disk_total_bytes', 'disk_free_bytes', 'php_version', 'docker_version',
-        'pwsh_version', 'aws_cli_version', 'observed_at'];
+        'compose_version', 'pwsh_version', 'aws_cli_version', 'observed_at'];
 
     public function __construct(private readonly RemoteAgent $agent, private readonly UpdateRemoteAgent $updates) {}
 
@@ -59,6 +59,9 @@ class RemoteAccessPresenter
                 'consolidator' => $this->consolidator($server),
                 'destinations' => $this->destinations($server),
                 'destinations_detected_at' => $server->metadata['remote_destinations_detected']['detected_at'] ?? null,
+                'storage_probe' => $this->storageProbe($server),
+                'moodle_detected' => $server->role === ServerRole::SOURCE ? $this->moodleDetected($server) : null,
+                'destination_repoint' => $server->role === ServerRole::DESTINATION ? $this->repoint($server) : null,
                 'operations' => ($operations->get($server->uuid) ?? collect())->take(5)->map(fn (RemoteOperation $operation): array => [
                     'uuid' => $operation->operation_uuid,
                     'command_key' => $operation->command_key,
@@ -93,7 +96,11 @@ class RemoteAccessPresenter
                 'detected' => $detected->has($id), 'valid' => $detected->has($id) ? $detected->get($id)['valid'] === true : null,
                 'profile_error' => $detected->get($id)['error_code'] ?? null, 'runtime' => $report['runtime'] ?? $detected->get($id)['runtime'] ?? null,
                 'moodle_release' => $report['moodle_release'] ?? null, 'php_version' => $report['php_version'] ?? null,
-                'dataroot_free_bytes' => $report['dataroot_free_bytes'] ?? null, 'state_free_bytes' => $report['state_free_bytes'] ?? null];
+                'dataroot_free_bytes' => $report['dataroot_free_bytes'] ?? null, 'state_free_bytes' => $report['state_free_bytes'] ?? null,
+                'run_as' => $report['run_as'] ?? $detected->get($id)['run_as'] ?? null,
+                'cpus' => is_int($report['cpus'] ?? null) ? $report['cpus'] : null,
+                'aws_cli_v2' => is_bool($report['aws_cli_v2'] ?? null) ? $report['aws_cli_v2'] : null,
+                'max_workers' => CheckRemoteSource::maxWorkers(is_int($report['cpus'] ?? null) ? $report['cpus'] : null)];
         }
 
         return $sources;
@@ -139,6 +146,7 @@ class RemoteAccessPresenter
                 'target_volumes' => is_int($report['target_volumes'] ?? null) ? $report['target_volumes'] : null,
                 'copias_packages' => is_int($report['copias_packages'] ?? null) ? $report['copias_packages'] : null,
                 'preparation' => $this->preparation($server, $id),
+                'created' => $this->created($server, $id),
                 'copias' => $this->copias($server, $id),
                 'fetches' => $this->fetches($server, $id)];
         }
@@ -196,6 +204,44 @@ class RemoteAccessPresenter
             ->map(fn (SourcePackage $package): array => ['uuid' => $package->uuid, 'name' => $package->name, 'source_id' => $package->source_id,
                 'sha256' => $package->sha256, 'size' => $package->size_bytes, 'project' => $package->project?->name])
             ->all());
+    }
+
+    /** @return array<string, mixed>|null */
+    private function storageProbe(Server $server): ?array
+    {
+        $probe = $server->metadata['remote_storage_probe'] ?? null;
+
+        return is_array($probe) ? array_intersect_key($probe, array_flip(['checked_at', 'mode', 'ok', 'error_code', 'written', 'read_back', 'confirmed', 'deleted'])) : null;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function moodleDetected(Server $server): ?array
+    {
+        $detected = $server->metadata['remote_moodle_detected'] ?? null;
+        if (! is_array($detected)) {
+            return null;
+        }
+
+        return ['detected_at' => $detected['detected_at'] ?? null, 'error_code' => $detected['error_code'] ?? null,
+            'php_present' => $detected['php_present'] ?? null, 'docker_checked' => $detected['docker_checked'] ?? null,
+            'candidates' => array_values(array_filter(is_array($detected['candidates'] ?? null) ? $detected['candidates'] : [], 'is_array'))];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function repoint(Server $server): ?array
+    {
+        $repoint = $server->metadata['remote_destination_repoint'] ?? null;
+
+        return is_array($repoint) ? array_intersect_key($repoint, array_flip(['at', 'tree_sha256', 'error_code', 'destinations'])) : null;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function created(Server $server, string $destination): ?array
+    {
+        $created = $server->metadata['remote_destination_created'][$destination] ?? null;
+
+        return is_array($created) ? array_intersect_key($created, array_flip(['created_at', 'runtime_created', 'user_created', 'replaced',
+            'docker_group', 'run_as', 'admin_user', 'admin_password_location'])) : null;
     }
 
     /** @return array<string, mixed>|null */

@@ -22,7 +22,7 @@ class TestRemoteConnection
     private const PROBE_FIELDS = [
         'hostname', 'os_id', 'os_version', 'os_name', 'kernel', 'arch', 'cpus', 'memory_bytes', 'is_root',
         'systemd', 'systemd_version', 'launcher', 'bash_version', 'disk_total_bytes', 'disk_free_bytes',
-        'php_version', 'docker_version', 'pwsh_version', 'aws_cli_version', 'observed_at',
+        'php_version', 'docker_version', 'compose_version', 'pwsh_version', 'aws_cli_version', 'observed_at',
     ];
 
     public function __construct(

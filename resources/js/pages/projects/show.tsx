@@ -800,6 +800,7 @@ function CollectionSourcesStep({
                     key={registered}
                     projectUuid={project.uuid}
                     options={project.options}
+                    agentVersion={access.agent_version}
                     servers={access.servers}
                     editable={project.can_edit}
                 />

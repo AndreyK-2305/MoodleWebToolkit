@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Creates a source profile for mwt-agent. Run by the server's administrator as
-# root, on the server: the platform never writes profiles, it only names them.
+# Creates a source profile for mwt-agent: the manual alternative to «Preparar origen»,
+# which writes the same file from the platform (agent 1.17.0, source-profile-create).
 #
 #   sudo bash mwt-source-profile <id> --config /var/www/moodle/config.php [--run-as www-data]
 #   sudo bash mwt-source-profile <id> --config /var/www/html/config.php --runtime compose \

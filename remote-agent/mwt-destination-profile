@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Creates a destination profile for mwt-agent. Run by the server's administrator
-# as root, on the server, after the platform deployed the Consolidator: the
-# platform never writes profiles nor sees the site's secrets.
+# Creates a destination profile for mwt-agent: the manual alternative to «Preparar
+# destino», which writes the same runtime and profile from the platform (agent
+# 1.17.0, destination-profile-create). Run as root, on the server, after the platform
+# deployed the Consolidator. The site's secrets never leave the server either way.
 #
 #   sudo bash mwt-destination-profile <id> --public-url https://campus.example.edu \
 #        --admin-email admin@example.edu [--admin-user admin] [--http-port 8090] \

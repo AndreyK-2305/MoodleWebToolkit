@@ -24,7 +24,7 @@ class CheckRemoteDestination
     /** The Consolidator's own preflight warns under 20 GiB free. */
     public const MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024;
 
-    private const FIELDS = ['destination', 'public_url', 'env_present', 'env_protected', 'env_matches_url', 'env_complete', 'tool_tree',
+    public const FIELDS = ['destination', 'public_url', 'env_present', 'env_protected', 'env_matches_url', 'env_complete', 'tool_tree',
         'tool_present', 'engine_intact', 'docker_version', 'compose_version', 'flock', 'python3', 'cpus', 'memory_bytes', 'runtime_free_bytes',
         'target_running', 'destination_written', 'run_as', 'run_as_docker', 'runtime_owned', 'target_volumes', 'assistant_started',
         'copias_packages', 'server_profiles'];
@@ -38,18 +38,32 @@ class CheckRemoteDestination
     public function handle(Server $server, string $destination, ?User $actor): array
     {
         $this->connections->assertEnabled();
-        $report = null;
+        $data = null;
         $errorCode = null;
         try {
             $response = $this->agent->call($this->connections->target($server), 'destination-check', [$destination], 180);
             if ($response->ok) {
-                $report = array_intersect_key($response->data, array_flip(self::FIELDS));
+                $data = $response->data;
             } else {
                 $errorCode = $response->errorCode;
             }
         } catch (RemoteAgentUnavailable $exception) {
             $errorCode = $exception->errorCode;
         }
+
+        return $this->record($server, $destination, $actor, $data, $errorCode);
+    }
+
+    /**
+     * Keeps the closed result of a destination-check, run on its own or right after the
+     * profile was created from the platform.
+     *
+     * @param  array<string, mixed>|null  $data
+     * @return array{ready: bool, destination: string, error_code: string|null, blockers: list<string>, warnings: list<string>, report: array<string, mixed>|null}
+     */
+    public function record(Server $server, string $destination, ?User $actor, ?array $data, ?string $errorCode): array
+    {
+        $report = $data === null ? null : array_intersect_key($data, array_flip(self::FIELDS));
         $deployed = $server->metadata['remote_tools'][self::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
         [$blockers, $warnings] = $report === null ? [[], []] : self::assess($report, is_string($deployed) ? $deployed : null);
         $ready = $report !== null && $blockers === [];

@@ -169,15 +169,11 @@ export function ConsolidationSourcesForm({
             ? savedPackages
             : preselectedPackages(firstCollection),
     });
-    const linked = useForm<{
-        sources: LinkedSource[];
-        collection_workers: number;
-    }>({
+    const linked = useForm<{ sources: LinkedSource[] }>({
         sources: [
             blankLinkedSource(1, defaultRegion),
             blankLinkedSource(2, defaultRegion),
         ],
-        collection_workers: 2,
     });
     const errors = form.errors as Record<string, string>;
     const linkedErrors = linked.errors as Record<string, string>;
@@ -387,7 +383,6 @@ export function ConsolidationSourcesForm({
                 ) : (
                     <CollectNowMode
                         sources={linked.data.sources}
-                        workers={linked.data.collection_workers}
                         errors={linkedErrors}
                         problem={linkedProblem}
                         maxSources={maxSources}
@@ -414,9 +409,6 @@ export function ConsolidationSourcesForm({
                                     (_, position) => position !== index,
                                 ),
                             }))
-                        }
-                        onWorkers={(value) =>
-                            linked.setData('collection_workers', value)
                         }
                         onSubmit={createLinked}
                     />
@@ -872,7 +864,6 @@ function CopiasBadge({
 
 function CollectNowMode({
     sources,
-    workers,
     errors,
     problem,
     maxSources,
@@ -882,11 +873,9 @@ function CollectNowMode({
     onSource,
     onAdd,
     onRemove,
-    onWorkers,
     onSubmit,
 }: {
     sources: LinkedSource[];
-    workers: number;
     errors: Record<string, string>;
     problem: string | null;
     maxSources: number;
@@ -900,7 +889,6 @@ function CollectNowMode({
     ) => void;
     onAdd: () => void;
     onRemove: (index: number) => void;
-    onWorkers: (value: number) => void;
     onSubmit: () => void;
 }) {
     const fields: {
@@ -993,30 +981,15 @@ function CollectNowMode({
                         <Plus /> Agregar origen
                     </Button>
                 )}
-                <div className="grid gap-1">
-                    <Label htmlFor="linked-workers" className="text-xs">
-                        Workers de cada exportación
-                    </Label>
-                    <select
-                        id="linked-workers"
-                        className="border-input rounded-md border p-2 text-sm"
-                        value={workers}
-                        disabled={!editable}
-                        onChange={(event) =>
-                            onWorkers(Number(event.target.value))
-                        }
-                    >
-                        {[1, 2, 3, 4].map((value) => (
-                            <option key={value} value={value}>
-                                {value}
-                            </option>
-                        ))}
-                    </select>
-                </div>
             </div>
+            <p className="text-muted-foreground text-xs">
+                En la recolección vinculada, cada origen tiene su lista
+                «Preparar origen» (conexión, agente, S3, Recolector, Moodle y
+                perfil) y elige sus propios workers cuando su perfil queda
+                comprobado.
+            </p>
             <InputError message={errors.sources} />
             <InputError message={errors.linked_collection} />
-            <InputError message={errors.collection_workers} />
             {editable && (
                 <div className="space-y-1">
                     <Button

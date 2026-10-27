@@ -20,11 +20,18 @@ class RemoteAgent
     private const SUBCOMMANDS = ['version', 'probe', 'launch', 'status', 'tail', 'cancel', 'tool-status', 'tool-commit', 'source-check', 'collector-report', 'upload-report', 'cleanup', 'source-list', 'destination-list', 'destination-check',
         'fetch-report', 'copias-list', 'copias-remove', 'consolidator-report', 'consolidator-intervention', 'site-upload-report', 'copias-release',
         'identity-candidates', 'identity-review-submit', 'theme-options', 'theme-policy-set', 'plugin-proposal',
-        'category-map-proposal', 'category-map-submit'];
+        'category-map-proposal', 'category-map-submit', 'moodle-detect', 'source-profile-create', 'destination-profile-create', 'destination-repoint',
+        's3-upload-probe'];
 
     private const ARGUMENT = '/^[A-Za-z0-9._:=-]{1,160}$/D';
 
     public function __construct(private readonly RemoteTransportResolver $transports) {}
+
+    /** A free-text value (a path, a URL, an e-mail address) as base64url, inside the argument alphabet. */
+    public static function text(string $value): string
+    {
+        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+    }
 
     /** @return array{path: string, version: string, sha256: string, size: int} */
     public function distribution(): array

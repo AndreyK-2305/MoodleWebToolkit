@@ -179,7 +179,7 @@ class RemoteConsolidationSources
      * consolidation's owner and assignments, and links it to the consolidation.
      * The destination may still be missing: the destination step adds it.
      *
-     * @param  array{server_uuid?: string|null, destination_profile?: string|null, workers?: string|null, collection_workers: int,
+     * @param  array{server_uuid?: string|null, destination_profile?: string|null, workers?: string|null, collection_workers?: int|null,
      *   sources: list<array{name: string, instance_id: string, region: string, source_profile: string, package_name: string}>}  $input
      */
     public function createLinkedCollection(Project $consolidation, User $actor, array $input): Project
@@ -225,7 +225,10 @@ class RemoteConsolidationSources
                 $sources[] = ['server_uuid' => $server->uuid, 'source_profile' => $source['source_profile'], 'package_name' => $source['package_name']];
             }
             try {
-                $this->collections->save($collection, $actor, ['sources' => $sources, 'workers' => $input['collection_workers']]);
+                // Each source gets its own workers in the collection, «auto» until its profile is checked there.
+                $this->collections->save($collection, $actor, isset($input['collection_workers'])
+                    ? ['sources' => $sources, 'workers' => $input['collection_workers']]
+                    : ['sources' => array_map(fn (array $source): array => [...$source, 'workers' => 'auto'], $sources)]);
             } catch (ValidationException $exception) {
                 throw ValidationException::withMessages(['sources' => collect($exception->errors())->flatten()->all()]);
             }

@@ -520,6 +520,59 @@ class RemoteDestinationTest extends DomainTestCase
         }
     }
 
+    public function test_the_agent_creates_the_destination_from_the_web_and_never_returns_the_password(): void
+    {
+        DeployRemoteTool::dispatchSync($this->server->getKey(), $this->distribution->getKey(), null);
+        $runtime = $this->root.'/srv/campus';
+        $arguments = fn (string $id, string $directory, array $extra = []): array => [$id, 'public_url='.RemoteAgent::text(self::URL.'/'),
+            'admin_email='.RemoteAgent::text('admin@example.edu'), 'runtime_dir='.RemoteAgent::text($directory), ...$this->runAs(), ...$extra];
+
+        $created = $this->agent()->call($this->target(), 'destination-profile-create', $arguments('campus', $runtime), 600);
+
+        $this->assertTrue($created->ok, 'Error: '.$created->errorCode);
+        preg_match('/^MOODLE_ADMIN_PASSWORD=(.+)$/m', (string) file_get_contents($runtime.'/.env'), $password);
+        $this->assertStringNotContainsString($password[1], $created->transport->stdout, 'La clave del administrador nunca sale del servidor.');
+        $this->assertSame($runtime.'/.env (MOODLE_ADMIN_PASSWORD)', $created->data['admin_password_location']);
+        $this->assertSame([true, $this->distribution->distribution_sha256], [$created->data['runtime_created'], $created->data['tool_tree']]);
+        $this->assertSame('0600', substr(sprintf('%o', fileperms($this->root.'/destinations/campus.conf')), -4));
+        $this->assertSame('0600', substr(sprintf('%o', fileperms($runtime.'/.env')), -4));
+        $this->assertStringContainsString('MOODLE_PUBLIC_URL='.self::URL."\n", (string) file_get_contents($runtime.'/.env'));
+        // The same check the platform runs comes back with the creation.
+        $this->assertSame(['destination-check', true], [$created->data['check']['command'], $created->data['check']['ok']]);
+        $this->assertTrue($created->data['check']['data']['env_complete']);
+
+        // Refusals: an existing profile without force, a runtime with another URL, invalid input.
+        $this->assertSame('destination_profile_exists', $this->agent()->call($this->target(), 'destination-profile-create', $arguments('campus', $runtime))->errorCode);
+        $this->assertSame('env_url_mismatch', $this->agent()->call($this->target(), 'destination-profile-create', ['campus',
+            'public_url='.RemoteAgent::text('https://otro.example.edu'), 'runtime_dir='.RemoteAgent::text($runtime), ...$this->runAs(), 'force=1'])->errorCode);
+        $this->assertSame('invalid_public_url', $this->agent()->call($this->target(), 'destination-profile-create', ['otro',
+            'public_url='.RemoteAgent::text('http://otro.example.edu'), ...$this->runAs()])->errorCode);
+        // A repeated option is refused as a whole.
+        $this->assertSame('invalid_arguments', $this->agent()->call($this->target(), 'destination-profile-create',
+            [...$arguments('otro', $this->root.'/srv/otro'), 'admin_email='.RemoteAgent::text('no')])->errorCode);
+        $this->assertSame('invalid_admin_email', $this->agent()->call($this->target(), 'destination-profile-create', ['otro',
+            'public_url='.RemoteAgent::text(self::URL), 'admin_email='.RemoteAgent::text('no'), 'runtime_dir='.RemoteAgent::text($this->root.'/srv/otro'), ...$this->runAs()])->errorCode);
+        $this->assertSame('invalid_runtime_dir', $this->agent()->call($this->target(), 'destination-profile-create', ['otro',
+            'public_url='.RemoteAgent::text(self::URL), 'runtime_dir='.RemoteAgent::text('/srv/../etc'), ...$this->runAs()])->errorCode);
+        $this->assertDirectoryDoesNotExist($this->root.'/srv/otro');
+
+        // A newer Consolidator: the profile follows it while the site has not been written.
+        $newer = str_repeat('c', 64);
+        mkdir($this->root.'/tools/moodle-consolidador-9.0.0-linux-tree/'.$newer, 0755, true);
+        touch($this->root.'/tools/moodle-consolidador-9.0.0-linux-tree/'.$newer.'/moodle-consolidation.sh');
+        touch($this->root.'/tools/moodle-consolidador-9.0.0-linux-tree/'.$newer.'/FILES.sha256');
+        $repoint = $this->agent()->call($this->target(), 'destination-repoint', [$newer]);
+        $this->assertSame([['id' => 'campus', 'repointed' => true, 'reason' => 'repointed']], $repoint->data['destinations']);
+        $this->assertStringContainsString('TOOL_TREE='.$newer."\n", (string) file_get_contents($this->root.'/destinations/campus.conf'));
+        $this->assertSame('already_current', $this->agent()->call($this->target(), 'destination-repoint', [$newer])->data['destinations'][0]['reason']);
+        is_dir($runtime.'/reports') || mkdir($runtime.'/reports', 0700, true);
+        file_put_contents($runtime.'/reports/destination-write.lock.json', '{}');
+        $written = $this->agent()->call($this->target(), 'destination-repoint', [$this->distribution->distribution_sha256]);
+        $this->assertSame([['id' => 'campus', 'repointed' => false, 'reason' => 'destination_written']], $written->data['destinations']);
+        $this->assertStringContainsString('TOOL_TREE='.$newer."\n", (string) file_get_contents($this->root.'/destinations/campus.conf'));
+        $this->assertSame('tool_not_installed', $this->agent()->call($this->target(), 'destination-repoint', [str_repeat('d', 64)])->errorCode);
+    }
+
     public function test_readiness_blocks_on_missing_facts_and_warns_on_capacity(): void
     {
         $tree = str_repeat('b', 64);
@@ -564,6 +617,17 @@ class RemoteDestinationTest extends DomainTestCase
             ->where('remoteAccess.servers.0.consolidator.deployed', false)
             ->where('remoteAccess.servers.0.consolidator.deployment_state', 'QUEUED')
             ->where('remoteAccess.servers.0.destinations', []));
+    }
+
+    /**
+     * As root the agent creates the unprivileged mwt-<id> user; without root it can only
+     * prepare a runtime for its own user.
+     *
+     * @return list<string>
+     */
+    private function runAs(): array
+    {
+        return trim((string) shell_exec('id -u')) === '0' ? [] : ['run_as='.trim((string) shell_exec('id -un'))];
     }
 
     private function requireRoot(): void

@@ -81,7 +81,7 @@ class RemoteCollectionWorkflow
         foreach ($targets as [$server, $source]) {
             try {
                 $operation = $this->exports->start($execution, $server, $source['source_profile'], $source['package_name'],
-                    (string) ($settings['workers'] ?? 1), $execution->creator);
+                    $this->workers($server, $source), $execution->creator);
             } catch (ToolOperationBlocked $exception) {
                 // Already launched sources are cancelled; the Execution fails once all of them end.
                 $this->failSources($execution, $exception->getMessage());
@@ -469,12 +469,29 @@ class RemoteCollectionWorkflow
         $binding = $execution->toolBinding;
         $settings = $binding?->configuration_snapshot;
         if (! RemoteCollectionPreparation::selected($binding) || ! is_array($settings)
-            || ! in_array($settings['schema_version'] ?? null, [RemoteCollectionConfiguration::SCHEMA, RemoteCollectionConfiguration::SCHEMA_V1], true)
+            || ! in_array($settings['schema_version'] ?? null, RemoteCollectionConfiguration::SCHEMAS, true)
             || RemoteCollectionConfiguration::sources($settings) === []) {
             throw new ToolOperationBlocked('La ejecución no tiene un binding de recolección remota.');
         }
 
         return $settings;
+    }
+
+    /**
+     * The workers one export starts with. «auto» means CPU - 1 (at least 1) of the profile's
+     * last check; the Recolector's own «auto» (every CPU, up to 4) is used only when the
+     * CPUs are unknown, as with profiles checked by an agent older than 1.17.0.
+     *
+     * @param  array{server_uuid: string, source_profile: string, package_name: string, workers: string}  $source
+     */
+    private function workers(Server $server, array $source): string
+    {
+        if ($source['workers'] !== 'auto') {
+            return $source['workers'];
+        }
+        $cpus = $server->metadata['remote_sources'][$source['source_profile']]['report']['cpus'] ?? null;
+
+        return is_int($cpus) ? (string) CheckRemoteSource::maxWorkers($cpus) : 'auto';
     }
 
     private function step(Execution $execution, string $key, ExecutionStepStatus $status): void
