@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.17.2"
+readonly AGENT_VERSION="1.17.3"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -403,7 +403,9 @@ registered_argv() {
             [[ ${#params[@]} == 3 && ${params[destination]:-} =~ $SOURCE_RE && ${params[distribution]:-} =~ $SHA_RE
                 && ${params[reset]:-} =~ ^[01]$ ]] || fail invalid_parameter
             load_destination "${params[destination]}"
-            [[ $DST_TOOL_TREE == "${params[distribution]}" ]] || fail tool_tree_mismatch
+            # Cleaning is also how a written destination moves to a newer Consolidator: the
+            # reset re-points the profile to the verified tree before restoring the runtime.
+            [[ $DST_TOOL_TREE == "${params[distribution]}" || ${params[reset]} == 1 ]] || fail tool_tree_mismatch
             local store
             store=$(compgen -G "$TOOLS_DIR/moodle-consolidador-*/${params[distribution]}" | head -n 1) || fail tool_not_installed
             # The stored tree is re-verified on every launch, like the Collector's.
@@ -1171,7 +1173,6 @@ cmd_destination_prepare_internal() {
     local destination=$1 distribution=$2 op_dir=$3 store runtime managed lock
     [[ $distribution =~ $SHA_RE && $op_dir == "$OPS_DIR/"* ]] || exit 80
     load_destination "$destination" >/dev/null
-    [[ $DST_TOOL_TREE == "$distribution" ]] || exit 80
     store=$(compgen -G "$TOOLS_DIR/moodle-consolidador-*/$distribution" | head -n 1) || exit 80
     (($(unsafe_entries "$store") == 0)) && [[ $(tree_hash "$store") == "$distribution" ]] || { echo "TOOL_HASH_MISMATCH" >&2; exit 81; }
     runtime=$DST_RUNTIME_DIR
@@ -1181,6 +1182,13 @@ cmd_destination_prepare_internal() {
     mkdir -p "$runtime/reports"
     exec {lock}>"$runtime/reports/assistant-run.lock"
     flock -n "$lock" || { echo "ASSISTANT_RUNNING" >&2; exit 61; }
+    if [[ $DST_TOOL_TREE != "$distribution" ]]; then
+        # A newer Consolidator was deployed after this site was written: the profile follows
+        # it now, keeping its runtime, URL and user; the .env stays as it is.
+        write_profile "$DESTINATIONS_DIR" "$DESTINATIONS_DIR/$destination.conf" \
+            "$(destination_profile_content "$runtime" "$DST_PUBLIC_URL" "$distribution" "$DST_RUN_AS")"
+        echo "PROFILE_REPOINTED tree=$distribution"
+    fi
     echo "DESTINATION_RESET_STARTED"
     if command -v docker >/dev/null 2>&1; then
         # shellcheck disable=SC2016

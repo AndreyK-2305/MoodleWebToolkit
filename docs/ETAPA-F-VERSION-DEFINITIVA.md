@@ -610,3 +610,26 @@ en el alfabeto cerrado del cliente (`RemoteAgent::text`).
   encima (en el laboratorio, `php` monta `/opt/moodle-lab` en `/opt/moodle-lab` y el código está en
   `code/`). `moodle-detect` busca `config.php` de Moodle hasta cuatro niveles dentro del origen del
   montaje y propone la ruta en el contenedor: el destino del montaje más el resto de la ruta.
+
+### Destino escrito con una versión anterior del Consolidador (agente 1.17.3)
+
+En la prueba en vivo, el destino `campus` ya tenía una consolidación hecha con 8.1.0. Tras desplegar
+8.2.0 el perfil no se re-apuntó (el sitio estaba escrito), su comprobación fallaba con
+`tool_tree_mismatch` y «Preparar destino» exigía un perfil comprobado: un destino escrito no podía
+pasar nunca a la versión nueva desde la web.
+
+- Cuando el único bloqueo de la comprobación es la versión del Consolidador, el perfil queda
+  `upgradable` y el punto 6 lo explica en castellano («usa una versión anterior del Consolidador;
+  límpielo y prepárelo para pasar a la 8.2.0»). El punto 7 y el panel ofrecen directamente
+  «Limpiar el destino y preparar», con la contraseña del administrador y CONFIRMAR; preparar encima
+  del sitio anterior no está disponible.
+- La preparación con limpieza (`consolidator.prepare` con `reset=1`) acepta el árbol desplegado
+  aunque el perfil apunte a otro. Bajo el bloqueo del asistente, antes de restaurar el runtime, el
+  agente re-apunta el perfil (`PROFILE_REPOINTED`), conservando el runtime, la URL, el usuario y el
+  `.env`; luego restaura el runtime desde el árbol verificado y prepara. Al terminar, la
+  plataforma vuelve a comprobar el perfil. La auditoría `REMOTE_DESTINATION_RESET_STARTED` registra
+  el árbol anterior (`upgrade_from`).
+- Cualquier otro bloqueo, junto al de la versión, sigue impidiendo la preparación.
+- Pruebas: `RemoteDestinationTest::test_the_real_cleaning_moves_a_written_destination_to_a_newer_consolidator`
+  (agente real, como root), los casos nuevos de `RemoteDestinationPreparationTest` y de
+  `server-preparation.test.ts`.

@@ -67,8 +67,17 @@ class PrepareRemoteDestination
         }
         $check = $server->metadata['remote_destinations'][$destination] ?? null;
         $tree = $server->metadata['remote_tools'][CheckRemoteDestination::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
-        if (! is_array($check) || ($check['ready'] ?? false) !== true || ! is_string($tree)) {
+        if (! is_array($check) || ! is_string($tree)) {
             throw new ToolOperationBlocked('El perfil de destino debe superar su comprobación antes de prepararse.');
+        }
+        // A profile left on an earlier Consolidator moves to the deployed one only by cleaning it:
+        // the agent re-points it before restoring the runtime, keeping the .env.
+        $upgrade = ($check['ready'] ?? false) !== true && CheckRemoteDestination::upgradable($check);
+        if (($check['ready'] ?? false) !== true && ! $upgrade) {
+            throw new ToolOperationBlocked('El perfil de destino debe superar su comprobación antes de prepararse.');
+        }
+        if ($upgrade && ! $reset) {
+            throw new ToolOperationBlocked('El perfil usa una versión anterior del Consolidador: limpie el destino y prepárelo para pasar a la desplegada.');
         }
         $report = is_array($check['report'] ?? null) ? $check['report'] : [];
         if (! $reset && ($report['destination_written'] ?? false) === true) {
@@ -120,7 +129,7 @@ class PrepareRemoteDestination
             'finished_at' => $errorCode === null ? null : now()->utc()->toIso8601String()]);
         $this->audit($server, $actor, $reset ? 'REMOTE_DESTINATION_RESET_STARTED' : 'REMOTE_DESTINATION_PREPARATION_STARTED',
             ['destination' => $destination, 'operation_uuid' => $uuid, 'tool_tree' => $tree, 'error_code' => $errorCode,
-                'reset' => $reset, 'in_use' => CheckRemoteDestination::used($report)]);
+                'reset' => $reset, 'in_use' => CheckRemoteDestination::used($report), 'upgrade_from' => $upgrade ? ($report['tool_tree'] ?? null) : null]);
 
         return $this->current($server->refresh(), $destination);
     }

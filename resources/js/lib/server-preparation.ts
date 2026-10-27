@@ -549,6 +549,12 @@ export function destinationChecklist(
     const profileLabel = 'Perfil del destino creado y comprobado';
     const profiles = server.destinations;
     const ready = profiles.find((profile) => profile.ready);
+    const upgradable = ready
+        ? undefined
+        : profiles.find((profile) => profile.upgradable);
+    const version = server.consolidator.version
+        ? `la ${server.consolidator.version}`
+        : 'la versión desplegada';
     let profile: ChecklistItem;
     if (!server.consolidator.deployed) {
         profile = item(
@@ -565,6 +571,14 @@ export function destinationChecklist(
             `«${ready.id}» · ${ready.public_url ?? '—'}${ready.created?.admin_password_location ? ` · clave del administrador en ${ready.created.admin_password_location}, solo root` : ''}`,
             'check',
         );
+    } else if (upgradable) {
+        profile = item(
+            'profile',
+            profileLabel,
+            'warning',
+            `«${upgradable.id}» usa una versión anterior del Consolidador; límpielo y prepárelo para pasar a ${version}.`,
+            'check',
+        );
     } else if (profiles.length > 0) {
         const first = profiles[0];
         profile = item(
@@ -572,7 +586,7 @@ export function destinationChecklist(
             profileLabel,
             first.checked_at ? 'failed' : 'pending',
             first.checked_at
-                ? `«${first.id}» no está listo${first.check_error ? ` (${first.check_error})` : ''}${first.blockers.length > 0 ? `: ${first.blockers.join(', ')}` : ''}.`
+                ? `«${first.id}» no está listo${first.check_error ? ` (${first.check_error})` : ''}${first.blockers.length > 0 ? `: ${first.blockers.map((code) => BLOCKER_TEXT[code] ?? code).join('; ')}` : ''}.`
                 : `Compruebe el perfil «${first.id}».`,
             'check',
         );
@@ -586,10 +600,11 @@ export function destinationChecklist(
         );
     }
 
-    const preparation = (ready ?? profiles[0])?.preparation ?? null;
+    const target = ready ?? upgradable;
+    const preparation = (target ?? profiles[0])?.preparation ?? null;
     const prepareLabel = 'Preparar destino';
     let prepare: ChecklistItem;
-    if (!ready) {
+    if (!target) {
         prepare = item(
             'prepare',
             prepareLabel,
@@ -604,6 +619,15 @@ export function destinationChecklist(
             prepareLabel,
             'running',
             'La preparación continúa en el servidor.',
+        );
+    } else if (!ready) {
+        // A written destination left on an earlier Consolidator: cleaning it is the way forward.
+        prepare = item(
+            'prepare',
+            prepareLabel,
+            'pending',
+            `Use «Limpiar el destino y preparar»: el perfil pasa a ${version}, el runtime se restaura y se conserva el .env.`,
+            'prepare',
         );
     } else if (preparation?.state === 'SUCCEEDED') {
         prepare = item(
@@ -644,6 +668,18 @@ export function destinationChecklist(
         prepare,
     ];
 }
+
+/** Check blockers in plain Spanish; unknown codes are shown as they come. */
+const BLOCKER_TEXT: Record<string, string> = {
+    tool_tree_mismatch: 'usa una versión anterior del Consolidador',
+    env_missing: 'falta el .env del runtime',
+    env_url_mismatch: 'la URL del .env difiere de la del perfil',
+    runtime_not_owned: 'el runtime no pertenece a su usuario',
+    run_as_not_docker: 'su usuario no está en el grupo docker',
+    engine_modified: 'el motor del runtime fue modificado',
+    docker_unavailable: 'Docker no responde',
+    compose_v2_missing: 'falta Docker Compose v2',
+};
 
 export const REPOINT_REASONS: Record<string, string> = {
     destination_written:
