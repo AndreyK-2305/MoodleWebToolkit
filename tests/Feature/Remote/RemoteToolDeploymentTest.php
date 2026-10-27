@@ -256,9 +256,11 @@ class RemoteToolDeploymentTest extends DomainTestCase
             touch($this->root.'/opt/moodle-lab/'.$file);
         }
         $code = $this->root.'/opt/moodle-lab/code';
+        // As on the lab, `php` mounts the parent folder at the same path; `web` mounts the code itself.
         file_put_contents($this->root.'/compose-config.yaml', implode("\n", ['name: runtime', 'services:', '  php:', '    profiles:', '      - tools',
-            '    image: moodle-php:8.3', '    volumes:', '      - type: bind', '        source: '.$code, '        target: /var/www/html',
-            '        bind:', '          create_host_path: true', '  db:', '    image: mariadb:11', '    volumes:', '      - type: volume',
+            '    image: moodle-php:8.3', '    volumes:', '      - type: bind', '        source: '.$this->root.'/opt/moodle-lab', '        target: /opt/moodle-lab',
+            '        bind:', '          create_host_path: true', '  web:', '    image: nginx:1.27', '    volumes:', '      - type: bind',
+            '        source: '.$code, '        target: /var/www/html', '  db:', '    image: mariadb:11', '    volumes:', '      - type: volume',
             '        source: dbdata', '        target: /var/lib/mysql', 'volumes:', '  dbdata: {}', '']));
         file_put_contents($this->root.'/bin/docker', implode("\n", ['#!/bin/bash', 'args=" $* "',
             'if [[ $1 == compose ]]; then',
@@ -275,10 +277,12 @@ class RemoteToolDeploymentTest extends DomainTestCase
             $detected = app(RemoteServerPreparation::class)->detectMoodle($this->server, null);
 
             $this->assertTrue($detected['detected'], (string) $detected['error_code']);
-            $compose = collect($detected['candidates'])->firstWhere('runtime', 'compose');
-            $this->assertNotNull($compose, 'Se propone el servicio de Compose aunque solo exista con su perfil.');
-            $this->assertSame(['/var/www/html/config.php', $this->root.'/opt/moodle-lab/runtime', 'php', 'tools', null],
-                [$compose['config_path'], $compose['compose_dir'], $compose['compose_service'], $compose['compose_profile'], $compose['issue']]);
+            $compose = collect($detected['candidates'])->where('runtime', 'compose')->keyBy('compose_service');
+            $this->assertNotNull($compose->get('php'), 'Se propone el servicio de Compose aunque solo exista con su perfil.');
+            // A mounted parent folder maps to the target plus the rest of the path.
+            $this->assertSame(['/opt/moodle-lab/code/config.php', $this->root.'/opt/moodle-lab/runtime', 'tools', null],
+                [$compose['php']['config_path'], $compose['php']['compose_dir'], $compose['php']['compose_profile'], $compose['php']['issue']]);
+            $this->assertSame(['/var/www/html/config.php', null], [$compose['web']['config_path'], $compose['web']['compose_profile']]);
             // The same code seen as a native install is still listed.
             $this->assertSame($code.'/config.php', collect($detected['candidates'])->firstWhere('runtime', 'native')['config_path']);
         } finally {
