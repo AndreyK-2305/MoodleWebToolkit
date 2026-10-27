@@ -7,75 +7,18 @@ import type {
 import {
     automaticWorkers,
     checklistProgress,
+    chooseCandidate,
     destinationChecklist,
+    preferredCandidate,
     sourceChecklist,
+    sourceProfileRequest,
     validWorkers,
     workerChoices,
 } from './server-preparation';
+import type { SourceProfileDraft } from './server-preparation';
+import { remoteServer as server } from '@/test/remote-server';
 
 const GIB = 1073741824;
-
-const server = (changes: Partial<RemoteServer> = {}): RemoteServer => ({
-    uuid: 'srv',
-    name: 'Pregrado',
-    role: 'SOURCE',
-    host: null,
-    connection: {
-        type: 'aws-ssm',
-        status: 'VALID',
-        instance_id: 'i-0123456789abcdef0',
-        region: 'us-east-2',
-        host: null,
-        port: null,
-        user: null,
-        use_sudo: false,
-        secret_version: null,
-        has_secret_reference: false,
-        host_key_type: null,
-        host_key_fingerprint: null,
-        aws_account: null,
-    },
-    agent_update_blocked: null,
-    collector_deployed: true,
-    sources: [],
-    sources_detected_at: null,
-    consolidator: {
-        deployed: false,
-        tree_sha256: null,
-        deployment_state: null,
-        deployment_error: null,
-        updated_at: null,
-    },
-    destinations: [],
-    destinations_detected_at: null,
-    storage_probe: {
-        checked_at: 'x',
-        mode: 'write',
-        ok: true,
-        error_code: null,
-    },
-    moodle_detected: null,
-    destination_repoint: null,
-    evidence: {
-        checked_at: 'x',
-        status: 'VALID',
-        agent_version: '1.17.0',
-        checks: [
-            { key: 'transport', result: 'SUCCESS', message: 'Respondió.' },
-            { key: 'agent', result: 'SUCCESS', message: 'Agente verificado.' },
-        ],
-        probe: {
-            aws_cli_version: '2.17.1',
-            php_version: '8.3.12',
-            docker_version: null,
-            compose_version: null,
-            disk_free_bytes: 50 * GIB,
-            memory_bytes: 8 * GIB,
-        },
-    },
-    operations: [],
-    ...changes,
-});
 
 const profile = (
     changes: Partial<RemoteSourceProfile> = {},
@@ -426,5 +369,77 @@ describe('destinationChecklist', () => {
 
         expect(checklistProgress(prepared).complete).toBe(true);
         expect(prepared[5].detail).toContain('solo root');
+    });
+});
+
+describe('source profile form', () => {
+    const native = {
+        config_path: '/opt/moodle-lab/code/config.php',
+        runtime: 'native' as const,
+        compose_dir: null,
+        compose_service: null,
+        compose_profile: null,
+        run_as: 'www-data',
+        issue: 'php_missing',
+    };
+    const compose = {
+        ...native,
+        config_path: '/var/www/html/config.php',
+        runtime: 'compose' as const,
+        compose_dir: '/opt/moodle-lab/runtime',
+        compose_service: 'php',
+        compose_profile: 'tools',
+        issue: null,
+    };
+    const draft: SourceProfileDraft = {
+        config_path: '',
+        runtime: 'compose',
+        run_as: 'www-data',
+        compose_dir: '/opt/moodle-lab/runtime',
+        compose_service: 'php',
+        compose_profile: 'tools',
+        force: false,
+    };
+
+    it('offers the Compose service first when the native install has a problem', () => {
+        expect(preferredCandidate([native, compose])).toBe(compose);
+        expect(preferredCandidate([native])).toBe(native);
+    });
+
+    it('keeps the runtime the administrator chose when picking a native path', () => {
+        expect(chooseCandidate(draft, native, true)).toMatchObject({
+            config_path: native.config_path,
+            runtime: 'compose',
+            compose_dir: '/opt/moodle-lab/runtime',
+        });
+        expect(chooseCandidate(draft, native, false).runtime).toBe('native');
+        expect(
+            chooseCandidate({ ...draft, runtime: 'native' }, compose, true),
+        ).toMatchObject({ runtime: 'compose', compose_profile: 'tools' });
+    });
+
+    it('posts to its own endpoint, never to the collection configuration', () => {
+        const request = sourceProfileRequest('p', 's', 'lab', {
+            ...draft,
+            config_path: compose.config_path,
+        });
+
+        expect(request.url).toBe('/projects/p/servers/s/sources/create');
+        expect(request.payload).toEqual({
+            source: 'lab',
+            config_path: '/var/www/html/config.php',
+            runtime: 'compose',
+            run_as: 'www-data',
+            force: false,
+            compose_dir: '/opt/moodle-lab/runtime',
+            compose_service: 'php',
+            compose_profile: 'tools',
+        });
+        expect(
+            sourceProfileRequest('p', 's', 'lab', {
+                ...draft,
+                runtime: 'native',
+            }).payload,
+        ).not.toHaveProperty('compose_dir');
     });
 });

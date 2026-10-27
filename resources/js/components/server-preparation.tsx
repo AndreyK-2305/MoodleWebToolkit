@@ -20,8 +20,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
     checklistProgress,
+    chooseCandidate,
     destinationChecklist,
+    preferredCandidate,
     sourceChecklist,
+    sourceProfileRequest,
 } from '@/lib/server-preparation';
 import type {
     ChecklistAction,
@@ -295,9 +298,8 @@ function SourceProfileForm({
     const candidates = (server.moodle_detected?.candidates ?? []).filter(
         (candidate) => !candidate.too_long,
     );
-    const first = candidates[0];
+    const first = preferredCandidate(candidates);
     const form = useForm({
-        source: profileId,
         config_path: first?.config_path ?? '',
         runtime: (first?.runtime ?? 'native') as 'native' | 'compose',
         run_as: first?.run_as ?? 'www-data',
@@ -308,16 +310,24 @@ function SourceProfileForm({
         confirmed: false,
     });
     const errors = form.errors as Record<string, string>;
+    const [runtimeEdited, setRuntimeEdited] = useState(false);
     const choose = (candidate: MoodleCandidate) =>
         form.setData((data) => ({
             ...data,
-            config_path: candidate.config_path,
-            runtime: candidate.runtime,
-            run_as: candidate.run_as ?? data.run_as,
-            compose_dir: candidate.compose_dir ?? '',
-            compose_service: candidate.compose_service ?? '',
-            compose_profile: candidate.compose_profile ?? '',
+            ...chooseCandidate(data, candidate, runtimeEdited),
         }));
+    // Not a <form>: this sits inside the collection form, and a nested form would
+    // submit (and save) the collection instead of creating the profile.
+    const submit = () => {
+        const request = sourceProfileRequest(
+            projectUuid,
+            server.uuid,
+            profileId,
+            form.data,
+        );
+        form.transform(() => request.payload);
+        form.post(request.url, { preserveScroll: true });
+    };
 
     if (!admin) {
         return (
@@ -329,28 +339,18 @@ function SourceProfileForm({
     }
 
     return (
-        <form
+        <div
+            role="group"
+            aria-label={`Crear el perfil ${profileId}`}
             className="bg-muted/40 ml-6 space-y-3 rounded-md p-3"
-            onSubmit={(event) => {
-                event.preventDefault();
-                form.transform((data) => ({
-                    source: profileId,
-                    config_path: data.config_path,
-                    runtime: data.runtime,
-                    run_as: data.run_as,
-                    force: data.force,
-                    ...(data.runtime === 'compose'
-                        ? {
-                              compose_dir: data.compose_dir,
-                              compose_service: data.compose_service,
-                              compose_profile: data.compose_profile || null,
-                          }
-                        : {}),
-                }));
-                form.post(
-                    `/projects/${projectUuid}/servers/${server.uuid}/sources/create`,
-                    { preserveScroll: true },
-                );
+            onKeyDown={(event) => {
+                // Enter in a field must not reach the collection form around it.
+                if (
+                    event.key === 'Enter' &&
+                    event.target instanceof HTMLInputElement
+                ) {
+                    event.preventDefault();
+                }
             }}
         >
             {candidates.length > 0 && (
@@ -416,12 +416,13 @@ function SourceProfileForm({
                         id={`runtime-${server.uuid}`}
                         className="border-input bg-background h-9 rounded-md border px-3 text-sm"
                         value={form.data.runtime}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                            setRuntimeEdited(true);
                             form.setData(
                                 'runtime',
                                 event.target.value as 'native' | 'compose',
-                            )
-                        }
+                            );
+                        }}
                     >
                         <option value="native">PHP del servidor</option>
                         <option value="compose">
@@ -534,7 +535,7 @@ function SourceProfileForm({
             </div>
             <InputError message={errors.source_profile ?? errors.source} />
             <Button
-                type="submit"
+                type="button"
                 size="sm"
                 disabled={
                     form.processing ||
@@ -542,10 +543,11 @@ function SourceProfileForm({
                     profileId === '' ||
                     form.data.config_path === ''
                 }
+                onClick={submit}
             >
                 {form.processing ? 'Creando…' : 'Crear y comprobar el perfil'}
             </Button>
-        </form>
+        </div>
     );
 }
 
@@ -653,21 +655,17 @@ function DestinationProfileForm({
     }
 
     return (
-        <form
+        <div
+            role="group"
+            aria-label="Crear el perfil del destino"
             className="bg-muted/40 ml-6 space-y-3 rounded-md p-3"
-            onSubmit={(event) => {
-                event.preventDefault();
-                form.transform((data) => ({
-                    destination: data.destination,
-                    public_url: data.public_url,
-                    admin_email: data.admin_email,
-                    admin_user: data.admin_user,
-                    http_port: Number(data.http_port),
-                }));
-                form.post(
-                    `/projects/${projectUuid}/servers/${server.uuid}/destinations/create`,
-                    { preserveScroll: true },
-                );
+            onKeyDown={(event) => {
+                if (
+                    event.key === 'Enter' &&
+                    event.target instanceof HTMLInputElement
+                ) {
+                    event.preventDefault();
+                }
             }}
         >
             <div className="grid gap-3 md:grid-cols-2">
@@ -735,13 +733,26 @@ function DestinationProfileForm({
             </div>
             <InputError message={errors.destination_profile} />
             <Button
-                type="submit"
+                type="button"
                 size="sm"
                 disabled={form.processing || !form.data.confirmed}
+                onClick={() => {
+                    form.transform((data) => ({
+                        destination: data.destination,
+                        public_url: data.public_url,
+                        admin_email: data.admin_email,
+                        admin_user: data.admin_user,
+                        http_port: Number(data.http_port),
+                    }));
+                    form.post(
+                        `/projects/${projectUuid}/servers/${server.uuid}/destinations/create`,
+                        { preserveScroll: true },
+                    );
+                }}
             >
                 {form.processing ? 'Creando…' : 'Crear y comprobar el perfil'}
             </Button>
-        </form>
+        </div>
     );
 }
 

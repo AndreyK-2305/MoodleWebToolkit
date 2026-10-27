@@ -588,3 +588,21 @@ en el alfabeto cerrado del cliente (`RemoteAgent::text`).
   identidad de la plataforma necesita `s3:DeleteObject` en `mwt/_pruebas/*` para borrar el objeto;
   sin ese permiso queda el objeto de unos bytes), `moodle-detect` sobre los Moodle de origen reales
   y un Compose real, y la creación del destino con `useradd` y el grupo `docker` reales.
+
+### Corrección tras la prueba en vivo (agente 1.17.1)
+
+- «Crear y comprobar el perfil» estaba dentro del formulario de la recolección: el botón enviaba y
+  guardaba la recolección, y el formulario del perfil se perdía al recargar. Ya no es un `<form>`
+  anidado: el botón envía solo su propia petición a `sources/create`, y Enter en sus campos no
+  envía la recolección. Lo mismo para el perfil del destino.
+- `moodle-detect` lee también la configuración resuelta de cada proyecto de Compose
+  (`compose.yaml` hasta tres niveles bajo las rutas habituales), con todos sus perfiles activos,
+  así que propone un servicio de PHP que solo existe con un perfil (por ejemplo `tools`, usado con
+  `docker compose --profile tools run php`) con su directorio, servicio y perfil. La lista ofrece
+  primero la instalación sin problemas, Compose antes que nativa.
+- Elegir una instalación nativa ya no devuelve el runtime a «nativo» si el administrador lo cambió
+  a mano.
+- Se corrigió una clave de React duplicada en el paso de orígenes.
+- Pruebas: `resources/js/components/remote-collection-form.test.tsx` (un solo `<form>` y el botón
+  del perfil como `type="button"`), los casos nuevos de `server-preparation.test.ts` y
+  `RemoteToolDeploymentTest::test_detection_proposes_a_compose_service_enabled_only_by_a_profile`.
