@@ -2,6 +2,7 @@ import { Link, usePage } from '@inertiajs/react';
 import {
     Bell,
     BookOpenText,
+    Cloud,
     FolderKanban,
     Info,
     LayoutDashboard,
@@ -45,6 +46,7 @@ export function AppSidebar() {
                       href: '/admin/notifications',
                       icon: Bell,
                   },
+                  { title: 'AWS', href: '/admin/aws', icon: Cloud },
               ]
             : [];
 

@@ -33,6 +33,7 @@ export type RemoteConnection = {
     status: 'UNTESTED' | 'VALID' | 'INVALID';
     instance_id: string | null;
     region: string | null;
+    aws_account: string | null;
     host: string | null;
     port: number | null;
     user: string | null;
@@ -168,10 +169,16 @@ export type AvailablePackage = {
     size: number;
     project: string | null;
 };
+export type AwsAccountOption = {
+    uuid: string;
+    name: string;
+    is_default: boolean;
+};
 export type RemoteAccess = {
     enabled: boolean;
     agent_version: string | null;
     default_region: string;
+    aws_accounts: AwsAccountOption[];
     available_packages: AvailablePackage[];
     servers: RemoteServer[];
 };
@@ -313,6 +320,7 @@ export default function RemoteAccessPanel({
                             server={server}
                             agentVersion={access.agent_version}
                             defaultRegion={access.default_region}
+                            awsAccounts={access.aws_accounts}
                             availablePackages={access.available_packages}
                             editable={editable}
                         />
@@ -328,6 +336,7 @@ function ServerConnection({
     server,
     agentVersion,
     defaultRegion,
+    awsAccounts,
     availablePackages,
     editable,
 }: {
@@ -335,6 +344,7 @@ function ServerConnection({
     server: RemoteServer;
     agentVersion: string | null;
     defaultRegion: string;
+    awsAccounts: AwsAccountOption[];
     availablePackages: AvailablePackage[];
     editable: boolean;
 }) {
@@ -344,6 +354,7 @@ function ServerConnection({
         type: (connection?.type ?? 'aws-ssm') as ConnectionType,
         instance_id: connection?.instance_id ?? '',
         region: connection?.region ?? defaultRegion,
+        aws_account: connection?.aws_account ?? '',
         host: connection?.host ?? server.host ?? '',
         port: connection?.port ?? 22,
         user: connection?.user ?? 'ubuntu',
@@ -363,6 +374,8 @@ function ServerConnection({
                       type: data.type,
                       instance_id: data.instance_id,
                       region: data.region,
+                      aws_account:
+                          data.aws_account === '' ? null : data.aws_account,
                   }
                 : {
                       type: data.type,
@@ -529,6 +542,41 @@ function ServerConnection({
                             disabled={!editable}
                             onChange={(value) => form.setData('region', value)}
                         />
+                        {awsAccounts.length > 0 && (
+                            <div className="grid gap-2">
+                                <Label htmlFor={`aws-account-${server.uuid}`}>
+                                    Cuenta AWS
+                                </Label>
+                                <select
+                                    id={`aws-account-${server.uuid}`}
+                                    className="border-input bg-background h-9 rounded-md border px-3 text-sm disabled:opacity-60"
+                                    value={form.data.aws_account}
+                                    disabled={!editable}
+                                    onChange={(event) =>
+                                        form.setData(
+                                            'aws_account',
+                                            event.target.value,
+                                        )
+                                    }
+                                >
+                                    <option value="">
+                                        La cuenta predeterminada
+                                    </option>
+                                    {awsAccounts.map((account) => (
+                                        <option
+                                            key={account.uuid}
+                                            value={account.uuid}
+                                        >
+                                            {account.name}
+                                            {account.is_default
+                                                ? ' (predeterminada)'
+                                                : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                                <InputError message={errors.aws_account} />
+                            </div>
+                        )}
                     </>
                 )}
                 <InputError

@@ -3,6 +3,7 @@
 namespace App\Domain\Remote;
 
 use App\Enums\ServerRole;
+use App\Models\AwsAccount;
 use App\Models\Connection;
 use App\Models\Project;
 use App\Models\RemoteOperation;
@@ -22,14 +23,14 @@ class RemoteAccessPresenter
 
     public function __construct(private readonly RemoteAgent $agent, private readonly UpdateRemoteAgent $updates) {}
 
-    /** @return array{enabled: bool, agent_version: string|null, default_region: string, available_packages: list<array<string, mixed>>, servers: list<array<string, mixed>>} */
+    /** @return array{enabled: bool, agent_version: string|null, default_region: string, aws_accounts: list<array{uuid: string, name: string, is_default: bool}>, available_packages: list<array<string, mixed>>, servers: list<array<string, mixed>>} */
     public function present(Project $project): array
     {
         $enabled = (bool) config('toolkit.features.remote_agent.enabled', false);
         $region = config('toolkit.remote.default_region');
         $region = is_string($region) && $region !== '' ? $region : 'us-east-2';
         if (! $enabled) {
-            return ['enabled' => false, 'agent_version' => null, 'default_region' => $region, 'available_packages' => [], 'servers' => []];
+            return ['enabled' => false, 'agent_version' => null, 'default_region' => $region, 'aws_accounts' => [], 'available_packages' => [], 'servers' => []];
         }
         $servers = $project->servers()->with('connections')->orderBy('role')->orderBy('name')->get();
         $operations = RemoteOperation::query()->where('provider_key', RemoteAgentOperations::PROVIDER)
@@ -39,6 +40,9 @@ class RemoteAccessPresenter
             'enabled' => true,
             'agent_version' => $this->agent->distribution()['version'],
             'default_region' => $region,
+            // Names only: the panel lets an SSM connection pick which identity reaches its instance.
+            'aws_accounts' => array_values(AwsAccount::query()->orderByDesc('is_default')->orderBy('name')->get()
+                ->map(fn (AwsAccount $account): array => ['uuid' => $account->uuid, 'name' => $account->name, 'is_default' => $account->is_default])->all()),
             'available_packages' => $servers->contains(fn (Server $server): bool => $server->role === ServerRole::DESTINATION) ? $this->availablePackages() : [],
             'servers' => array_values($servers->map(fn (Server $server): array => [
                 'uuid' => $server->uuid,
@@ -244,6 +248,7 @@ class RemoteAccessPresenter
             'status' => $connection->status->value,
             'instance_id' => $configuration['instance_id'] ?? null,
             'region' => $configuration['region'] ?? null,
+            'aws_account' => $configuration['aws_account'] ?? null,
             'host' => $configuration['host'] ?? null,
             'port' => $configuration['port'] ?? null,
             'user' => $configuration['user'] ?? null,

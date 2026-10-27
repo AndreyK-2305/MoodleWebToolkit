@@ -414,3 +414,84 @@ en la plataforma.
   idempotencia ante repeticiones, preferencias, destinatarios adicionales por grupo sin duplicar
   el correo de un usuario, envío apagado o vencido, resumen de avance y contenido del correo).
 - Pendiente: probar con un SMTP real desde AWS durante una consolidación.
+
+## F8: cuentas AWS y almacenamiento global (2026-10-27)
+
+Hasta F7 la identidad AWS de la plataforma salía de la cadena por defecto del host (en el
+laboratorio, el `~/.aws` montado con `AWS_PROFILE`) y el bucket de paquetes estaba fijo en el `.env`.
+Otra institución que despliegue la plataforma tendría que editar archivos para conectar su propia
+infraestructura. El usuario decidió que la identidad y el bucket se configuran en la web, como el
+SMTP. El bucket es uno solo para toda la plataforma, no uno por proyecto. Los permisos IAM los crea
+la institución.
+
+### Administración → AWS
+
+- Solo para administradores, junto a «Notificaciones». Guardar, eliminar y verificar exigen
+  confirmar la contraseña (`action.confirmed`).
+- **Credenciales** (`aws_accounts`): varias cuentas con nombre, una de ellas predeterminada. La
+  primera queda como predeterminada y marcar otra desmarca la anterior (índice único parcial en
+  PostgreSQL). Hay tres modos:
+    - **Rol del entorno**: la cadena por defecto del SDK (rol de EC2/ECS o perfil montado). El
+      laboratorio sigue funcionando así.
+    - **Claves de acceso**: ID `AKIA…` y secreto con cast `encrypted`. Nunca vuelven al navegador:
+      la página muestra solo los cuatro últimos caracteres del ID. Se conservan o se reemplazan.
+    - **Asumir un rol** (recomendado): ARN del rol, External ID opcional (cifrado, nunca devuelto)
+      y nombre de sesión. Se asume con STS sobre la identidad del entorno; las credenciales
+      temporales se memorizan por cuenta, versión y región.
+- Al cambiar de modo se borran los secretos del modo anterior. No se puede eliminar una cuenta que
+  elige una conexión remota o el almacenamiento.
+- **Verificar** una cuenta ejecuta `sts:GetCallerIdentity` y `ssm:DescribeInstanceInformation`
+  (instancias en línea, hasta 10 páginas) en la región elegida. Explica en español quién es la
+  plataforma, cuántas instancias ve o qué permiso falta, sin repetir secretos.
+- **Almacenamiento** (`aws_storage_settings`, una fila): bucket, región y cuenta (vacía = la
+  predeterminada). **Verificar** ejecuta HeadBucket y luego escribe, lee (HeadObject) y borra un
+  objeto pequeño bajo `mwt/_pruebas/`. El objeto se borra aunque la lectura falle. El resultado
+  dice qué paso falló: bucket inexistente, otra región o permiso faltante.
+- La auditoría (`AWS_ACCOUNT_CREATED/UPDATED/DELETED/VERIFIED`, `AWS_STORAGE_UPDATED/VERIFIED`)
+  guarda nombres de campos, el modo y qué pasó con cada secreto (`REPLACED`, `KEPT`, `CLEARED`).
+  Nunca guarda claves, External ID, ARN, nombre de la cuenta ni bucket.
+- La página trae las políticas mínimas, generadas con el bucket guardado: identidad de la
+  plataforma, rol de los orígenes, rol del destino y relación de confianza con External ID. El
+  principal de la relación de confianza sale de la última verificación de una cuenta «Rol del
+  entorno».
+
+### Cableado
+
+- `SsmClientFactory` y `S3ClientFactory` resuelven la identidad con `AwsCredentials`. SSM usa la
+  cuenta que elige la conexión, si no la predeterminada y si no la cadena del entorno. S3 usa la
+  cuenta del almacenamiento, si no la predeterminada y si no la del entorno. Una conexión que nombra
+  una cuenta eliminada falla con `aws_credentials_unavailable`. No toma otra identidad en silencio.
+- La conexión SSM de «Conexiones remotas» tiene un selector opcional «Cuenta AWS». Se guarda como
+  `aws_account` (UUID) en la configuración `remote-connection.v1`, se valida contra
+  `aws_accounts` y llega al transporte en `RemoteTarget::$awsAccount`.
+- `RemoteStorageConfiguration` superpone el bucket guardado a `toolkit.remote.package_bucket` y
+  `package_region` en cada petición web y antes de cada trabajo de la cola (`JobProcessing`). Así
+  un worker de larga duración ve el cambio sin reiniciarse y el resto del código no cambia. Sin
+  fila guardada quedan los valores del `.env`.
+- `docs/GUIA-PERFIL-DESTINO.md` corregida: el destino también necesita `s3:PutObject` en
+  `mwt/*/consolidated/*` para la copia integral final.
+
+### Políticas mínimas
+
+| Identidad               | Permisos                                                                                                                                                                                                                                      |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plataforma              | `ssm:SendCommand` (instancias y `AWS-RunShellScript`), `ssm:GetCommandInvocation`, `ssm:CancelCommand`, `ssm:DescribeInstanceInformation`, `s3:ListBucket`, `s3:GetObject` en `mwt/*`, `s3:PutObject` y `s3:DeleteObject` en `mwt/_pruebas/*` |
+| Rol de los orígenes     | `s3:PutObject` en `mwt/*`                                                                                                                                                                                                                     |
+| Rol del destino         | `s3:GetObject` en `mwt/*` y `s3:PutObject` en `mwt/*/consolidated/*`                                                                                                                                                                          |
+| Rol asumido (confianza) | `sts:AssumeRole` para la identidad del entorno, con `sts:ExternalId` igual al guardado                                                                                                                                                        |
+
+`s3:ListBucket` es el permiso que pide HeadBucket. HeadObject usa `s3:GetObject`.
+
+### Verificación
+
+- Pruebas Feature: `tests/Feature/Aws/AwsSettingsTest.php` cubre el acceso, la contraseña
+  confirmada y la validación. También el cifrado: secretos fuera de la base en claro, de las
+  respuestas y de la auditoría, y conservar, reemplazar o borrar al cambiar de modo. Además la
+  única predeterminada, el bloqueo al eliminar una cuenta en uso, el almacenamiento con
+  superposición de la configuración y las verificaciones con clientes STS, SSM y S3 simulados
+  (`MockHandler`), con éxito y con fallos.
+- `tests/Feature/Aws/AwsCredentialResolutionTest.php` cubre el orden de resolución (conexión,
+  predeterminada, entorno; almacenamiento, predeterminada, entorno), la cuenta eliminada, la
+  solicitud del rol asumido, la superposición en tiempo de ejecución y el selector de la conexión
+  hasta el transporte.
+- Pendiente: verificar con una cuenta real de otra institución (rol asumido con External ID).
