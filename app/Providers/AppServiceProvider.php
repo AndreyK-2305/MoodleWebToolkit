@@ -6,6 +6,7 @@ use App\Database\OffsetPostgresConnection;
 use App\Domain\Artifacts\Contracts\ArtifactReferenceStorage;
 use App\Domain\Artifacts\Contracts\ArtifactStorage;
 use App\Domain\Artifacts\LocalArtifactStorage;
+use App\Domain\Aws\RemoteStorageConfiguration;
 use App\Domain\Collector\Contracts\SecretProvider;
 use App\Domain\Collector\LabFileSecretProvider;
 use App\Domain\Executions\Contracts\ExecutionProvider;
@@ -16,8 +17,10 @@ use App\Domain\Tools\Contracts\ToolAdapter;
 use App\Domain\Tools\FakeToolAdapter;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
+use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
 
@@ -44,6 +47,20 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureDefaults();
+        $this->configureRemoteStorage();
+    }
+
+    /**
+     * The package bucket saved in «Administración → AWS» overrides the environment's.
+     * Long-running workers read it again before every job, so a change applies without a restart.
+     */
+    protected function configureRemoteStorage(): void
+    {
+        $storage = $this->app->make(RemoteStorageConfiguration::class);
+        if (! $this->app->runningInConsole() || $this->app->runningUnitTests()) {
+            $storage->apply();
+        }
+        Event::listen(JobProcessing::class, fn () => $storage->apply());
     }
 
     /**

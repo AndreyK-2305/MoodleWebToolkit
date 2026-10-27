@@ -27,6 +27,8 @@ final class RemoteConnectionConfiguration
 
     private const SECRET_VERSION = '/^[1-9][0-9]{0,8}$/D';
 
+    private const UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D';
+
     /**
      * @param  array<string, mixed>  $input
      * @return array<string, string|int|bool>
@@ -34,7 +36,7 @@ final class RemoteConnectionConfiguration
     public function normalize(ConnectionType $type, array $input): array
     {
         $allowed = match ($type) {
-            ConnectionType::AWS_SSM => ['schema', 'instance_id', 'region'],
+            ConnectionType::AWS_SSM => ['schema', 'instance_id', 'region', 'aws_account'],
             ConnectionType::SSH => ['schema', 'host', 'port', 'user', 'host_key', 'secret_version', 'use_sudo'],
         };
         $unknown = array_diff(array_keys($input), $allowed);
@@ -73,6 +75,7 @@ final class RemoteConnectionConfiguration
     {
         $instance = $this->string($input, 'instance_id');
         $region = $this->string($input, 'region');
+        $account = $this->string($input, 'aws_account');
         $errors = [];
         if ($instance === null || preg_match(self::INSTANCE_ID, $instance) !== 1) {
             $errors['instance_id'] = 'Indique un ID de instancia administrada válido, por ejemplo i-0123456789abcdef0.';
@@ -80,11 +83,16 @@ final class RemoteConnectionConfiguration
         if ($region === null || preg_match(self::REGION, $region) !== 1) {
             $errors['region'] = 'Indique una región AWS válida, por ejemplo us-east-2.';
         }
+        if ($account !== null && preg_match(self::UUID, $account) !== 1) {
+            $errors['aws_account'] = 'La cuenta AWS elegida no es válida.';
+        }
         if ($errors !== []) {
             throw ValidationException::withMessages($errors);
         }
 
-        return ['schema' => self::SCHEMA, 'instance_id' => (string) $instance, 'region' => (string) $region];
+        // Without an account the connection uses the platform's default AWS identity.
+        return ['schema' => self::SCHEMA, 'instance_id' => (string) $instance, 'region' => (string) $region,
+            ...($account === null ? [] : ['aws_account' => $account])];
     }
 
     /**
