@@ -106,7 +106,7 @@ class RemoteAccessPresenter
         return $sources;
     }
 
-    /** @return array{deployed: bool, deployment_state: string|null, deployment_error: string|null, updated_at: string|null} */
+    /** @return array{deployed: bool, tree_sha256: string|null, version: string|null, deployment_state: string|null, deployment_error: string|null, updated_at: string|null} */
     private function consolidator(Server $server): array
     {
         $deployment = $server->metadata['remote_tool_deployments'][CheckRemoteDestination::DISTRIBUTION_KEY] ?? null;
@@ -114,7 +114,10 @@ class RemoteAccessPresenter
 
         $tree = $server->metadata['remote_tools'][CheckRemoteDestination::DISTRIBUTION_KEY]['tree_sha256'] ?? null;
 
-        return ['deployed' => is_string($tree), 'tree_sha256' => is_string($tree) ? $tree : null,
+        // The version the catalog key names, for the operator's text (moodle-consolidador-8.2.0-linux-tree).
+        $version = preg_match('/-(\d+\.\d+\.\d+)-/', CheckRemoteDestination::DISTRIBUTION_KEY, $matches) === 1 ? $matches[1] : null;
+
+        return ['deployed' => is_string($tree), 'tree_sha256' => is_string($tree) ? $tree : null, 'version' => $version,
             'deployment_state' => in_array($deployment['state'] ?? null, ['QUEUED', 'RUNNING', 'DEPLOYED', 'FAILED'], true) ? $deployment['state'] : null,
             'deployment_error' => is_string($deployment['error_code'] ?? null) ? $deployment['error_code'] : null,
             'updated_at' => is_string($deployment['updated_at'] ?? null) ? $deployment['updated_at'] : null];
@@ -143,6 +146,7 @@ class RemoteAccessPresenter
                 'runtime_free_bytes' => $report['runtime_free_bytes'] ?? null, 'target_running' => ($report['target_running'] ?? false) === true,
                 'destination_written' => ($report['destination_written'] ?? false) === true,
                 'in_use' => CheckRemoteDestination::used($report),
+                'upgradable' => is_array($check) && ($check['ready'] ?? false) !== true && CheckRemoteDestination::upgradable($check),
                 'target_volumes' => is_int($report['target_volumes'] ?? null) ? $report['target_volumes'] : null,
                 'copias_packages' => is_int($report['copias_packages'] ?? null) ? $report['copias_packages'] : null,
                 'preparation' => $this->preparation($server, $id),

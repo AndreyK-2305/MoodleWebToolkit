@@ -443,3 +443,100 @@ describe('source profile form', () => {
         ).not.toHaveProperty('compose_dir');
     });
 });
+
+describe('written destination on an earlier Consolidator', () => {
+    const upgraded = (changes: Partial<RemoteDestinationProfile> = {}) =>
+        server({
+            role: 'DESTINATION',
+            consolidator: {
+                deployed: true,
+                tree_sha256: 'c'.repeat(64),
+                version: '8.2.0',
+                deployment_state: 'DEPLOYED',
+                deployment_error: null,
+                updated_at: 'x',
+            },
+            destination_repoint: {
+                at: 'x',
+                tree_sha256: 'c'.repeat(64),
+                error_code: null,
+                destinations: [
+                    {
+                        id: 'campus',
+                        repointed: false,
+                        reason: 'destination_written',
+                    },
+                ],
+            },
+            destinations: [
+                destination({
+                    ready: false,
+                    blockers: ['tool_tree_mismatch'],
+                    warnings: ['destination_written'],
+                    destination_written: true,
+                    in_use: true,
+                    upgradable: true,
+                    preparation: {
+                        state: 'SUCCEEDED',
+                        launched_at: null,
+                        finished_at: null,
+                        observed_at: null,
+                        exit_code: 0,
+                        error_code: null,
+                        observe_error: null,
+                        last_error_line: null,
+                        markers: [],
+                        tail: '',
+                    },
+                    ...changes,
+                }),
+            ],
+        });
+
+    it('explains the old version in Spanish and offers cleaning instead of blocking', () => {
+        const items = destinationChecklist(upgraded(), '1.17.3');
+
+        expect(items[5].state).toBe('warning');
+        expect(items[5].detail).toContain('versión anterior del Consolidador');
+        expect(items[5].detail).toContain('la 8.2.0');
+        expect(items[5].detail).not.toContain('tool_tree_mismatch');
+        // An earlier successful preparation does not count: it was for the old version.
+        expect(items[6]).toMatchObject({ state: 'pending', action: 'prepare' });
+        expect(items[6].detail).toContain('Limpiar el destino y preparar');
+    });
+
+    it('follows the cleaning preparation and does not offer it for other blockers', () => {
+        const running = destinationChecklist(
+            upgraded({
+                preparation: {
+                    state: 'RUNNING',
+                    launched_at: null,
+                    finished_at: null,
+                    observed_at: null,
+                    exit_code: null,
+                    error_code: null,
+                    observe_error: null,
+                    last_error_line: null,
+                    markers: [],
+                    tail: '',
+                },
+            }),
+            '1.17.3',
+        );
+        expect(running[6].state).toBe('running');
+
+        const blocked = destinationChecklist(
+            upgraded({
+                upgradable: false,
+                blockers: ['tool_tree_mismatch', 'env_missing'],
+            }),
+            '1.17.3',
+        );
+        expect(blocked[5].state).toBe('failed');
+        expect(blocked[5].detail).toContain(
+            'usa una versión anterior del Consolidador',
+        );
+        expect(blocked[5].detail).toContain('falta el .env');
+        expect(blocked[6].state).toBe('blocked');
+    });
+});

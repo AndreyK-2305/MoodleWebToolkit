@@ -267,6 +267,57 @@ class RemoteDestinationTest extends DomainTestCase
         $this->assertSame([true, false, 0], [$report['engine_intact'], $report['destination_written'], $report['copias_packages']]);
     }
 
+    public function test_the_real_cleaning_moves_a_written_destination_to_a_newer_consolidator(): void
+    {
+        $this->requireRoot();
+        DeployRemoteTool::dispatchSync($this->server->getKey(), $this->distribution->getKey(), null);
+        $runtime = $this->root.'/srv/campus';
+        $this->assertSame(0, $this->helper(['campus', '--public-url', self::URL, '--admin-email', 'admin@example.edu', '--runtime-dir', $runtime])->getExitCode());
+        $env = (string) file_get_contents($runtime.'/.env');
+        file_put_contents($runtime.'/reports/destination-write.lock.json', '{}');
+        // A newer Consolidator deployed after the site was written: the same tree plus one
+        // file, installed under its own canonical hash as the deployer would leave it.
+        $key = 'moodle-consolidador-9.0.0-linux-tree';
+        $staging = $this->root.'/tools/'.$key.'/'.str_repeat('e', 64);
+        mkdir(dirname($staging), 0755, true);
+        (new Process(['cp', '-a', $this->installedTree(), $staging]))->mustRun();
+        file_put_contents($staging.'/NUEVA-VERSION.txt', "9.0.0\n");
+        $newer = (string) $this->agent()->call($this->target(), 'tool-status', [$key, str_repeat('e', 64)])->data['tree_sha256'];
+        rename($staging, dirname($staging).'/'.$newer);
+        // The deployment re-pointed nothing (the site was written); the check now blocks only on the tree.
+        $metadata = $this->server->refresh()->metadata;
+        $metadata['remote_tools'][CheckRemoteDestination::DISTRIBUTION_KEY]['tree_sha256'] = $newer;
+        $this->server->update(['metadata' => $metadata]);
+        $this->assertSame('destination_written', $this->agent()->call($this->target(), 'destination-repoint', [$newer])->data['destinations'][0]['reason']);
+        $check = app(CheckRemoteDestination::class)->handle($this->server->refresh(), 'campus', null);
+        $this->assertContains('tool_tree_mismatch', $check['blockers']);
+        // This test host has no Docker: keep only the tree blocker, as on a real destination.
+        $metadata = $this->server->refresh()->metadata;
+        $metadata['remote_destinations']['campus']['blockers'] = ['tool_tree_mismatch'];
+        $this->server->update(['metadata' => $metadata]);
+
+        $started = app(PrepareRemoteDestination::class)->start($this->server->refresh(), 'campus', $this->user(UserRole::ADMIN), true, 'CONFIRMAR');
+        $this->assertSame('RUNNING', $started['state'], (string) ($started['error_code'] ?? ''));
+        $deadline = hrtime(true) + 90_000_000_000;
+        do {
+            usleep(500_000);
+            $observed = app(PrepareRemoteDestination::class)->observe($this->server->refresh(), 'campus');
+        } while (in_array($observed['state'], PrepareRemoteDestination::ACTIVE, true) && hrtime(true) < $deadline);
+
+        $this->assertStringContainsString('PROFILE_REPOINTED tree='.$newer, (string) $observed['tail']);
+        $this->assertStringContainsString('DESTINATION_RESET_DONE', (string) $observed['tail']);
+        $this->assertStringContainsString('TOOL_TREE='.$newer."\n", (string) file_get_contents($this->root.'/destinations/campus.conf'));
+        $this->assertSame('0600', substr(sprintf('%o', fileperms($this->root.'/destinations/campus.conf')), -4));
+        // The runtime is the newer tree, the .env the same and the site's writes gone.
+        $this->assertFileExists($runtime.'/NUEVA-VERSION.txt');
+        $this->assertSame($env, file_get_contents($runtime.'/.env'));
+        $this->assertFileDoesNotExist($runtime.'/reports/destination-write.lock.json');
+        // Checked again by itself: it now points at the deployed tree.
+        $report = $this->server->refresh()->metadata['remote_destinations']['campus']['report'];
+        $this->assertSame([$newer, false], [$report['tool_tree'], $report['destination_written']]);
+        $this->assertNotContains('tool_tree_mismatch', $this->server->metadata['remote_destinations']['campus']['blockers']);
+    }
+
     public function test_the_real_agent_pages_the_category_proposal_and_writes_the_map_in_parts(): void
     {
         $this->requireRoot();

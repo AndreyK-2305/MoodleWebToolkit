@@ -90,6 +90,8 @@ export type RemoteDestinationProfile = {
     target_running: boolean;
     destination_written: boolean;
     in_use: boolean;
+    /** Its only blocker is an earlier Consolidator: cleaning and preparing moves it to the deployed one. */
+    upgradable?: boolean;
     target_volumes: number | null;
     copias_packages: number | null;
     created: {
@@ -152,6 +154,8 @@ export type RemoteServer = {
     consolidator: {
         deployed: boolean;
         tree_sha256: string | null;
+        /** The deployed Consolidator version, e.g. 8.2.0. */
+        version?: string | null;
         deployment_state: 'QUEUED' | 'RUNNING' | 'DEPLOYED' | 'FAILED' | null;
         deployment_error: string | null;
         updated_at: string | null;
@@ -815,7 +819,8 @@ const destinationCodes: Record<string, string> = {
     env_incomplete: 'el .env está incompleto',
     env_url_mismatch: 'la URL del .env difiere de la del perfil',
     tool_missing: 'el árbol del perfil no está desplegado',
-    tool_tree_mismatch: 'el perfil usa otro árbol que el desplegado',
+    tool_tree_mismatch:
+        'el perfil usa una versión anterior del Consolidador; limpie el destino y prepárelo para pasar a la desplegada',
     flock_missing: 'falta flock',
     python3_missing: 'falta python3',
     runtime_not_owned: 'el runtime no pertenece al usuario RUN_AS del perfil',
@@ -1102,9 +1107,12 @@ function Preparation({
     editable: boolean;
 }) {
     const form = useForm({ destination: destination.id });
+    // A profile left on an earlier Consolidator is prepared only by cleaning it.
+    const upgrade = !destination.ready && destination.upgradable === true;
+    const inUse = destination.in_use || upgrade;
     const prepare = useForm({
         destination: destination.id,
-        reset: destination.in_use,
+        reset: inUse,
         confirmation: '',
     });
     const [open, setOpen] = useState(false);
@@ -1115,9 +1123,8 @@ function Preparation({
         preparation !== null &&
         ['STARTING', 'RUNNING', 'CANCELLING'].includes(preparation.state ?? '');
     // A destination the Consolidator already wrote to is only prepared again after cleaning it.
-    const canPrepare = editable && destination.ready && !active;
-    const confirmed =
-        !destination.in_use || prepare.data.confirmation === 'CONFIRMAR';
+    const canPrepare = editable && (destination.ready || upgrade) && !active;
+    const confirmed = !inUse || prepare.data.confirmation === 'CONFIRMAR';
 
     return (
         <div className="space-y-2 border-t pt-2">
@@ -1157,13 +1164,15 @@ function Preparation({
                         onClick={() => {
                             prepare.setData({
                                 destination: destination.id,
-                                reset: destination.in_use,
+                                reset: inUse,
                                 confirmation: '',
                             });
                             setOpen(true);
                         }}
                     >
-                        Preparar destino
+                        {upgrade
+                            ? 'Limpiar el destino y preparar'
+                            : 'Preparar destino'}
                     </Button>
                 )}
                 {editable && active && preparation?.state !== 'CANCELLING' && (
@@ -1196,13 +1205,21 @@ function Preparation({
                             consolidación.
                         </DialogDescription>
                     </DialogHeader>
-                    {destination.in_use ? (
+                    {inUse ? (
                         <div className="space-y-3 text-sm">
                             <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950/30">
                                 <p className="font-medium">
                                     Este destino ya tiene un sitio
                                 </p>
                                 <ul className="mt-1 list-disc pl-4">
+                                    {upgrade && (
+                                        <li>
+                                            El perfil usa una versión anterior
+                                            del Consolidador: al limpiarlo pasa
+                                            a la desplegada y se conserva el
+                                            .env.
+                                        </li>
+                                    )}
                                     {destination.destination_written && (
                                         <li>
                                             El Consolidador ya escribió en él
@@ -1276,7 +1293,8 @@ function Preparation({
                                         value="keep"
                                         checked={!prepare.data.reset}
                                         disabled={
-                                            destination.destination_written
+                                            destination.destination_written ||
+                                            upgrade
                                         }
                                         aria-labelledby={`prepare-keep-${destination.id}`}
                                         aria-describedby={`prepare-keep-${destination.id}-detail`}
@@ -1295,9 +1313,11 @@ function Preparation({
                                             id={`prepare-keep-${destination.id}-detail`}
                                             className="text-muted-foreground block text-xs"
                                         >
-                                            {destination.destination_written
-                                                ? 'No disponible: el destino ya recibió una consolidación.'
-                                                : 'Propenso a colisiones con el sitio anterior si Caddy, el DNS y los servicios relacionados no están configurados correctamente.'}
+                                            {upgrade
+                                                ? 'No disponible: el perfil usa una versión anterior del Consolidador.'
+                                                : destination.destination_written
+                                                  ? 'No disponible: el destino ya recibió una consolidación.'
+                                                  : 'Propenso a colisiones con el sitio anterior si Caddy, el DNS y los servicios relacionados no están configurados correctamente.'}
                                         </span>
                                     </span>
                                 </label>
@@ -1340,7 +1360,7 @@ function Preparation({
                         disabled={
                             prepare.processing ||
                             !confirmed ||
-                            (destination.in_use && !admin)
+                            (inUse && !admin)
                         }
                         onClick={() =>
                             prepare.post(`${base}/destinations/prepare`, {
@@ -1349,13 +1369,13 @@ function Preparation({
                             })
                         }
                     >
-                        {destination.in_use && prepare.data.reset
+                        {inUse && prepare.data.reset
                             ? 'Limpiar y preparar'
                             : 'Preparar destino'}
                     </Button>
                 </DialogContent>
             </Dialog>
-            {!destination.ready && !preparation && (
+            {!destination.ready && !upgrade && !preparation && (
                 <p className="text-muted-foreground text-xs">
                     Disponible cuando el perfil supere su comprobación.
                 </p>

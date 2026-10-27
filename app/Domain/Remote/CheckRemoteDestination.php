@@ -85,6 +85,19 @@ class CheckRemoteDestination
     }
 
     /**
+     * A profile whose only blocker is that it still points at an earlier Consolidator,
+     * usually because its site was already written and the profile was not re-pointed
+     * after a deployment. Cleaning and preparing it moves it to the deployed version.
+     *
+     * @param  array<string, mixed>  $check
+     */
+    public static function upgradable(array $check): bool
+    {
+        return is_array($check['report'] ?? null) && ($check['error_code'] ?? null) === null
+            && ($check['blockers'] ?? null) === ['tool_tree_mismatch'];
+    }
+
+    /**
      * A destination that already holds a site: services or volumes of a previous Moodle,
      * an assistant that started, packages in copias/ or writes of the Consolidator.
      *

@@ -234,6 +234,50 @@ class RemoteDestinationPreparationTest extends DomainTestCase
         $this->assertFalse(CheckRemoteDestination::used(['target_running' => false, 'destination_written' => false, 'target_volumes' => 0, 'copias_packages' => 0]));
     }
 
+    public function test_a_written_destination_on_an_earlier_consolidator_moves_to_the_deployed_one_by_cleaning_it(): void
+    {
+        // The site was written with 8.1.0; 8.2.0 was deployed and the profile was not re-pointed.
+        $old = str_repeat('a', 64);
+        $metadata = $this->server->refresh()->metadata;
+        $metadata['remote_destinations']['campus'] = ['ready' => false, 'error_code' => null, 'blockers' => ['tool_tree_mismatch'],
+            'warnings' => ['destination_written'], 'report' => ['destination_written' => true, 'tool_tree' => $old]];
+        $this->server->update(['metadata' => $metadata]);
+
+        $this->actingAs($this->admin)->get(route('projects.show', $this->project->uuid))->assertInertia(fn (Assert $page) => $page
+            ->where('remoteAccess.servers.0.destinations.0.upgradable', true)
+            ->where('remoteAccess.servers.0.consolidator.version', '8.2.0'));
+        // Not over the old site, not without CONFIRMAR, not by an operator.
+        foreach ([[false, 'CONFIRMAR', $this->admin], [true, null, $this->admin], [true, 'CONFIRMAR', $this->user()]] as [$reset, $confirmation, $actor]) {
+            try {
+                $this->service()->start($this->server->refresh(), 'campus', $actor, $reset, $confirmation);
+                $this->fail('Solo la limpieza confirmada por un administrador pasa a la versión desplegada.');
+            } catch (ToolOperationBlocked) {
+                $this->addToAssertionCount(1);
+            }
+        }
+        $this->assertSame([], $this->transport->scripts);
+
+        $this->transport->okWith('launch', fn (string $script): array => ['operation_uuid' => QueuedRemoteTransport::operationUuid($script), 'created' => true]);
+        $started = $this->service()->start($this->server->refresh(), 'campus', $this->admin, true, 'CONFIRMAR');
+
+        $this->assertSame('RUNNING', $started['state']);
+        // The agent receives the deployed tree; it re-points the profile itself before restoring the runtime.
+        $this->assertStringContainsString("'distribution={$this->tree}' 'reset=1'", $this->transport->scripts[0]);
+        $audit = AuditLog::query()->where('action', 'REMOTE_DESTINATION_RESET_STARTED')->sole();
+        $this->assertSame([$this->tree, $old], [$audit->payload['tool_tree'], $audit->payload['upgrade_from']]);
+    }
+
+    public function test_other_blockers_still_block_the_cleaning_preparation(): void
+    {
+        $metadata = $this->server->refresh()->metadata;
+        $metadata['remote_destinations']['campus'] = ['ready' => false, 'error_code' => null, 'blockers' => ['tool_tree_mismatch', 'env_missing'],
+            'warnings' => [], 'report' => ['destination_written' => true, 'tool_tree' => str_repeat('a', 64)]];
+        $this->server->update(['metadata' => $metadata]);
+
+        $this->expectException(ToolOperationBlocked::class);
+        $this->service()->start($this->server->refresh(), 'campus', $this->admin, true, 'CONFIRMAR');
+    }
+
     public function test_the_endpoints_launch_and_the_scheduler_observes_active_preparations(): void
     {
         Queue::fake();
