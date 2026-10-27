@@ -33,6 +33,7 @@ const server = (changes: Partial<RemoteServer> = {}): RemoteServer => ({
         has_secret_reference: false,
         host_key_type: null,
         host_key_fingerprint: null,
+        aws_account: null,
     },
     agent_update_blocked: null,
     collector_deployed: true,

@@ -4,15 +4,15 @@ Para quien prepara un servidor Moodle como origen. Un **perfil de origen** con u
 
 ## 1. Requisitos del servidor
 
-| Requisito      | Detalle                                                                                                              |
-| -------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Sistema        | Linux con systemd y Bash 4 o superior                                                                                |
-| Acceso         | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                         |
+| Requisito      | Detalle                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Sistema        | Linux con systemd y Bash 4 o superior                                                                                          |
+| Acceso         | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                                   |
 | Rol IAM (EC2)  | `AmazonSSMManagedInstanceCore` y escritura **solo** en el prefijo `mwt/` del bucket (`s3:PutObject`), `mwt/_pruebas/` incluido |
-| AWS CLI v2     | Instalado en el servidor: la publicación del paquete lo usa con el rol de la instancia                               |
-| PHP del Moodle | 8.1 a 8.3, con `zip` y `dom`, el mismo que usa Moodle (nativo o en el contenedor)                                    |
-| `moodledata`   | Escribible por el usuario de Moodle: los backups de curso se generan ahí                                             |
-| Disco          | Libre en `/var/lib/mwt-agent` para el paquete: como referencia, el tamaño de los backups de los cursos más un margen |
+| AWS CLI v2     | Instalado en el servidor: la publicación del paquete lo usa con el rol de la instancia                                         |
+| PHP del Moodle | 8.1 a 8.3, con `zip` y `dom`, el mismo que usa Moodle (nativo o en el contenedor)                                              |
+| `moodledata`   | Escribible por el usuario de Moodle: los backups de curso se generan ahí                                                       |
+| Disco          | Libre en `/var/lib/mwt-agent` para el paquete: como referencia, el tamaño de los backups de los cursos más un margen           |
 
 Al terminar cada recolección, la plataforma libera el espacio de la exportación en el servidor. Se conservan solo la evidencia y los registros.
 
