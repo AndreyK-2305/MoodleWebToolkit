@@ -27,7 +27,7 @@ class ProjectWizard
         private readonly SimulatedUrlSafety $urlSafety,
     ) {}
 
-    /** @param array{name: string, type: string, description?: string|null} $data */
+    /** @param array{name: string, type: string, description?: string|null, destination_label?: string|null} $data */
     public function create(User $actor, array $data): Project
     {
         if (! $actor->can('create', Project::class)) {

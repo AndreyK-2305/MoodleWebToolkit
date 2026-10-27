@@ -76,7 +76,9 @@ class RemoteConsolidationExecutionTest extends DomainTestCase
         $this->artisan('consolidator:enable-remote')->assertSuccessful();
         $collect = app(ProjectWizard::class)->create($this->admin, ['name' => 'Recolección', 'type' => 'COLLECT']);
         $this->packages = [$this->package($collect, 'pregrado'), $this->package($collect, 'posgrado')];
-        $this->server = $this->project->servers()->create(['name' => 'Destino EC2', 'role' => ServerRole::DESTINATION, 'host' => 'campus.example.edu',
+        // Creating the project registered its destination; the test gives it a prepared profile.
+        $this->server = $this->project->servers()->sole();
+        $this->server->update(['name' => 'Destino EC2', 'role' => ServerRole::DESTINATION, 'host' => 'campus.example.edu',
             'metadata' => ['remote_tools' => [CheckRemoteDestination::DISTRIBUTION_KEY => ['tree_sha256' => $distribution->distribution_sha256]],
                 'remote_destinations' => ['campus' => ['ready' => true, 'report' => ['target_running' => true, 'destination_written' => false]]],
                 'remote_destination_preparations' => ['campus' => ['state' => 'SUCCEEDED']],

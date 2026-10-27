@@ -16,6 +16,7 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
@@ -54,7 +55,18 @@ class ProjectController extends Controller
         return Inertia::render('projects/index', [
             'projects' => $projects,
             'canCreate' => $actor->can('create', Project::class),
+        ]);
+    }
+
+    /** Step 1 of the wizard for a project that does not exist yet: saving it creates the project. */
+    public function create(): Response
+    {
+        Gate::authorize('create', Project::class);
+
+        return Inertia::render('projects/create', [
             'projectTypes' => $this->projectTypes(),
+            // With real servers a consolidation names its destination in this step.
+            'destinationLabel' => (bool) config('toolkit.features.remote_agent.enabled'),
         ]);
     }
 
@@ -65,11 +77,13 @@ class ProjectController extends Controller
             'name' => ['required', 'string', 'max:160'],
             'type' => ['required', Rule::in(ProjectType::creatableValues())],
             'description' => ['nullable', 'string', 'max:2000'],
+            'destination_label' => ['nullable', 'string', 'max:120'],
         ], ['type.in' => 'Elija Recolección o Consolidación: la integración no está disponible para proyectos nuevos.']);
         /** @var User $actor */
         $actor = $request->user();
-        /** @var array{name: string, type: string, description?: string|null} $validated */
-        $project = $wizard->create($actor, $validated);
+        // Creating is saving step 1: a remote consolidation registers its destination there too.
+        /** @var array{name: string, type: string, description?: string|null, destination_label?: string|null} $validated */
+        $project = DB::transaction(fn (): Project => $wizard->saveBasics($wizard->create($actor, $validated), $actor, $validated));
 
         Inertia::flash('toast', ['type' => 'success', 'message' => 'Proyecto creado. Continúe con el asistente.']);
 
