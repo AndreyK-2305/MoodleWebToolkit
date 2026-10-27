@@ -1,29 +1,36 @@
-import { router, useForm } from '@inertiajs/react';
-import { useEffect, useState } from 'react';
+import { useForm } from '@inertiajs/react';
+import { useEffect } from 'react';
 import InputError from '@/components/input-error';
-import type {
-    RemoteServer,
-    RemoteSourceProfile,
-} from '@/components/remote-access-panel';
-import { Badge } from '@/components/ui/badge';
+import type { RemoteServer } from '@/components/remote-access-panel';
+import { SourcePreparation } from '@/components/server-preparation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+    automaticWorkers,
+    validWorkers,
+    workerChoices,
+} from '@/lib/server-preparation';
 
 type SourceRow = {
     server_uuid: string;
     source_profile: string;
     package_name: string;
+    /** «auto» or 1 to CPU − 1 of the profile's last check. */
+    workers: string;
 };
+
+type SavedRow = Omit<SourceRow, 'workers'> & { workers?: string };
 
 export type RemoteCollectionOptions = {
     mode?: string | null;
-    sources?: SourceRow[] | null;
+    sources?: SavedRow[] | null;
     // Single-source revisions saved before several sources existed.
     server_uuid?: string | null;
     source_profile?: string | null;
     package_name?: string | null;
+    // Revisions saved with one value for every source.
     workers?: number | null;
 };
 
@@ -40,12 +47,12 @@ function packageName(server: RemoteServer | undefined, index: number): string {
     return /^[a-z]/.test(slug) ? slug.slice(0, 64) : `origen-${index + 1}`;
 }
 
-/** The profile a row starts with: the first checked one, else the first the server reported. */
+/** The profile a row starts with: the first checked one, the first the server reported, else «moodle» to create. */
 function firstProfile(server: RemoteServer | undefined): string {
     return (
         server?.sources.find((source) => source.ready)?.id ??
         server?.sources.find((source) => source.detected)?.id ??
-        ''
+        'moodle'
     );
 }
 
@@ -53,8 +60,15 @@ function initialRows(
     options: RemoteCollectionOptions,
     sources: RemoteServer[],
 ): SourceRow[] {
+    const shared =
+        options.workers !== null && options.workers !== undefined
+            ? String(options.workers)
+            : 'auto';
     if (options.mode === 'REMOTE' && options.sources?.length) {
-        return options.sources;
+        return options.sources.map((row) => ({
+            ...row,
+            workers: row.workers ?? shared,
+        }));
     }
     if (options.mode === 'REMOTE' && options.server_uuid) {
         return [
@@ -62,6 +76,7 @@ function initialRows(
                 server_uuid: options.server_uuid,
                 source_profile: options.source_profile ?? '',
                 package_name: options.package_name ?? '',
+                workers: shared,
             },
         ];
     }
@@ -71,32 +86,31 @@ function initialRows(
         server_uuid: server.uuid,
         source_profile: firstProfile(server),
         package_name: packageName(server, index),
+        workers: 'auto',
     }));
 }
 
 /**
  * Chooses the source servers and profiles the Collector exports from, one
- * package per source. Only identifiers are sent; paths and credentials stay
- * on each server.
+ * package per source, each with its «Preparar origen» checklist and its own
+ * workers. Only identifiers are saved; paths stay on each server.
  */
 export default function RemoteCollectionForm({
     projectUuid,
     options,
     servers,
+    agentVersion,
     editable,
 }: {
     projectUuid: string;
     options: RemoteCollectionOptions;
     servers: RemoteServer[];
+    agentVersion: string | null;
     editable: boolean;
 }) {
     const sources = servers.filter((server) => server.role === 'SOURCE');
-    const form = useForm({
-        sources: initialRows(options, sources),
-        workers: options.mode === 'REMOTE' ? (options.workers ?? 1) : 1,
-    });
+    const form = useForm({ sources: initialRows(options, sources) });
     const errors = form.errors as Record<string, string>;
-    const [busy, setBusy] = useState<string | null>(null);
     // Profiles detected after the form opened fill the rows still without one.
     const detected = sources
         .map((server) => `${server.uuid}:${firstProfile(server)}`)
@@ -126,21 +140,10 @@ export default function RemoteCollectionForm({
                 position === index ? { ...current, ...row } : current,
             ),
         );
-    const serverAction = (
-        key: string,
-        server: RemoteServer,
-        path: string,
-        data: Record<string, string> = {},
-    ) =>
-        router.post(
-            `/projects/${projectUuid}/servers/${server.uuid}/${path}`,
-            data,
-            {
-                preserveScroll: true,
-                onStart: () => setBusy(key),
-                onFinish: () => setBusy(null),
-            },
-        );
+    const cpusOf = (row: SourceRow) =>
+        sources
+            .find((server) => server.uuid === row.server_uuid)
+            ?.sources.find((source) => source.id === row.source_profile)?.cpus;
 
     return (
         <Card>
@@ -152,7 +155,8 @@ export default function RemoteCollectionForm({
             <CardContent className="space-y-4">
                 <p className="text-muted-foreground text-sm">
                     El Recolector 7.4.2 se ejecuta en cada servidor mediante su
-                    agente y produce un paquete por origen. Al guardar, la
+                    agente y produce un paquete por origen. Complete «Preparar
+                    origen» en cada uno y elija sus workers. Al guardar, la
                     configuración queda versionada; después ejecute el
                     preflight, confirme e inicie la ejecución.
                     {options.mode === 'REMOTE' &&
@@ -169,6 +173,16 @@ export default function RemoteCollectionForm({
                         className="space-y-4"
                         onSubmit={(event) => {
                             event.preventDefault();
+                            // A value the reported CPUs no longer allow is sent as «auto».
+                            form.transform((data) => ({
+                                sources: data.sources.map((row) => ({
+                                    ...row,
+                                    workers: validWorkers(
+                                        row.workers,
+                                        cpusOf(row),
+                                    ),
+                                })),
+                            }));
                             form.put(
                                 `/projects/${projectUuid}/collector/remote-configuration`,
                                 { preserveScroll: true },
@@ -182,8 +196,6 @@ export default function RemoteCollectionForm({
                             const profile = server?.sources.find(
                                 (source) => source.id === row.source_profile,
                             );
-                            const connected =
-                                server?.connection?.status === 'VALID';
                             const listId = `remote-profiles-${index}`;
 
                             return (
@@ -239,6 +251,7 @@ export default function RemoteCollectionForm({
                                                             event.target.value,
                                                         source_profile:
                                                             firstProfile(next),
+                                                        workers: 'auto',
                                                     });
                                                 }}
                                             >
@@ -301,190 +314,105 @@ export default function RemoteCollectionForm({
                                         </div>
                                     </div>
                                     {server && (
-                                        <div className="flex flex-wrap gap-2">
-                                            {[
-                                                {
-                                                    label: 'Conexión',
-                                                    ok: connected,
-                                                },
-                                                {
-                                                    label: 'Recolector desplegado',
-                                                    ok: server.collector_deployed,
-                                                },
-                                                {
-                                                    label: 'Perfil comprobado',
-                                                    ok: profile?.ready === true,
-                                                },
-                                            ].map((item) => (
-                                                <Badge
-                                                    key={item.label}
-                                                    variant={
-                                                        item.ok
-                                                            ? 'default'
-                                                            : 'outline'
-                                                    }
-                                                >
-                                                    {item.label}:{' '}
-                                                    {item.ok
-                                                        ? 'listo'
-                                                        : 'pendiente'}
-                                                </Badge>
-                                            ))}
-                                        </div>
+                                        <SourcePreparation
+                                            projectUuid={projectUuid}
+                                            server={server}
+                                            profileId={row.source_profile}
+                                            agentVersion={agentVersion}
+                                            editable={editable}
+                                        />
                                     )}
-                                    {profile && (
-                                        <ProfileDetails profile={profile} />
-                                    )}
-                                    {server &&
-                                        server.sources_detected_at !== null &&
-                                        server.sources.every(
-                                            (source) => !source.detected,
-                                        ) && (
-                                            <p className="text-muted-foreground text-sm">
-                                                {server.name} no tiene perfiles
-                                                de origen. Su administrador debe
-                                                crearlos (guía
-                                                GUIA-PERFIL-ORIGEN.md).
+                                    {profile?.ready && (
+                                        <div className="grid max-w-sm gap-2">
+                                            <Label
+                                                htmlFor={`remote-workers-${index}`}
+                                            >
+                                                Workers de este origen
+                                            </Label>
+                                            <select
+                                                id={`remote-workers-${index}`}
+                                                className="border-input bg-background h-9 rounded-md border px-3 text-sm"
+                                                value={validWorkers(
+                                                    row.workers,
+                                                    profile.cpus,
+                                                )}
+                                                disabled={!editable}
+                                                onChange={(event) =>
+                                                    updateRow(index, {
+                                                        workers:
+                                                            event.target.value,
+                                                    })
+                                                }
+                                            >
+                                                <option value="auto">
+                                                    {`Automático (${automaticWorkers(profile.cpus)})`}
+                                                </option>
+                                                {workerChoices(
+                                                    profile.cpus,
+                                                ).map((value) => (
+                                                    <option
+                                                        key={value}
+                                                        value={String(value)}
+                                                    >
+                                                        {value}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <p className="text-muted-foreground text-xs">
+                                                {profile.cpus === null
+                                                    ? 'Compruebe el perfil con el agente actual para conocer sus CPU.'
+                                                    : `${profile.cpus} CPU: «Automático» usa CPU − 1 (mínimo 1; el Recolector admite hasta 4).`}
                                             </p>
-                                        )}
-                                    {editable && server && (
-                                        <div className="flex flex-wrap gap-2">
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                disabled={
-                                                    !connected || busy !== null
+                                            <InputError
+                                                message={
+                                                    errors[
+                                                        `sources.${index}.workers`
+                                                    ]
                                                 }
-                                                onClick={() =>
-                                                    serverAction(
-                                                        `deploy-${index}`,
-                                                        server,
-                                                        'collector/deploy',
-                                                    )
-                                                }
-                                            >
-                                                {busy === `deploy-${index}`
-                                                    ? 'Desplegando…'
-                                                    : server.collector_deployed
-                                                      ? 'Verificar despliegue'
-                                                      : 'Desplegar Recolector 7.4.2'}
-                                            </Button>
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                disabled={
-                                                    !connected || busy !== null
-                                                }
-                                                onClick={() =>
-                                                    serverAction(
-                                                        `detect-${index}`,
-                                                        server,
-                                                        'sources/detect',
-                                                    )
-                                                }
-                                            >
-                                                {busy === `detect-${index}`
-                                                    ? 'Detectando…'
-                                                    : 'Detectar perfiles'}
-                                            </Button>
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                disabled={
-                                                    !connected ||
-                                                    busy !== null ||
-                                                    row.source_profile === ''
-                                                }
-                                                onClick={() =>
-                                                    serverAction(
-                                                        `check-${index}`,
-                                                        server,
-                                                        'sources/check',
-                                                        {
-                                                            source: row.source_profile,
-                                                        },
-                                                    )
-                                                }
-                                            >
-                                                {busy === `check-${index}`
-                                                    ? 'Comprobando…'
-                                                    : 'Comprobar perfil'}
-                                            </Button>
-                                            {!connected && (
-                                                <p className="text-muted-foreground text-sm">
-                                                    Pruebe primero la conexión
-                                                    de {server.name}.
-                                                </p>
-                                            )}
+                                            />
                                         </div>
                                     )}
                                 </fieldset>
                             );
                         })}
-                        <div className="flex flex-wrap items-end gap-4">
-                            {editable &&
-                                form.data.sources.length < MAX_SOURCES && (
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        onClick={() => {
-                                            // The next server not used yet; a server can hold several profiles, so it may repeat.
-                                            const next =
-                                                sources.find(
-                                                    (server) =>
-                                                        !form.data.sources.some(
-                                                            (row) =>
-                                                                row.server_uuid ===
-                                                                server.uuid,
-                                                        ),
-                                                ) ?? sources[0];
-                                            form.setData('sources', [
-                                                ...form.data.sources,
-                                                {
-                                                    server_uuid:
-                                                        next?.uuid ?? '',
-                                                    source_profile:
-                                                        firstProfile(next),
-                                                    package_name: packageName(
-                                                        next,
-                                                        form.data.sources
-                                                            .length,
-                                                    ),
-                                                },
-                                            ]);
-                                        }}
-                                    >
-                                        Agregar origen
-                                    </Button>
-                                )}
-                            <div className="grid gap-2">
-                                <Label htmlFor="remote-workers">
-                                    Workers por origen
-                                </Label>
-                                <Input
-                                    id="remote-workers"
-                                    type="number"
-                                    min={1}
-                                    max={4}
-                                    className="w-24"
-                                    value={form.data.workers}
-                                    disabled={!editable}
-                                    onChange={(event) =>
-                                        form.setData(
-                                            'workers',
-                                            Number(event.target.value),
-                                        )
-                                    }
-                                />
-                            </div>
-                        </div>
+                        {editable && form.data.sources.length < MAX_SOURCES && (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => {
+                                    // The next server not used yet; a server can hold several profiles, so it may repeat.
+                                    const next =
+                                        sources.find(
+                                            (server) =>
+                                                !form.data.sources.some(
+                                                    (row) =>
+                                                        row.server_uuid ===
+                                                        server.uuid,
+                                                ),
+                                        ) ?? sources[0];
+                                    form.setData('sources', [
+                                        ...form.data.sources,
+                                        {
+                                            server_uuid: next?.uuid ?? '',
+                                            source_profile: firstProfile(next),
+                                            package_name: packageName(
+                                                next,
+                                                form.data.sources.length,
+                                            ),
+                                            workers: 'auto',
+                                        },
+                                    ]);
+                                }}
+                            >
+                                Agregar origen
+                            </Button>
+                        )}
                         <div>
-                            {Object.entries(errors).map(([key, error]) => (
-                                <InputError key={key} message={error} />
-                            ))}
+                            {Object.entries(errors)
+                                .filter(([key]) => !key.endsWith('.workers'))
+                                .map(([key, error]) => (
+                                    <InputError key={key} message={error} />
+                                ))}
                         </div>
                         {editable && (
                             <Button
@@ -505,51 +433,5 @@ export default function RemoteCollectionForm({
                 )}
             </CardContent>
         </Card>
-    );
-}
-
-const PROFILE_ERRORS: Record<string, string> = {
-    source_profile_unsafe:
-        'el archivo no pertenece a root o lo pueden modificar otros usuarios',
-    source_profile_invalid: 'el archivo tiene claves o valores no admitidos',
-    source_not_found: 'el perfil no existe en el servidor',
-    source_runtime_unavailable:
-        'no se pudo ejecutar PHP en el runtime del perfil',
-};
-
-function gib(bytes: number | null): string {
-    return bytes === null ? '—' : `${(bytes / 1073741824).toFixed(1)} GiB`;
-}
-
-function ProfileDetails({ profile }: { profile: RemoteSourceProfile }) {
-    const error = profile.check_error ?? profile.profile_error;
-    return (
-        <div className="text-muted-foreground space-y-1 text-sm">
-            {profile.valid === false && (
-                <p className="text-destructive">
-                    Perfil inválido:{' '}
-                    {PROFILE_ERRORS[profile.profile_error ?? ''] ??
-                        profile.profile_error}
-                    .
-                </p>
-            )}
-            {profile.checked_at ? (
-                <p>
-                    Moodle {profile.moodle_release ?? 'no detectado'} · PHP{' '}
-                    {profile.php_version ?? '—'} · runtime{' '}
-                    {profile.runtime ?? '—'} · moodledata libre{' '}
-                    {gib(profile.dataroot_free_bytes)} · espacio del agente{' '}
-                    {gib(profile.state_free_bytes)}
-                </p>
-            ) : (
-                <p>El perfil todavía no se ha comprobado.</p>
-            )}
-            {profile.checked_at && !profile.ready && error && (
-                <p className="text-destructive">
-                    Última comprobación fallida:{' '}
-                    {PROFILE_ERRORS[error] ?? error}.
-                </p>
-            )}
-        </div>
     );
 }

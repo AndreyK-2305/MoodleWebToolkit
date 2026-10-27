@@ -18,6 +18,7 @@ use App\Http\Controllers\ProjectWizardController;
 use App\Http\Controllers\RemoteCollectionConfigurationController;
 use App\Http\Controllers\RemoteConnectionController;
 use App\Http\Controllers\RemoteConsolidationConfigurationController;
+use App\Http\Controllers\RemoteServerPreparationController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -40,6 +41,10 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
     Route::post('projects/{project:uuid}/servers/{server:uuid}/collector/deploy', [RemoteConnectionController::class, 'deployCollector'])->middleware('action.confirmed')->name('projects.servers.collector.deploy');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/sources/check', [RemoteConnectionController::class, 'checkSource'])->middleware('action.confirmed')->name('projects.servers.sources.check');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/sources/detect', [RemoteConnectionController::class, 'detectSources'])->middleware('action.confirmed')->name('projects.servers.sources.detect');
+    Route::post('projects/{project:uuid}/servers/{server:uuid}/sources/moodle-detect', [RemoteServerPreparationController::class, 'detectMoodle'])->middleware('action.confirmed')->name('projects.servers.sources.moodle-detect');
+    Route::post('projects/{project:uuid}/servers/{server:uuid}/sources/create', [RemoteServerPreparationController::class, 'createSource'])->middleware('action.confirmed')->name('projects.servers.sources.create');
+    Route::post('projects/{project:uuid}/servers/{server:uuid}/storage/probe', [RemoteServerPreparationController::class, 'probeStorage'])->middleware('action.confirmed')->name('projects.servers.storage.probe');
+    Route::post('projects/{project:uuid}/servers/{server:uuid}/destinations/create', [RemoteServerPreparationController::class, 'createDestination'])->middleware('action.confirmed')->name('projects.servers.destinations.create');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/consolidator/deploy', [RemoteConnectionController::class, 'deployConsolidator'])->middleware('action.confirmed')->name('projects.servers.consolidator.deploy');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/destinations/check', [RemoteConnectionController::class, 'checkDestination'])->middleware('action.confirmed')->name('projects.servers.destinations.check');
     Route::post('projects/{project:uuid}/servers/{server:uuid}/destinations/detect', [RemoteConnectionController::class, 'detectDestinations'])->middleware('action.confirmed')->name('projects.servers.destinations.detect');

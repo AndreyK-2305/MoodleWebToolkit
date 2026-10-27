@@ -26,6 +26,7 @@ const destination = (
     in_use: false,
     target_volumes: null,
     copias_packages: null,
+    created: null,
     preparation: null,
     copias: null,
     fetches: [],

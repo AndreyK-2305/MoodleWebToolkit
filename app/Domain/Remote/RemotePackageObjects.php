@@ -51,6 +51,36 @@ class RemotePackageObjects
         return ['size' => $size, 'checksum_verification' => $verification];
     }
 
+    /**
+     * Confirms a server's upload probe with the platform's own identity: the object exists
+     * under mwt/_pruebas/ with the size and SHA-256 the server reported. It is then deleted
+     * when the platform's identity may do so; a probe left behind is a few bytes.
+     *
+     * @return array{confirmed: bool, deleted: bool, error_code: string|null}
+     */
+    public function confirmProbe(string $region, string $bucket, string $key, string $sha256, int $size): array
+    {
+        if (preg_match('#^mwt/_pruebas/[a-z0-9][a-z0-9-]{0,62}/[0-9a-f]{16}$#D', $key) !== 1) {
+            return ['confirmed' => false, 'deleted' => false, 'error_code' => 'probe_key_invalid'];
+        }
+        $client = $this->clients->make($region);
+        try {
+            $head = $client->headObject(['Bucket' => $bucket, 'Key' => $key]);
+        } catch (AwsException $exception) {
+            return ['confirmed' => false, 'deleted' => false, 'error_code' => 'storage_head_'.strtolower((string) preg_replace('/[^A-Za-z]/', '', $exception->getAwsErrorCode() ?? 'error'))];
+        }
+        $metadata = $head['Metadata'] ?? [];
+        $confirmed = (int) ($head['ContentLength'] ?? -1) === $size && is_array($metadata) && ($metadata['mwt-sha256'] ?? null) === $sha256;
+        try {
+            $client->deleteObject(['Bucket' => $bucket, 'Key' => $key]);
+            $deleted = true;
+        } catch (AwsException) {
+            $deleted = false;
+        }
+
+        return ['confirmed' => $confirmed, 'deleted' => $deleted, 'error_code' => $confirmed ? null : 'storage_probe_mismatch'];
+    }
+
     /** Downloads a small document and checks it against the hash the server reported. */
     public function document(string $region, string $bucket, string $key, string $sha256): string
     {

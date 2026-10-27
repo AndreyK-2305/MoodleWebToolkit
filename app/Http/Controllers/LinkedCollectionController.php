@@ -26,7 +26,8 @@ final class LinkedCollectionController extends Controller
             'server_uuid' => ['nullable', 'uuid'],
             'destination_profile' => ['nullable', 'required_with:server_uuid', 'string', 'regex:/^[a-z0-9][a-z0-9-]{1,62}$/D'],
             'workers' => ['nullable', 'string', 'regex:/^(auto|[1-4])$/D'],
-            'collection_workers' => ['required', 'integer', 'between:1,4'],
+            // Kept for compatibility: each source now chooses its workers in the collection.
+            'collection_workers' => ['nullable', 'integer', 'between:1,4'],
             'sources' => ['required', 'array', 'list', 'min:'.RemoteConsolidationSources::MIN_SOURCES, 'max:'.RemoteConsolidationSources::MAX_SOURCES],
             'sources.*' => ['required', 'array:name,instance_id,region,source_profile,package_name'],
             'sources.*.name' => ['required', 'string', 'max:120', 'distinct:ignore_case'],
@@ -44,7 +45,7 @@ final class LinkedCollectionController extends Controller
         ]);
         /** @var User $actor */
         $actor = $request->user();
-        /** @var array{server_uuid?: string|null, destination_profile?: string|null, workers?: string|null, collection_workers: int, sources: list<array{name: string, instance_id: string, region: string, source_profile: string, package_name: string}>} $validated */
+        /** @var array{server_uuid?: string|null, destination_profile?: string|null, workers?: string|null, collection_workers?: int|null, sources: list<array{name: string, instance_id: string, region: string, source_profile: string, package_name: string}>} $validated */
         $collection = $sources->createLinkedCollection($project, $actor, $validated);
         Inertia::flash('toast', ['type' => 'success',
             'message' => 'Se creó la recolección «'.$collection->name.'». Ábrala para conectar los orígenes e iniciarla; al completarse, esta consolidación toma sus paquetes.']);

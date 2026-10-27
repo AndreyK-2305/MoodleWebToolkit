@@ -414,3 +414,80 @@ en la plataforma.
   idempotencia ante repeticiones, preferencias, destinatarios adicionales por grupo sin duplicar
   el correo de un usuario, envío apagado o vencido, resumen de avance y contenido del correo).
 - Pendiente: probar con un SMTP real desde AWS durante una consolidación.
+
+## F9: preparar los servidores desde la web (2026-10-26)
+
+El usuario decidió que todo se pueda hacer desde la web. Hasta ahora un administrador root tenía
+que ejecutar `mwt-source-profile` o `mwt-destination-profile` en cada servidor y, tras cada
+despliegue del Consolidador, repetir el segundo con `--force --tree <sha>`. Con SSM el agente ya
+corre como root en la instancia y el límite real es IAM, así que la creación de perfiles pasa a la
+plataforma: solo administradores, con confirmación de contraseña y auditada sin rutas en claro.
+Los scripts quedan como «Alternativa manual».
+
+### Agente 1.17.0
+
+Subcomandos cerrados, validados y sin texto libre en la salida, como los anteriores. Las rutas,
+URLs y correos viajan en base64url dentro de pares `nombre=valor`, de modo que todo argumento sigue
+en el alfabeto cerrado del cliente (`RemoteAgent::text`).
+
+- `moodle-detect`: busca instalaciones en `/var/www/*`, `/opt/*` y `/srv/*` (hasta 4 niveles) y en
+  los servicios de Docker Compose en marcha que montan un `config.php` de Moodle. Mira solo la
+  presencia de `version.php`, `config.php` y `lib/setup.php` (o `public/`, Moodle 5.1+) y el dueño;
+  nunca lee `config.php`. Devuelve la ruta, el runtime (nativo, o Compose con su directorio y
+  servicio) y el usuario probable.
+- `source-profile-create`: los mismos argumentos y validaciones que `mwt-source-profile`. No
+  reemplaza sin `force=1`, escribe `root:root 0600` y devuelve la misma comprobación que
+  `source-check`.
+- `destination-profile-create`: lo mismo que `mwt-destination-profile` (URL pública HTTPS, correo y
+  usuario administrador, puerto, usuario de ejecución). Crea el runtime desde el árbol desplegado,
+  que vuelve a verificar por hash antes de copiarlo. Nunca devuelve la clave generada del
+  administrador de Moodle: queda en el `.env` (`0600`), y la respuesta solo dice dónde.
+- `destination-repoint <árbol>`: re-apunta los perfiles de destino al árbol recién desplegado
+  mientras su sitio no haya recibido escrituras. Cada perfil informa `repointed`,
+  `already_current`, `destination_written`, `runtime_missing`, `env_url_mismatch` o
+  `profile_invalid`.
+- `s3-upload-probe <bucket> <región> [write|readwrite] [etiqueta]`: con el rol de la instancia sube
+  un objeto mínimo a `mwt/_pruebas/<instancia>/<aleatorio>` y, en `readwrite`, lo vuelve a leer.
+- `source-check` agrega `cpus`, `aws_cli_version` y `aws_cli_v2`; `probe` agrega
+  `compose_version`.
+
+### Plataforma
+
+- **Paso 2 Orígenes**: cada origen tiene la lista «Preparar origen»: conexión SSM, agente,
+  requisitos (AWS CLI v2, PHP, disco), subida a S3, Recolector, Moodle detectado (elegir un
+  candidato o escribir la ruta, y confirmar) y perfil creado y comprobado (Moodle, PHP y CPU). Cada
+  punto tiene su estado en vivo y su reintento. El mismo componente sirve a los proyectos de
+  recolección y a la recolección que crea «Recolectar ahora».
+- **Workers por origen**: desaparece «Workers de cada exportación». Cada origen elige los suyos
+  cuando su perfil queda comprobado: «Automático» (CPU − 1, mínimo 1) o de 1 a CPU − 1. El
+  Recolector 7.4.2 acepta `--workers=auto|1..4`, con `auto` igual a todas las CPU hasta 4, así que
+  la plataforma guarda `auto` y lo resuelve a `min(4, max(1, CPU − 1))` al lanzar la exportación;
+  con un perfil comprobado por un agente anterior (sin CPU) pasa `auto` tal cual. La configuración
+  nueva es `collector-remote.v3`; las revisiones v2 (un valor para todos) y v1 se siguen leyendo.
+- **Paso 3 Destino**: la lista «Preparar destino»: conexión, agente, requisitos (Docker, Compose
+  v2, memoria, disco), S3 en lectura y escritura del respaldo, Consolidador desplegado con el perfil
+  re-apuntado solo, perfil creado desde la web si no hay ninguno (URL pública HTTPS y correo del
+  administrador) y comprobado, y la preparación de siempre con su diálogo de limpiar o reutilizar.
+- **Re-apuntado automático**: al terminar bien un despliegue del Consolidador, `DeployRemoteTool`
+  llama a `destination-repoint` y vuelve a comprobar los perfiles movidos. Si el re-apuntado falla,
+  el despliegue sigue como `DEPLOYED` y la lista explica por qué no se movió el perfil.
+- **Reglas**: crear un perfil exige rol de administrador y la confirmación de contraseña
+  (`action.confirmed`). Se audita como `REMOTE_SOURCE_PROFILE_CREATED` y
+  `REMOTE_DESTINATION_PROFILE_CREATED` con el SHA-256 de las rutas y del correo, nunca en claro.
+  La detección (`REMOTE_MOODLE_DETECTED`), la prueba de S3 (`REMOTE_STORAGE_PROBED`) y el
+  re-apuntado (`REMOTE_DESTINATIONS_REPOINTED`) también quedan auditados.
+
+### Verificación
+
+- Agente real: `tests/Feature/Remote/RemoteToolDeploymentTest.php` (detección por presencia,
+  creación y rechazos del perfil de origen, CPU y AWS CLI v2, prueba de subida con un `aws` falso
+  confirmada por la identidad de la plataforma) y `RemoteDestinationTest.php` (creación del destino
+  sin devolver la clave, rechazos y re-apuntado).
+- Feature: `tests/Feature/Remote/RemoteServerPreparationTest.php` (autorización y contraseña,
+  rutas validadas y auditadas por hash, candidatos, prueba de S3, workers contra las CPU,
+  re-apuntado tras el despliegue).
+- Vitest: `resources/js/lib/server-preparation.test.ts` (estado de cada punto y workers).
+- Pendiente de AWS real: la prueba de S3 con los roles de las instancias y el bucket reales (la
+  identidad de la plataforma necesita `s3:DeleteObject` en `mwt/_pruebas/*` para borrar el objeto;
+  sin ese permiso queda el objeto de unos bytes), `moodle-detect` sobre los Moodle de origen reales
+  y un Compose real, y la creación del destino con `useradd` y el grupo `docker` reales.

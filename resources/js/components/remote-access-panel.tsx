@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { DestinationPreparation } from '@/components/server-preparation';
 import { awaitingFollowUp } from '@/lib/remote-follow-up';
 import { cn } from '@/lib/utils';
 
@@ -55,6 +56,21 @@ export type RemoteSourceProfile = {
     php_version: string | null;
     dataroot_free_bytes: number | null;
     state_free_bytes: number | null;
+    run_as: string | null;
+    cpus: number | null;
+    aws_cli_v2: boolean | null;
+    max_workers: number;
+};
+export type MoodleCandidate = {
+    config_path: string;
+    runtime: 'native' | 'compose';
+    compose_dir: string | null;
+    compose_service: string | null;
+    compose_profile: string | null;
+    run_as: string | null;
+    config_owner: string | null;
+    issue: string | null;
+    too_long: boolean;
 };
 export type RemoteDestinationProfile = {
     id: string;
@@ -75,6 +91,16 @@ export type RemoteDestinationProfile = {
     in_use: boolean;
     target_volumes: number | null;
     copias_packages: number | null;
+    created: {
+        created_at?: string;
+        runtime_created?: boolean;
+        user_created?: boolean;
+        replaced?: boolean;
+        docker_group?: boolean;
+        run_as?: string | null;
+        admin_user?: string | null;
+        admin_password_location?: string | null;
+    } | null;
     preparation: {
         state: string | null;
         launched_at: string | null;
@@ -131,6 +157,29 @@ export type RemoteServer = {
     };
     destinations: RemoteDestinationProfile[];
     destinations_detected_at: string | null;
+    storage_probe: {
+        checked_at: string | null;
+        mode: 'write' | 'readwrite';
+        ok: boolean;
+        error_code: string | null;
+        written?: boolean;
+        read_back?: boolean | null;
+        confirmed?: boolean;
+        deleted?: boolean;
+    } | null;
+    moodle_detected: {
+        detected_at: string | null;
+        error_code: string | null;
+        php_present: boolean | null;
+        docker_checked: boolean | null;
+        candidates: MoodleCandidate[];
+    } | null;
+    destination_repoint: {
+        at: string | null;
+        tree_sha256: string | null;
+        error_code: string | null;
+        destinations: { id: string; repointed: boolean; reason: string }[];
+    } | null;
     evidence: {
         checked_at: string | null;
         status: string | null;
@@ -584,6 +633,14 @@ function ServerConnection({
                 />
             )}
 
+            {server.role === 'DESTINATION' && (
+                <DestinationPreparation
+                    projectUuid={projectUuid}
+                    server={server}
+                    agentVersion={agentVersion}
+                    editable={editable}
+                />
+            )}
             {server.role === 'DESTINATION' &&
                 connection?.status === 'VALID' && (
                     <DestinationRuntime
@@ -775,9 +832,10 @@ function DestinationRuntime({
                 )}
             </div>
             <p className="text-muted-foreground text-xs">
-                El administrador del servidor crea el perfil con{' '}
-                <code>mwt-destination-profile</code> después del despliegue: el
-                dominio, el TLS y las claves del sitio quedan en el servidor.
+                El perfil se crea desde «Preparar destino» y sigue al
+                Consolidador en cada despliegue mientras el sitio no haya
+                recibido escrituras. El dominio, el TLS y las claves del sitio
+                quedan en el servidor.
             </p>
             {editable && (
                 <div className="flex flex-wrap gap-2">
@@ -883,10 +941,12 @@ function DestinationRuntime({
                                     <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs dark:border-amber-900 dark:bg-amber-950/30">
                                         <p>
                                             El perfil apunta a otra versión del
-                                            Consolidador que la desplegada. El
-                                            administrador del servidor lo
-                                            actualiza conservando el .env y
-                                            luego se comprueba de nuevo:
+                                            Consolidador y no se re-apuntó solo
+                                            (vea «Preparar destino»).
+                                            Alternativa manual: el administrador
+                                            del servidor lo actualiza
+                                            conservando el .env y luego se
+                                            comprueba de nuevo:
                                         </p>
                                         <code className="bg-background block rounded p-1 break-all">
                                             sudo bash mwt-destination-profile{' '}

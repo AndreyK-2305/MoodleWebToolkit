@@ -2,6 +2,8 @@
 
 namespace App\Jobs;
 
+use App\Domain\Remote\CheckRemoteDestination;
+use App\Domain\Remote\RemoteServerPreparation;
 use App\Domain\Remote\RemoteToolDeployer;
 use App\Exceptions\RemoteAgentUnavailable;
 use App\Exceptions\ToolOperationBlocked;
@@ -38,7 +40,7 @@ final class DeployRemoteTool implements ShouldBeUnique, ShouldQueue
         return 'remote-tool-deploy:'.$this->serverId;
     }
 
-    public function handle(RemoteToolDeployer $deployer): void
+    public function handle(RemoteToolDeployer $deployer, RemoteServerPreparation $preparation): void
     {
         $server = Server::query()->find($this->serverId);
         $distribution = ToolDistribution::query()->find($this->distributionId);
@@ -47,8 +49,14 @@ final class DeployRemoteTool implements ShouldBeUnique, ShouldQueue
         }
         self::record($server, $distribution->key, 'RUNNING', null);
         try {
-            $result = $deployer->deploy($server, $distribution, $this->actorId === null ? null : User::query()->find($this->actorId));
+            $actor = $this->actorId === null ? null : User::query()->find($this->actorId);
+            $result = $deployer->deploy($server, $distribution, $actor);
             self::record($server, $distribution->key, $result['installed'] ? 'DEPLOYED' : 'FAILED', $result['error_code']);
+            // Profiles of a destination follow the Consolidator just deployed while their site
+            // has not been written; each one says why it was not moved otherwise.
+            if ($result['installed'] && $distribution->key === CheckRemoteDestination::DISTRIBUTION_KEY) {
+                $preparation->repoint($server->refresh(), $result['tree_sha256'], $actor);
+            }
         } catch (RemoteAgentUnavailable $exception) {
             self::record($server, $distribution->key, 'FAILED', $exception->errorCode);
         } catch (ToolOperationBlocked) {

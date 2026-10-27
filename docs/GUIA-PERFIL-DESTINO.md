@@ -1,6 +1,6 @@
 # Guía: preparar el servidor de destino para el Consolidador
 
-Para el administrador del servidor de destino. La plataforma despliega el Consolidador V8 verificado por hash, pero no escribe la configuración del sitio ni recibe sus claves. El administrador crea un **perfil de destino** con un nombre (por ejemplo `campus`) y la plataforma solo usa ese nombre.
+Para quien prepara el servidor de destino. La plataforma despliega el Consolidador V8 verificado por hash. Un **perfil de destino** con un nombre (por ejemplo `campus`) nombra el runtime del Consolidador para ese sitio. Desde el agente 1.17.0 un administrador de la plataforma lo crea desde la web (§ 2); el script `mwt-destination-profile` sigue disponible como alternativa manual (§ 3). Las claves del sitio quedan siempre en el servidor.
 
 ## 1. Requisitos del servidor
 
@@ -10,7 +10,7 @@ Para el administrador del servidor de destino. La plataforma despliega el Consol
 | Acceso        | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                                                |
 | Docker        | Docker Engine en marcha y Docker Compose v2 (`docker compose`)                                                                              |
 | AWS CLI v2    | Instalado en el servidor: trae los paquetes de S3 con el rol de la instancia                                                                |
-| Rol IAM (EC2) | `AmazonSSMManagedInstanceCore` y lectura **solo** del prefijo `mwt/` del bucket de paquetes (`s3:GetObject`)                                |
+| Rol IAM (EC2) | `AmazonSSMManagedInstanceCore`, lectura del prefijo `mwt/` (`s3:GetObject`) y escritura en `mwt/` para el respaldo (`s3:PutObject`)       |
 | Dominio y TLS | El dominio definitivo del sitio con su certificado y un proxy TLS hacia `127.0.0.1:<puerto>` (8090 por defecto). Lo monta usted (ver § 1.1) |
 | Internet      | Salida a Internet durante la primera preparación: se construyen las imágenes de Moodle 5.2.1, MariaDB y el runtime del asistente            |
 | Memoria       | 4 GiB o más; con menos, la comprobación lo advierte                                                                                         |
@@ -31,58 +31,53 @@ campus.example.edu {
 
 Con nginx el equivalente es `proxy_set_header Host 127.0.0.1:8090;` junto con `proxy_set_header X-Forwarded-Proto https;`.
 
-## 2. Desplegar el Consolidador
+## 2. Preparar el destino desde la plataforma
 
-En el proyecto, en «Conexiones remotas», sobre el servidor de destino:
+Desde el agente 1.17.0 todo se hace en el paso 3 «Destino» del asistente, en la lista **Preparar destino** del servidor. Cada punto muestra su estado y el botón que lo reintenta:
 
-1. **Probar conexión** e **Instalar agente** si hace falta.
-2. **Desplegar Consolidador**. El árbol completo viaja en segundo plano y el agente lo instala en `/opt/mwt-agent/tools/` solo si su SHA-256 coincide con el del catálogo. El panel muestra el avance.
+1. **Conexión**: guarde el ID de instancia y la región, y pruebe la conexión.
+2. **Agente**: instala o actualiza el agente verificado por SHA-256.
+3. **Requisitos**: Docker, Docker Compose v2, memoria (advierte bajo 4 GiB) y disco libre (advierte bajo 20 GiB).
+4. **S3: lectura y escritura del respaldo**: el servidor escribe con el rol de la instancia un objeto mínimo en `mwt/_pruebas/<instancia>/<aleatorio>` y lo vuelve a leer, como harán la transferencia de paquetes y el respaldo del sitio consolidado. La plataforma lo confirma con `HeadObject` usando su propia identidad y lo borra si puede.
+5. **Consolidador desplegado, perfil re-apuntado solo**: **Desplegar** envía el árbol completo en segundo plano; el agente lo instala en `/opt/mwt-agent/tools/` solo si su SHA-256 coincide con el del catálogo. Al terminar, el agente re-apunta cada perfil de destino existente al árbol recién desplegado, lo mismo que hacía `mwt-destination-profile --force --tree <sha>`, pero solo mientras su sitio no haya recibido escrituras. El punto dice qué perfil se re-apuntó y, si alguno no, por qué: el destino ya fue escrito (use «Preparar destino» con limpieza para pasar a la nueva versión), falta su runtime o la URL del `.env` difiere de la del perfil.
+6. **Perfil del destino creado y comprobado**: si el servidor no tiene perfil, un administrador de la plataforma indica el identificador, la **URL pública HTTPS** definitiva del sitio y el **correo del administrador** de Moodle (y, si hace falta, el usuario administrador y el puerto local), marca la confirmación y pulsa **Crear y comprobar el perfil**. La plataforma pide su contraseña si no la confirmó hace poco. El agente valida lo mismo que `mwt-destination-profile`, crea el runtime `/srv/mwt-destinations/<perfil>` copiando el árbol desplegado y verificado, crea el usuario sin privilegios `mwt-<perfil>` en el grupo `docker`, escribe el `.env` (`0600`) y el perfil (`root:root 0600`) y ejecuta la comprobación de siempre. **La clave generada del administrador de Moodle nunca sale del servidor**: queda solo en `MOODLE_ADMIN_PASSWORD` del `.env`, legible por root. La lista muestra dónde está; recupérela en el servidor (por ejemplo con Session Manager: `sudo grep MOODLE_ADMIN_PASSWORD /srv/mwt-destinations/<perfil>/.env`) y guárdela en el gestor institucional de credenciales.
+7. **Preparar destino**: el flujo de siempre (§ 5), con su diálogo para limpiar o reutilizar un sitio existente.
 
-## 3. Crear el perfil
+La creación queda auditada (`REMOTE_DESTINATION_PROFILE_CREATED`) con la URL pública y el SHA-256 del correo, nunca la clave ni el correo en claro. El re-apuntado queda auditado como `REMOTE_DESTINATIONS_REPOINTED`.
 
-Copie `remote-agent/mwt-destination-profile` al servidor y ejecútelo como root:
+## 3. Alternativa manual
+
+El administrador del servidor puede crear el mismo perfil como root, después del despliegue. Copie `remote-agent/mwt-destination-profile` al servidor y ejecútelo:
 
 ```bash
 sudo bash mwt-destination-profile campus --public-url https://campus.example.edu \
     --admin-email admin@example.edu
 ```
 
-El script hace lo siguiente:
+El script crea el mismo runtime, usuario, `.env` y perfil que la plataforma, con lo mismo que pide `CONFIGURAR.sh` para un sitio HTTPS (claves generadas, proxy inverso y SSL activados, notificaciones desactivadas, configuración administrada en `managed-config/` dentro del runtime). A diferencia de la plataforma, muestra **una sola vez** la clave del administrador de Moodle en la terminal.
 
-- Crea el runtime `/srv/mwt-destinations/campus`, una copia privada del Consolidador desplegado. `--runtime-dir` cambia la ruta.
-- Crea, si no existe, el usuario de sistema sin privilegios `mwt-campus` (`--run-as` cambia el nombre) y lo agrega al grupo `docker`. El Consolidador se niega a ejecutarse como root; el agente lo ejecuta como este usuario, dueño del runtime. Pertenecer al grupo `docker` equivale a root en ese servidor.
-- Escribe su `.env` (`0600`, del usuario anterior) con lo mismo que pide `CONFIGURAR.sh` para un sitio HTTPS:
-    - claves de base de datos y del administrador generadas;
-    - proxy inverso y SSL activados;
-    - notificaciones desactivadas.
-- Crea la configuración administrada de `config.php` dentro del runtime, en `managed-config/`, como propone `CONFIGURAR.sh`: el contenedor del asistente solo puede escribir en el runtime.
-- Muestra **una sola vez** la clave del administrador de Moodle. Guárdela en el gestor institucional de credenciales.
-- Escribe `/etc/mwt-agent/destinations/campus.conf` (`root:root 0600`) con la ruta del runtime, la URL, el árbol de origen y el usuario (`RUN_AS`).
-- Si el agente ya está instalado, ejecuta la misma comprobación que hará la plataforma.
+| Opción          | Uso                                                                                            |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| `--admin-user`  | Usuario administrador de Moodle (`admin` por defecto)                                          |
+| `--http-port`   | Puerto local donde escucha Moodle detrás del proxy TLS (8090 por defecto)                      |
+| `--runtime-dir` | Ruta del runtime (`/srv/mwt-destinations/<id>` por defecto)                                    |
+| `--tree`        | Árbol del Consolidador a usar, cuando hay más de uno desplegado                                |
+| `--run-as`      | Usuario sin privilegios que ejecuta el Consolidador (`mwt-<id>` por defecto)                   |
+| `--force`       | Conserva un runtime existente (su `.env`, checkpoints y resultados) y solo reescribe el perfil |
 
-Opciones:
+Con `--force` el runtime conserva su contenido; solo pasa al usuario del perfil lo que pertenezca a root, y la URL debe coincidir con `MOODLE_PUBLIC_URL` de su `.env`. Desde 1.17.0 ya no hace falta repetirlo con `--tree` tras cada despliegue: la plataforma re-apunta el perfil sola (§ 2, punto 5).
 
-| Opción         | Uso                                                                                            |
-| -------------- | ---------------------------------------------------------------------------------------------- |
-| `--admin-user` | Usuario administrador de Moodle (`admin` por defecto)                                          |
-| `--http-port`  | Puerto local donde escucha Moodle detrás del proxy TLS (8090 por defecto)                      |
-| `--tree`       | Árbol del Consolidador a usar, cuando hay más de uno desplegado                                |
-| `--run-as`     | Usuario sin privilegios que ejecuta el Consolidador (`mwt-<id>` por defecto)                   |
-| `--force`      | Conserva un runtime existente (su `.env`, checkpoints y resultados) y solo reescribe el perfil |
+## 4. Qué comprueba la plataforma
 
-Con `--force` el runtime conserva su contenido; solo pasa al usuario del perfil lo que pertenezca a root. La URL indicada debe coincidir con `MOODLE_PUBLIC_URL` de su `.env`.
+**Comprobar perfil** reporta:
 
-## 4. Verificarlo desde la plataforma
-
-1. **Detectar perfiles de destino**: lista los perfiles por nombre, con su URL pública. Señala los inválidos, por ejemplo con permisos abiertos, una URL sin HTTPS o claves desconocidas.
-2. **Comprobar perfil**: reporta los siguientes hechos:
-    - el `.env` existe, está protegido, completo y declara la misma URL;
-    - el runtime no fue modificado;
-    - el runtime pertenece al usuario del perfil y este está en el grupo `docker`;
-    - el árbol coincide con el desplegado;
-    - Docker, Compose v2, `flock` y `python3` están disponibles;
-    - memoria y disco libre;
-    - si Moodle destino está corriendo y si el destino ya recibió escrituras.
+- el `.env` existe, está protegido, completo y declara la misma URL;
+- el runtime no fue modificado;
+- el runtime pertenece al usuario del perfil y este está en el grupo `docker`;
+- el árbol coincide con el desplegado;
+- Docker, Compose v2, `flock` y `python3` están disponibles;
+- memoria y disco libre;
+- si Moodle destino está corriendo y si el destino ya recibió escrituras.
 
 ## 5. Preparar el destino
 
