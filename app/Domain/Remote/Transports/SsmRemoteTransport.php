@@ -43,7 +43,11 @@ final class SsmRemoteTransport implements RemoteTransport
             throw new InvalidArgumentException('El destino no es una instancia administrada por SSM.');
         }
         $timeoutSeconds = max(5, min($timeoutSeconds, 600));
-        $client = $this->clients->make($target->region);
+        try {
+            $client = $this->clients->forConnection($target->region, $target->awsAccount);
+        } catch (CredentialsException) {
+            return new TransportResult(TransportResult::UNREACHABLE, null, '', '', 'aws_credentials_unavailable');
+        }
         // AWS-RunShellScript uses sh; decode the backend-built script and hand it to bash.
         // The base64 alphabet has no quote characters, so single quotes are sufficient.
         $command = "printf %s '".base64_encode($script)."' | base64 -d | bash";

@@ -4,18 +4,18 @@ Para quien prepara el servidor de destino. La plataforma despliega el Consolidad
 
 ## 1. Requisitos del servidor
 
-| Requisito     | Detalle                                                                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sistema       | Linux/Ubuntu de 64 bits con systemd, Bash 4 o superior y `flock` (`util-linux`)                                                             |
-| Acceso        | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                                                |
-| Docker        | Docker Engine en marcha y Docker Compose v2 (`docker compose`)                                                                              |
-| AWS CLI v2    | Instalado en el servidor: trae los paquetes de S3 con el rol de la instancia                                                                |
-| Rol IAM (EC2) | `AmazonSSMManagedInstanceCore`, lectura del prefijo `mwt/` (`s3:GetObject`) y escritura en `mwt/` para el respaldo (`s3:PutObject`)       |
-| Dominio y TLS | El dominio definitivo del sitio con su certificado y un proxy TLS hacia `127.0.0.1:<puerto>` (8090 por defecto). Lo monta usted (ver § 1.1) |
-| Internet      | Salida a Internet durante la primera preparación: se construyen las imágenes de Moodle 5.2.1, MariaDB y el runtime del asistente            |
-| Memoria       | 4 GiB o más; con menos, la comprobación lo advierte                                                                                         |
-| Disco         | 20 GiB libres como mínimo en el runtime, más el tamaño de los paquetes, de la base de datos y de la copia integral final                    |
-| Google OAuth2 | Un cliente OAuth de Google con la URI `https://<dominio>/admin/oauth2callback.php`. Se configura en Moodle durante la ejecución             |
+| Requisito     | Detalle                                                                                                                                       |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sistema       | Linux/Ubuntu de 64 bits con systemd, Bash 4 o superior y `flock` (`util-linux`)                                                               |
+| Acceso        | Agente de AWS Systems Manager en línea (recomendado), o SSH con llave fijada                                                                  |
+| Docker        | Docker Engine en marcha y Docker Compose v2 (`docker compose`)                                                                                |
+| AWS CLI v2    | Instalado en el servidor: trae los paquetes de S3 con el rol de la instancia                                                                  |
+| Rol IAM (EC2) | `AmazonSSMManagedInstanceCore`, lectura del prefijo `mwt/` (`s3:GetObject`) y escritura en `mwt/*/consolidated/*` y `mwt/_pruebas/*` (`s3:PutObject`), § 1.2 |
+| Dominio y TLS | El dominio definitivo del sitio con su certificado y un proxy TLS hacia `127.0.0.1:<puerto>` (8090 por defecto). Lo monta usted (ver § 1.1)   |
+| Internet      | Salida a Internet durante la primera preparación: se construyen las imágenes de Moodle 5.2.1, MariaDB y el runtime del asistente              |
+| Memoria       | 4 GiB o más; con menos, la comprobación lo advierte                                                                                           |
+| Disco         | 20 GiB libres como mínimo en el runtime, más el tamaño de los paquetes, de la base de datos y de la copia integral final                      |
+| Google OAuth2 | Un cliente OAuth de Google con la URI `https://<dominio>/admin/oauth2callback.php`. Se configura en Moodle durante la ejecución               |
 
 ### 1.1 Proxy TLS
 
@@ -30,6 +30,33 @@ campus.example.edu {
 ```
 
 Con nginx el equivalente es `proxy_set_header Host 127.0.0.1:8090;` junto con `proxy_set_header X-Forwarded-Proto https;`.
+
+### 1.2 Permisos S3 del rol del destino
+
+El destino descarga los paquetes de los orígenes y, al final, sube la copia integral del sitio consolidado a `mwt/<proyecto>/consolidated/<ejecución>/`. Con solo `s3:GetObject` la consolidación funciona, pero el respaldo final falla. La prueba «S3: lectura y escritura del respaldo» de «Preparar destino» escribe y lee un objeto mínimo en `mwt/_pruebas/`, por eso ese prefijo también va en la política. La política mínima, además de `AmazonSSMManagedInstanceCore` (cambie `NOMBRE-DEL-BUCKET` por el bucket de «Administración → AWS»):
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "DownloadPackages",
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::NOMBRE-DEL-BUCKET/mwt/*"
+        },
+        {
+            "Sid": "UploadConsolidatedBackup",
+            "Effect": "Allow",
+            "Action": "s3:PutObject",
+            "Resource": [
+                "arn:aws:s3:::NOMBRE-DEL-BUCKET/mwt/*/consolidated/*",
+                "arn:aws:s3:::NOMBRE-DEL-BUCKET/mwt/_pruebas/*"
+            ]
+        }
+    ]
+}
+```
 
 ## 2. Preparar el destino desde la plataforma
 

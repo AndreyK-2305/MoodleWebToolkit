@@ -34,7 +34,7 @@ use Inertia\Inertia;
 
 final class RemoteConnectionController extends Controller
 {
-    private const FIELDS = ['type', 'instance_id', 'region', 'host', 'port', 'user', 'host_key', 'secret_reference', 'secret_version', 'use_sudo'];
+    private const FIELDS = ['type', 'instance_id', 'region', 'host', 'port', 'user', 'host_key', 'secret_reference', 'secret_version', 'use_sudo', 'aws_account'];
 
     public function update(Request $request, Project $project, Server $server, RemoteServerConnections $connections): RedirectResponse
     {
@@ -52,10 +52,11 @@ final class RemoteConnectionController extends Controller
             'secret_reference' => ['nullable', 'string', 'max:64'],
             'secret_version' => ['nullable', 'string', 'max:9'],
             'use_sudo' => ['nullable', 'boolean'],
-        ]);
+            'aws_account' => ['nullable', 'uuid', Rule::exists('aws_accounts', 'uuid')],
+        ], ['aws_account.exists' => 'La cuenta AWS elegida ya no existe.']);
         $type = ConnectionType::from($validated['type']);
         $input = $type === ConnectionType::AWS_SSM
-            ? ['instance_id' => $validated['instance_id'] ?? null, 'region' => $validated['region'] ?? null]
+            ? ['instance_id' => $validated['instance_id'] ?? null, 'region' => $validated['region'] ?? null, 'aws_account' => $validated['aws_account'] ?? null]
             : ['host' => $validated['host'] ?? null, 'port' => isset($validated['port']) ? (int) $validated['port'] : 22,
                 'user' => $validated['user'] ?? null, 'host_key' => $validated['host_key'] ?? null,
                 'secret_version' => $validated['secret_version'] ?? null, 'use_sudo' => (bool) ($validated['use_sudo'] ?? false)];

@@ -25,6 +25,7 @@ final readonly class RemoteTarget
         public ?string $secretReference = null,
         public ?string $secretVersion = null,
         public bool $useSudo = false,
+        public ?string $awsAccount = null,
     ) {}
 
     public static function fromConnection(Server $server, Connection $connection): self
@@ -46,6 +47,7 @@ final readonly class RemoteTarget
             secretReference: $connection->secret_reference,
             secretVersion: $string('secret_version'),
             useSudo: ($configuration['use_sudo'] ?? false) === true,
+            awsAccount: $string('aws_account'),
         );
     }
 

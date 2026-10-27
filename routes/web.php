@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AcademicProposalController;
+use App\Http\Controllers\Admin\AwsSettingsController;
 use App\Http\Controllers\Admin\NotificationSettingsController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\ArtifactController;
@@ -27,6 +28,7 @@ Route::get('/', fn (Request $request) => redirect()->route($request->user() ? 'd
 Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(function () {
     Route::get('dashboard', DashboardController::class)->name('dashboard');
     Route::get('projects', [ProjectController::class, 'index'])->name('projects.index');
+    Route::get('projects/create', [ProjectController::class, 'create'])->name('projects.create');
     Route::post('projects', [ProjectController::class, 'store'])->middleware('action.confirmed')->name('projects.store');
     Route::get('projects/{project:uuid}', [ProjectController::class, 'show'])->name('projects.show');
     Route::put('projects/{project:uuid}/collector/configuration', CollectorConfigurationController::class)->middleware('action.confirmed')->name('projects.collector.configuration');
@@ -88,6 +90,13 @@ Route::middleware(['auth', 'active', 'verified', 'password.changed'])->group(fun
         Route::put('notifications', [NotificationSettingsController::class, 'update'])->middleware('action.confirmed')->name('notifications.update');
         Route::put('notifications/recipients', [NotificationSettingsController::class, 'updateRecipients'])->middleware('action.confirmed')->name('notifications.recipients.update');
         Route::post('notifications/test', [NotificationSettingsController::class, 'test'])->middleware(['action.confirmed', 'throttle:6,1'])->name('notifications.test');
+        Route::get('aws', [AwsSettingsController::class, 'edit'])->name('aws.edit');
+        Route::post('aws/accounts', [AwsSettingsController::class, 'storeAccount'])->middleware('action.confirmed')->name('aws.accounts.store');
+        Route::put('aws/accounts/{account:uuid}', [AwsSettingsController::class, 'updateAccount'])->middleware('action.confirmed')->name('aws.accounts.update');
+        Route::delete('aws/accounts/{account:uuid}', [AwsSettingsController::class, 'destroyAccount'])->middleware('action.confirmed')->name('aws.accounts.destroy');
+        Route::post('aws/accounts/{account:uuid}/verify', [AwsSettingsController::class, 'verifyAccount'])->middleware(['action.confirmed', 'throttle:10,1'])->name('aws.accounts.verify');
+        Route::put('aws/storage', [AwsSettingsController::class, 'updateStorage'])->middleware('action.confirmed')->name('aws.storage.update');
+        Route::post('aws/storage/verify', [AwsSettingsController::class, 'verifyStorage'])->middleware(['action.confirmed', 'throttle:10,1'])->name('aws.storage.verify');
     });
 });
 
