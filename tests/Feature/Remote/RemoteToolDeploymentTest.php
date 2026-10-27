@@ -245,6 +245,47 @@ class RemoteToolDeploymentTest extends DomainTestCase
         }
     }
 
+    public function test_detection_proposes_a_compose_service_enabled_only_by_a_profile(): void
+    {
+        // The lab's layout: the code on the host, the Compose project beside it and a PHP
+        // service that only exists with `--profile tools`; the host has no PHP of its own.
+        foreach (['opt/moodle-lab/code/lib', 'opt/moodle-lab/runtime', 'bin'] as $directory) {
+            mkdir($this->root.'/'.$directory, 0755, true);
+        }
+        foreach (['code/config.php', 'code/version.php', 'code/lib/setup.php', 'runtime/compose.yaml'] as $file) {
+            touch($this->root.'/opt/moodle-lab/'.$file);
+        }
+        $code = $this->root.'/opt/moodle-lab/code';
+        file_put_contents($this->root.'/compose-config.yaml', implode("\n", ['name: runtime', 'services:', '  php:', '    profiles:', '      - tools',
+            '    image: moodle-php:8.3', '    volumes:', '      - type: bind', '        source: '.$code, '        target: /var/www/html',
+            '        bind:', '          create_host_path: true', '  db:', '    image: mariadb:11', '    volumes:', '      - type: volume',
+            '        source: dbdata', '        target: /var/lib/mysql', 'volumes:', '  dbdata: {}', '']));
+        file_put_contents($this->root.'/bin/docker', implode("\n", ['#!/bin/bash', 'args=" $* "',
+            'if [[ $1 == compose ]]; then',
+            '    [[ $args == *" config --profiles "* ]] && { echo tools; exit 0; }',
+            // Without the profile the service does not exist, as with the real Compose.
+            '    [[ $args == *" --profile tools "* ]] && { cat "$MWT_FAKE_COMPOSE"; exit 0; }',
+            '    printf "name: runtime\nservices:\n  db:\n    image: mariadb:11\n"; exit 0',
+            'fi', '[[ $1 == ps ]] && exit 0', 'exit 1', '']));
+        chmod($this->root.'/bin/docker', 0755);
+        $this->path = (string) getenv('PATH');
+        $this->environment(['PATH' => $this->root.'/bin:'.$this->path, 'MWT_FAKE_COMPOSE' => $this->root.'/compose-config.yaml',
+            'MWT_AGENT_DETECT_ROOTS' => $this->root.'/opt']);
+        try {
+            $detected = app(RemoteServerPreparation::class)->detectMoodle($this->server, null);
+
+            $this->assertTrue($detected['detected'], (string) $detected['error_code']);
+            $compose = collect($detected['candidates'])->firstWhere('runtime', 'compose');
+            $this->assertNotNull($compose, 'Se propone el servicio de Compose aunque solo exista con su perfil.');
+            $this->assertSame(['/var/www/html/config.php', $this->root.'/opt/moodle-lab/runtime', 'php', 'tools', null],
+                [$compose['config_path'], $compose['compose_dir'], $compose['compose_service'], $compose['compose_profile'], $compose['issue']]);
+            // The same code seen as a native install is still listed.
+            $this->assertSame($code.'/config.php', collect($detected['candidates'])->firstWhere('runtime', 'native')['config_path']);
+        } finally {
+            $this->environment(['PATH' => $this->path, 'MWT_FAKE_COMPOSE' => null, 'MWT_AGENT_DETECT_ROOTS' => null]);
+        }
+    }
+
     public function test_the_upload_probe_writes_with_the_instance_role_and_the_platform_confirms_it(): void
     {
         $this->fakeAws();

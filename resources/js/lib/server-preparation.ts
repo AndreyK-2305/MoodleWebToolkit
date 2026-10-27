@@ -652,3 +652,92 @@ export const REPOINT_REASONS: Record<string, string> = {
     env_url_mismatch: 'la URL del .env difiere de la del perfil',
     profile_invalid: 'el perfil no es válido',
 };
+
+export type SourceProfileDraft = {
+    config_path: string;
+    runtime: 'native' | 'compose';
+    run_as: string;
+    compose_dir: string;
+    compose_service: string;
+    compose_profile: string;
+    force: boolean;
+};
+
+type Candidate = {
+    config_path: string;
+    runtime: 'native' | 'compose';
+    compose_dir: string | null;
+    compose_service: string | null;
+    compose_profile: string | null;
+    run_as: string | null;
+    issue: string | null;
+};
+
+/** The installation offered first: one without a known problem, Compose ahead of native on a tie. */
+export function preferredCandidate<T extends Candidate>(
+    candidates: T[],
+): T | undefined {
+    return (
+        candidates.find(
+            (candidate) => !candidate.issue && candidate.runtime === 'compose',
+        ) ??
+        candidates.find((candidate) => !candidate.issue) ??
+        candidates[0]
+    );
+}
+
+/**
+ * Applies a detected installation to the draft. A Compose candidate brings its
+ * directory, service and profile; a native one keeps the runtime the
+ * administrator chose by hand, so picking a path never undoes that choice.
+ */
+export function chooseCandidate(
+    draft: SourceProfileDraft,
+    candidate: Candidate,
+    runtimeEdited: boolean,
+): SourceProfileDraft {
+    if (candidate.runtime === 'compose') {
+        return {
+            ...draft,
+            config_path: candidate.config_path,
+            runtime: 'compose',
+            run_as: candidate.run_as ?? draft.run_as,
+            compose_dir: candidate.compose_dir ?? draft.compose_dir,
+            compose_service: candidate.compose_service ?? draft.compose_service,
+            compose_profile: candidate.compose_profile ?? '',
+        };
+    }
+
+    return {
+        ...draft,
+        config_path: candidate.config_path,
+        run_as: candidate.run_as ?? draft.run_as,
+        runtime: runtimeEdited ? draft.runtime : 'native',
+    };
+}
+
+/** The request «Crear y comprobar el perfil» sends: its own endpoint, never the collection's. */
+export function sourceProfileRequest(
+    projectUuid: string,
+    serverUuid: string,
+    profileId: string,
+    draft: SourceProfileDraft,
+): { url: string; payload: Record<string, string | boolean | null> } {
+    return {
+        url: `/projects/${projectUuid}/servers/${serverUuid}/sources/create`,
+        payload: {
+            source: profileId,
+            config_path: draft.config_path,
+            runtime: draft.runtime,
+            run_as: draft.run_as,
+            force: draft.force,
+            ...(draft.runtime === 'compose'
+                ? {
+                      compose_dir: draft.compose_dir,
+                      compose_service: draft.compose_service,
+                      compose_profile: draft.compose_profile || null,
+                  }
+                : {}),
+        },
+    };
+}

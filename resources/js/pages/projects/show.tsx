@@ -779,7 +779,7 @@ function CollectionSourcesStep({
     return (
         <>
             <SourceLabels
-                key={registered}
+                key={`labels:${registered}`}
                 project={project}
                 servers={servers.map((server) => ({
                     server_uuid: server.uuid,
@@ -797,7 +797,7 @@ function CollectionSourcesStep({
             />
             {servers.length > 0 && (
                 <RemoteCollectionForm
-                    key={registered}
+                    key={`collection:${registered}`}
                     projectUuid={project.uuid}
                     options={project.options}
                     agentVersion={access.agent_version}

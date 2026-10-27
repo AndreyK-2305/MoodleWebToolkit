@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.17.0"
+readonly AGENT_VERSION="1.17.1"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -1892,10 +1892,57 @@ likely_run_as() {
     done
 }
 
-# config_path runtime compose_dir compose_service run_as config_owner issue
+# config_path runtime compose_dir compose_service run_as config_owner issue [compose_profile]
 candidate_json() {
-    printf '{"config_path":%s,"runtime":"%s","compose_dir":%s,"compose_service":%s,"compose_profile":null,"run_as":%s,"config_owner":%s,"issue":%s}' \
-        "$(json_escape "$1")" "$2" "$(json_or_null "$3")" "$(json_or_null "$4")" "$(json_or_null "$5")" "$(json_or_null "$6")" "$(json_or_null "$7")"
+    printf '{"config_path":%s,"runtime":"%s","compose_dir":%s,"compose_service":%s,"compose_profile":%s,"run_as":%s,"config_owner":%s,"issue":%s}' \
+        "$(json_escape "$1")" "$2" "$(json_or_null "$3")" "$(json_or_null "$4")" "$(json_or_null "${8:-}")" "$(json_or_null "$5")" "$(json_or_null "$6")" "$(json_or_null "$7")"
+}
+
+# Services and bind mounts of a Compose project as its own configuration resolves them,
+# every profile included: a PHP service enabled only by a profile (run with
+# `docker compose --profile tools run php`) never shows in `docker ps`. Prints
+# service|first-profile|source|target per bind mount (| never appears in a safe path).
+compose_binds() {
+    local directory=$1 profile
+    local -a compose=(docker compose --project-directory "$directory" -f "$directory/compose.yaml")
+    while IFS= read -r profile; do
+        [[ $profile =~ $SERVICE_RE ]] && compose+=(--profile "$profile")
+    done < <("${compose[@]}" config --profiles 2>/dev/null | head -n 20)
+    "${compose[@]}" config 2>/dev/null | awk '
+        /^[^ ]/ { services = ($0 == "services:"); service = ""; next }
+        !services { next }
+        /^  [a-z0-9][a-z0-9_-]*:$/ { service = substr($1, 1, length($1) - 1); profile = ""; inprof = 0; invol = 0; next }
+        /^    [a-z_]+:/ { inprof = ($1 == "profiles:"); invol = ($1 == "volumes:"); type = ""; source = ""; next }
+        inprof && /^      - / { if (profile == "") profile = $2; next }
+        invol && /^      - type: / { type = $3; source = ""; next }
+        invol && /^        source: / { source = $2; next }
+        invol && /^        target: / { if (type == "bind" && source != "" && service != "") printf "%s|%s|%s|%s\n", service, profile, source, $2; next }
+    '
+}
+
+# Appends a Compose candidate for a bind mount that carries a Moodle config.php.
+compose_candidate() {
+    local working=$1 service=$2 profile=$3 source=$4 target=$5 host container issue key
+    ((count < 20)) || return 0
+    [[ $service =~ $SERVICE_RE && ( -z $profile || $profile =~ $SERVICE_RE ) ]] || return 0
+    safe_path "$working" && safe_path "$source" && safe_path "$target" || return 0
+    if [[ -f $source && ! -L $source && ${source##*/} == config.php ]]; then
+        host=$source container=$target
+    elif [[ -d $source && ! -L $source && -f $source/config.php ]]; then
+        host=$source/config.php container=${target%/}/config.php
+    else
+        return 0
+    fi
+    key="compose|$working|$service|$container"
+    [[ -z ${seen[$key]+set} ]] || return 0
+    seen[$key]=1
+    issue=''
+    # A config.php mounted alone: the code lives in the image and cannot be seen from here.
+    moodle_tree "$(dirname "$host")" || issue=moodle_unverified
+    [[ -f $working/compose.yaml ]] || issue=compose_file_unsupported
+    entries+="$sep$(candidate_json "$container" compose "$working" "$service" "$(likely_run_as "$host")" "$(stat -c %U "$host" 2>/dev/null)" "$issue" "$profile")"
+    sep=','
+    count=$((count + 1))
 }
 
 # Candidate Moodle installations for a source profile: native trees under the usual
@@ -1904,7 +1951,7 @@ candidate_json() {
 cmd_moodle_detect() {
     (($# == 0)) || fail invalid_arguments
     local root config dir entries='' sep='' count=0 run_as php_present=0 docker_checked=0 key issue
-    local id line working service mounts mount source target host container
+    local id line working service mounts mount file profile source target
     local -a mount_list=()
     local -A seen=()
     command -v php >/dev/null 2>&1 && php_present=1
@@ -1927,35 +1974,27 @@ cmd_moodle_detect() {
         done < <(find "$root" -maxdepth 4 \( -name node_modules -o -name .git -o -name moodledata -o -name vendor \) -prune \
             -o -type f -name config.php -print0 2>/dev/null | LC_ALL=C sort -z)
     done
-    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    if command -v docker >/dev/null 2>&1; then
         docker_checked=1
+        # Compose projects under the same directories, read from their resolved configuration.
+        for root in $DETECT_ROOTS; do
+            [[ $root =~ $PATH_RE && $root != *..* && -d $root && ! -L $root ]] || continue
+            while IFS= read -r -d '' file; do
+                working=$(dirname "$file")
+                while IFS='|' read -r service profile source target; do
+                    compose_candidate "$working" "$service" "$profile" "$source" "$target"
+                done < <(compose_binds "$working")
+            done < <(find "$root" -maxdepth 3 \( -name node_modules -o -name .git -o -name moodledata -o -name vendor \) -prune \
+                -o -type f -name compose.yaml -print0 2>/dev/null | LC_ALL=C sort -z)
+        done
+        # Running services of projects kept elsewhere.
         while IFS= read -r id; do
             [[ $id =~ ^[0-9a-f]{12,64}$ ]] || continue
             line=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .Mounts}}{{.Source}}>{{.Destination}};{{end}}' "$id" 2>/dev/null) || continue
             IFS='|' read -r working service mounts <<<"$line"
-            [[ $service =~ $SERVICE_RE ]] && safe_path "$working" || continue
             IFS=';' read -r -a mount_list <<<"$mounts"
             for mount in "${mount_list[@]}"; do
-                ((count < 20)) || break
-                source=${mount%%>*} target=${mount#*>}
-                safe_path "$source" && safe_path "$target" || continue
-                if [[ -f $source && ! -L $source && ${source##*/} == config.php ]]; then
-                    host=$source container=$target
-                elif [[ -d $source && ! -L $source && -f $source/config.php ]]; then
-                    host=$source/config.php container=${target%/}/config.php
-                else
-                    continue
-                fi
-                key="compose|$working|$service|$container"
-                [[ -z ${seen[$key]+set} ]] || continue
-                seen[$key]=1
-                issue=''
-                # A config.php mounted alone: the code lives in the image and cannot be seen from here.
-                moodle_tree "$(dirname "$host")" || issue=moodle_unverified
-                [[ -f $working/compose.yaml ]] || issue=compose_file_unsupported
-                entries+="$sep$(candidate_json "$container" compose "$working" "$service" "$(likely_run_as "$host")" "$(stat -c %U "$host" 2>/dev/null)" "$issue")"
-                sep=','
-                count=$((count + 1))
+                compose_candidate "$working" "$service" '' "${mount%%>*}" "${mount#*>}"
             done
         done < <(docker ps --format '{{.ID}}' 2>/dev/null | head -n 50)
     fi
