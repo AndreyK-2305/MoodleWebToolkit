@@ -606,3 +606,7 @@ en el alfabeto cerrado del cliente (`RemoteAgent::text`).
 - Pruebas: `resources/js/components/remote-collection-form.test.tsx` (un solo `<form>` y el botón
   del perfil como `type="button"`), los casos nuevos de `server-preparation.test.ts` y
   `RemoteToolDeploymentTest::test_detection_proposes_a_compose_service_enabled_only_by_a_profile`.
+- Agente 1.17.2: un montaje de Compose puede ser la carpeta de Moodle o cualquier carpeta por
+  encima (en el laboratorio, `php` monta `/opt/moodle-lab` en `/opt/moodle-lab` y el código está en
+  `code/`). `moodle-detect` busca `config.php` de Moodle hasta cuatro niveles dentro del origen del
+  montaje y propone la ruta en el contenedor: el destino del montaje más el resto de la ruta.

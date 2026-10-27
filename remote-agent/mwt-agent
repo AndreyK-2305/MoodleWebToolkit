@@ -10,7 +10,7 @@
 set -euo pipefail
 umask 077
 
-readonly AGENT_VERSION="1.17.1"
+readonly AGENT_VERSION="1.17.2"
 readonly SCHEMA="mwt-agent.v1"
 readonly STATE_DIR="${MWT_AGENT_STATE_DIR:-/var/lib/mwt-agent}"
 readonly OPS_DIR="${STATE_DIR}/ops"
@@ -1922,17 +1922,29 @@ compose_binds() {
 
 # Appends a Compose candidate for a bind mount that carries a Moodle config.php.
 compose_candidate() {
-    local working=$1 service=$2 profile=$3 source=$4 target=$5 host container issue key
-    ((count < 20)) || return 0
+    local working=$1 service=$2 profile=$3 source=$4 target=$5 host
     [[ $service =~ $SERVICE_RE && ( -z $profile || $profile =~ $SERVICE_RE ) ]] || return 0
     safe_path "$working" && safe_path "$source" && safe_path "$target" || return 0
     if [[ -f $source && ! -L $source && ${source##*/} == config.php ]]; then
-        host=$source container=$target
-    elif [[ -d $source && ! -L $source && -f $source/config.php ]]; then
-        host=$source/config.php container=${target%/}/config.php
-    else
-        return 0
+        compose_candidate_at "$working" "$service" "$profile" "$source" "$target"
+    elif [[ -d $source && ! -L $source ]]; then
+        # The mount may be Moodle's own directory or any folder above it (many deployments
+        # mount /opt/<site> and keep the code in a subfolder): the path inside the
+        # container is the target plus what follows the source.
+        [[ ! -f $source/config.php ]] || compose_candidate_at "$working" "$service" "$profile" "$source/config.php" "${target%/}/config.php"
+        while IFS= read -r -d '' host; do
+            moodle_tree "$(dirname "$host")" || continue
+            compose_candidate_at "$working" "$service" "$profile" "$host" "${target%/}/${host#"${source%/}"/}"
+        done < <(find "$source" -mindepth 2 -maxdepth 4 \( -name node_modules -o -name .git -o -name moodledata -o -name vendor \) -prune \
+            -o -type f -name config.php -print0 2>/dev/null | LC_ALL=C sort -z)
     fi
+}
+
+# One Compose candidate: host is the config.php on the server, container its path in the service.
+compose_candidate_at() {
+    local working=$1 service=$2 profile=$3 host=$4 container=$5 issue key
+    ((count < 20)) || return 0
+    safe_path "$host" && safe_path "$container" || return 0
     key="compose|$working|$service|$container"
     [[ -z ${seen[$key]+set} ]] || return 0
     seen[$key]=1
